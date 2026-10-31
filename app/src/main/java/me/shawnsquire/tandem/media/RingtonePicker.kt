@@ -63,6 +63,7 @@ suspend fun ringtoneTitle(context: Context, uri: String?): String {
     return withContext(Dispatchers.IO) {
         try {
             val parsed = Uri.parse(uri)
+            RingtoneImporter.titleOf(context.filesDir, parsed)?.let { return@withContext it }
             val system = parsed.authority.let { it == "media" || it == "settings" } &&
                 !DocumentsContract.isDocumentUri(context, parsed)
             // Ringtone.getTitle falls back to the raw document id for document URIs, so ask the
