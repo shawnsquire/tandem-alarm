@@ -139,11 +139,12 @@ class AppContainer private constructor(
                 SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e("Sync", "uncaught", e) },
             )
             val database = TandemDatabase.build(context)
-            val authManager = AuthManager(Firebase.auth, context.syncDataStore)
+            var authManager: AuthManager? = null
             try {
+                authManager = AuthManager(Firebase.auth, context.syncDataStore)
                 return AppContainer(context, database, syncScope, authManager)
             } catch (e: Throwable) {
-                authManager.close()
+                runCatching { authManager?.close() }
                 syncScope.cancel()
                 runCatching { database.close() }
                 throw e
