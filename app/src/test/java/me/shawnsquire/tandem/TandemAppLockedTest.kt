@@ -8,6 +8,9 @@ import android.content.SharedPreferences
 import android.os.Looper
 import android.os.UserManager
 import androidx.work.WorkManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
@@ -27,6 +30,7 @@ import me.shawnsquire.tandem.schedule.Alarm
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -39,6 +43,8 @@ import org.robolectric.annotation.Config
 import java.io.File
 import java.time.Clock
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -79,6 +85,42 @@ class TandemAppLockedTest {
         override fun getCacheDir(): File = ce("cacheDir") { super.getCacheDir() }
         override fun getDataDir(): File = ce("dataDir") { super.getDataDir() }
         override fun getDatabasePath(name: String?): File = ce("database $name") { super.getDatabasePath(name) }
+
+        /** Lets a test hold the attach drain at its read of the deferred-write queue. */
+        val drainGate = QueueGate()
+        override fun createDeviceProtectedStorageContext(): Context =
+            object : ContextWrapper(super.createDeviceProtectedStorageContext()) {
+                override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences {
+                    val prefs = super.getSharedPreferences(name, mode)
+                    return if (name == DEFERRED_WRITES_PREFS) drainGate.wrap(prefs) else prefs
+                }
+            }
+    }
+
+    /**
+     * Once [arm]ed, the next read of the deferred-write queue (the drain's) blocks until [release].
+     * The queue's prefs are opened once, by the first locked write, so arm only after that write.
+     */
+    private class QueueGate {
+        @Volatile private var armed = false
+        private val reached = CountDownLatch(1)
+        private val open = CountDownLatch(1)
+        val isHeld get() = reached.count == 0L && open.count > 0L
+
+        fun arm() { armed = true }
+        fun release() = open.countDown()
+
+        fun wrap(inner: SharedPreferences): SharedPreferences = object : SharedPreferences by inner {
+            override fun getString(key: String?, defValue: String?): String? {
+                if (armed) {
+                    armed = false
+                    reached.countDown()
+                    // Bounded, so a broken test can't hang the suite.
+                    open.await(10, TimeUnit.SECONDS)
+                }
+                return inner.getString(key, defValue)
+            }
+        }
     }
 
     private val tripwires = mutableListOf<CeTripwire>()
@@ -170,12 +212,22 @@ class TandemAppLockedTest {
         val engine = AlarmEngine.get(app)
         // A Stop on a locked ring disabling it: queued for Room.
         engine.alarmRepository.setEnabled("a", false)
+        base.drainGate.arm()
 
         base.locked = false
         unlock(app)
+        // Hold the drain before it replays, so the order below doesn't depend on who wins a race.
+        awaitTrue("drain held at the queue read") { base.drainGate.isHeld }
         // A partner command applied at unlock, before the drain is done: it must not be undone by
         // the drain replaying the older locked write.
-        app.container.alarmRepository.setEnabled("a", true)
+        val write = CoroutineScope(Dispatchers.Default).async { app.container.alarmRepository.setEnabled("a", true) }
+        try {
+            // Written straight to Room, it would finish now and the drain would then replay "disabled".
+            assertNull("container write finished before the drain", withTimeoutOrNull(1.seconds) { write.await() })
+        } finally {
+            base.drainGate.release()
+        }
+        withTimeout(10.seconds) { write.await() }
 
         assertTrue(app.container.alarmRepository.get("a")!!.enabled)
         assertTrue(AlarmRepositoryImpl(db.alarmDao(), Clock.systemDefaultZone()).get("a")!!.enabled)
@@ -216,5 +268,6 @@ class TandemAppLockedTest {
     private companion object {
         const val STALE_SNOOZE = 99
         const val HOUR = 60 * 60 * 1000L
+        const val DEFERRED_WRITES_PREFS = "alarm_deferred_writes"
     }
 }
