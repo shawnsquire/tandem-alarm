@@ -205,7 +205,7 @@ class AlarmEditViewModel(
                 // The write may have committed before a later step (the reschedule) threw; then the alarm is saved and
                 // its files are in use, so close like a success rather than offer a retry or cleanup.
                 val a = alarm
-                if (a != null && storedReferencesSessionFiles(a)) {
+                if (a != null && writeLanded(a)) {
                     saving = false
                     finishSaved(a, current)
                     _state.update { it.copy(busy = false, closed = true) }
@@ -230,17 +230,17 @@ class AlarmEditViewModel(
 
     private suspend fun settleInterrupted(alarm: Alarm?, previous: Alarm?) {
         saving = false
-        if (alarm != null && storedReferencesSessionFiles(alarm)) finishSaved(alarm, previous) else dropSessionFiles()
+        if (alarm != null && writeLanded(alarm)) finishSaved(alarm, previous) else dropSessionFiles()
     }
 
     /**
-     * Whether the write landed. Judged per file, not by row equality: the stored row may legitimately differ
-     * (an expired skip stripped on read, a partner command applied in between). Unreadable counts as
-     * not committed only when the alarm itself is unknown; files the stored row references are never dropped.
+     * Whether [alarm] was written. Compares every field the editor writes and ignores only those other
+     * writers change: `enabled` (partner ENABLE/DISABLE) and `skippedOccurrenceAt` (partner skip, and the
+     * expired-skip strip on read). A failed upsert leaves the old row, which differs in whatever was edited.
      */
-    private suspend fun storedReferencesSessionFiles(alarm: Alarm): Boolean {
+    private suspend fun writeLanded(alarm: Alarm): Boolean {
         val stored = runCatching { repository.get(alarm.id) }.getOrNull() ?: return false
-        return stored.ringtoneUri == alarm.ringtoneUri && stored.wallpaperPath == alarm.wallpaperPath
+        return stored.copy(enabled = alarm.enabled, skippedOccurrenceAt = alarm.skippedOccurrenceAt) == alarm
     }
 
     fun cancel() {

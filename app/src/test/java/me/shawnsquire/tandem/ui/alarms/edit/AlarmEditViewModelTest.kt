@@ -336,4 +336,29 @@ class AlarmEditViewModelTest {
         assertFalse("/wall-1" in e.deletedWallpapers)
         assertFalse("file:///imported-1" in e.deletedRingtones)
     }
+
+    private fun failingEnv(): Env {
+        val gate = CompletableDeferred<Unit>().also { it.completeExceptionally(IllegalStateException("db")) }
+        return Env("a1", listOf(existing), gate)
+    }
+
+    @Test fun labelOnlyEditWithFailedUpsertShowsErrorAndKeepsEditorOpen() = runTest {
+        val e = failingEnv()
+        e.vm.setLabel("new label")
+        e.vm.save()
+        assertEquals(EditError.Save, e.vm.state.value.error)
+        assertFalse(e.vm.state.value.closed)
+        assertFalse(e.vm.state.value.busy)
+        assertTrue(e.deletedRingtones.isEmpty() && e.deletedWallpapers.isEmpty())
+        assertEquals("Work", e.repo.get("a1")!!.label)
+    }
+
+    @Test fun timeOnlyEditWithFailedUpsertShowsError() = runTest {
+        val e = failingEnv()
+        e.vm.setTime(8, 15)
+        e.vm.save()
+        assertEquals(EditError.Save, e.vm.state.value.error)
+        assertFalse(e.vm.state.value.closed)
+        assertTrue(e.deletedRingtones.isEmpty() && e.deletedWallpapers.isEmpty())
+    }
 }
