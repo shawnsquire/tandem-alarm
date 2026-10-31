@@ -4,6 +4,8 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
@@ -27,7 +29,14 @@ class AlarmSchedulerImpl(
     private val alarmManager: AlarmManager = context.getSystemService(AlarmManager::class.java)
     private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
-    override suspend fun rescheduleAll() {
+    // rescheduleAll() can run concurrently (boot, time change, UI, ringing); serialize the read-modify-write.
+    private val mutex = Mutex()
+
+    override suspend fun rescheduleAll() = mutex.withLock {
+        rescheduleLocked()
+    }
+
+    private suspend fun rescheduleLocked() {
         val nowInstant = now()
         val zoneId = zone()
         val alarms = alarmRepository.alarms.first()
