@@ -53,6 +53,9 @@ class RingingSession(
     private var autoSilence: Job? = null
     private var registeredRingId: String? = null
 
+    /** The ring this session registered, once it has one. */
+    val ringId: String? get() = registeredRingId
+
     /** Registered before any claim writes state, so a cleaner never sees this ring as stale. */
     private fun register(ringId: String) {
         guardedNow("live ring register") { liveRings.register(ringId); registeredRingId = ringId }

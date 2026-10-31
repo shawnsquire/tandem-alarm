@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import android.app.Notification
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -16,7 +17,7 @@ import me.shawnsquire.tandem.TandemApp
 import java.time.Instant
 
 /** Thin Android glue: foreground promotion, wake lock, and one [RingingSession] per start. */
-class RingingService : Service() {
+open class RingingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val sessions = mutableSetOf<RingingSession>()
     private val adapters = mutableMapOf<RingingSession, Pair<AlarmSound, AlarmVibration>>()
@@ -26,18 +27,28 @@ class RingingService : Service() {
     private val vibrationArbiter by lazy { VibrationArbiter.forContext(this) }
     private lateinit var notifier: AndroidRingingNotifier
 
+    /** ringId to (notification id, notification) for sessions that have started ringing. */
+    private val ringingNotifications = LinkedHashMap<String, Pair<Int, Notification>>()
+    private var foregroundId = 0
+
+    /** Number of sessions this service has created; lets tests see that a session started. */
+    internal var sessionsStarted = 0
+        private set
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        notifier = AndroidRingingNotifier(this)
+        notifier = AndroidRingingNotifier(this, onRinging = ::onRingingPosted)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         lastStartId = startId
         // Must come first: a startForegroundService() start has a short deadline.
-        startForeground(NOTIFICATION_ID, notifier.foregroundNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+        // The quiet prep notification has no full-screen intent: a suppressed fire never lights the screen.
+        promotePrep()
         acquireWakeLock()
+        FireWakeLock.release() // our own lock is held now
 
         val alarmId = intent?.getStringExtra(AlarmIntents.EXTRA_ALARM_ID)
         if (alarmId == null) {
@@ -80,10 +91,11 @@ class RingingService : Service() {
                 sessions.remove(session)
                 adapters.remove(session)
                 snoozeRingIds.remove(session)
-                stopIfIdle()
+                onSessionFinished(session.ringId)
             },
         )
         sessions += session
+        sessionsStarted++
         adapters[session] = sound to vibration
         if (isSnooze && ringId != null) snoozeRingIds[session] = ringId
         scope.launch {
@@ -99,9 +111,62 @@ class RingingService : Service() {
         return START_NOT_STICKY
     }
 
+    /** Typed foreground start; open so a test can make it throw. */
+    internal open fun startForegroundTyped(id: Int, notification: Notification) =
+        startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
+
+    internal open fun startForegroundPlain(id: Int, notification: Notification) =
+        startForeground(id, notification)
+
+    /** startForeground must never throw into the ring: fall back to the untyped call, then log and carry on. */
+    private fun safeStartForeground(id: Int, notification: Notification) {
+        try {
+            startForegroundTyped(id, notification)
+            foregroundId = id
+            return
+        } catch (e: Throwable) {
+            Log.e(TAG, "typed startForeground failed; retrying untyped", e)
+        }
+        try {
+            startForegroundPlain(id, notification)
+            foregroundId = id
+        } catch (e: Throwable) {
+            Log.e(TAG, "startForeground failed entirely; ringing without foreground promotion", e)
+        }
+    }
+
+    private fun promotePrep() {
+        val prep = try {
+            notifier.prepNotification()
+        } catch (e: Throwable) {
+            Log.e(TAG, "building prep notification failed", e)
+            return
+        }
+        safeStartForeground(AndroidRingingNotifier.PREP_NOTIFICATION_ID, prep)
+    }
+
+    /** A session decided to ring: its notification becomes the foreground one and the prep one goes away. */
+    private fun onRingingPosted(ringId: String, id: Int, notification: Notification) {
+        ringingNotifications[ringId] = id to notification
+        safeStartForeground(id, notification)
+        try { notifier.cancelPrep() } catch (e: Throwable) { Log.w(TAG, "cancel prep failed", e) }
+    }
+
+    private fun onSessionFinished(ringId: String?) {
+        val finished = ringId?.let { ringingNotifications.remove(it) }
+        if (sessions.isNotEmpty() && finished != null && finished.first == foregroundId) {
+            // Foreground moves first: the system won't remove the current foreground notification.
+            val next = ringingNotifications.values.lastOrNull()
+            if (next != null) safeStartForeground(next.first, next.second) else promotePrep()
+        }
+        stopIfIdle()
+        if (ringId != null && finished != null) {
+            try { notifier.cancelRinging(ringId) } catch (e: Throwable) { Log.w(TAG, "cancel ringing failed", e) }
+        }
+    }
+
     private fun stopIfIdle() {
         if (sessions.isNotEmpty()) return
-        notifier.clearRinging()
         stopForeground(STOP_FOREGROUND_REMOVE)
         // Only stops if no newer start is queued; otherwise that start's session must survive.
         stopSelfResult(lastStartId)
@@ -116,7 +181,8 @@ class RingingService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        notifier.clearRinging()
+        ringingNotifications.keys.forEach { runCatching { notifier.cancelRinging(it) } }
+        ringingNotifications.clear()
         adapters.values.forEach { (sound, vibration) ->
             runCatching { sound.stop() }
             runCatching { vibration.stop() }
@@ -126,7 +192,6 @@ class RingingService : Service() {
     }
 
     companion object {
-        const val NOTIFICATION_ID = 0x524E47 // "RNG"
         private const val WAKE_LOCK_TIMEOUT_MS = 12 * 60 * 1000L
         private const val TAG = "RingingService"
     }

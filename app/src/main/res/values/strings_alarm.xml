@@ -9,4 +9,7 @@
     <string name="alarm_action_snooze">Snooze</string>
     <string name="alarm_action_dismiss">Dismiss</string>
     <string name="alarm_snoozed_until">Snoozed until %1$s</string>
+    <string name="alarm_prep_channel_name">Alarm checks</string>
+    <string name="alarm_prep_channel_description">Shown briefly while an alarm is being checked</string>
+    <string name="alarm_prep_title">Checking alarm\u2026</string>
 </resources>

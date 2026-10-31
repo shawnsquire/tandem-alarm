@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeRingingController
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -24,6 +25,9 @@ import java.time.Instant
 @RunWith(RobolectricTestRunner::class)
 class NotificationActionsTest {
     private val context: Context = RuntimeEnvironment.getApplication()
+
+    @org.junit.Before
+    fun resetFireLock() = FireWakeLock.resetForTest()
     private val manager = context.getSystemService(NotificationManager::class.java)
 
     @Test
@@ -52,13 +56,15 @@ class NotificationActionsTest {
     }
 
     @Test
-    fun foregroundNotificationHasFullScreenIntentAndAlarmCategory() {
-        val n = AndroidRingingNotifier(context).foregroundNotification()
+    fun prepNotificationIsQuietWithNoFullScreenIntent() {
+        val notifier = AndroidRingingNotifier(context)
+        val n = notifier.prepNotification()
 
-        assertNotNull(n.fullScreenIntent)
-        assertEquals(Notification.CATEGORY_ALARM, n.category)
-        assertEquals("alarm", n.channelId)
-        assertTrue(n.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        assertNull(n.fullScreenIntent)
+        assertEquals(AndroidRingingNotifier.PREP_CHANNEL, n.channelId)
+        assertEquals(NotificationManager.IMPORTANCE_LOW, manager.getNotificationChannel("alarm_prep").importance)
+        assertNull(manager.getNotificationChannel("alarm_prep").sound)
+        assertEquals("Checking alarm\u2026", n.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
     }
 
     @Test
@@ -111,10 +117,35 @@ class NotificationActionsTest {
     }
 
     @Test
-    fun showRingingHasStopAndSnoozeActions() {
-        AndroidRingingNotifier(context).showRinging(null, "r1")
-        val posted = shadowOf(manager).getNotification(RingingService.NOTIFICATION_ID)
+    fun showRingingPostsFullScreenNotificationUnderItsOwnIdAndReportsIt() {
+        val reported = mutableListOf<Triple<String, Int, Notification>>()
+        AndroidRingingNotifier(context) { r, id, n -> reported += Triple(r, id, n) }.showRinging(null, "r1")
+
+        val id = AndroidRingingNotifier.ringingNotificationId("r1")
+        val posted = shadowOf(manager).getNotification(id)
         assertEquals(listOf("Stop", "Snooze"), posted.actions.map { it.title.toString() })
+        assertNotNull(posted.fullScreenIntent)
+        assertNotNull(posted.contentIntent)
+        assertEquals("alarm", posted.channelId)
+        assertEquals(Notification.CATEGORY_ALARM, posted.category)
+        assertEquals(1, reported.size)
+        assertEquals("r1", reported[0].first)
+        assertEquals(id, reported[0].second)
+    }
+
+    @Test
+    fun ringingNotificationIdsAvoidReservedIds() {
+        val id = AndroidRingingNotifier.ringingNotificationId("r1")
+        assertTrue(id != AndroidRingingNotifier.PREP_NOTIFICATION_ID && id != AndroidRingingNotifier.SNOOZED_NOTIFICATION_ID && id != 0)
+        assertTrue(id != AndroidRingingNotifier.ringingNotificationId("r2"))
+    }
+
+    @Test
+    fun cancelRingingRemovesIt() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showRinging(null, "r1")
+        notifier.cancelRinging("r1")
+        assertNull(shadowOf(manager).getNotification(AndroidRingingNotifier.ringingNotificationId("r1")))
     }
 
     @Test
@@ -129,14 +160,57 @@ class NotificationActionsTest {
     }
 
     @Test
-    fun foregroundNotificationReusesCurrentRingingUntilCleared() {
-        val notifier = AndroidRingingNotifier(context)
-        notifier.showRinging(null, "r1")
-        val ringing = notifier.foregroundNotification()
-        assertEquals(2, ringing.actions.size)
+    fun suppressedFirePostsNoFullScreenIntent() {
+        // Alarm does not exist locally, so the session finishes without ringing.
+        val intent = android.content.Intent(context, RingingService::class.java)
+            .putExtra(AlarmIntents.EXTRA_ALARM_ID, "missing")
+            .putExtra(AlarmIntents.EXTRA_OCCURRENCE, 1000L)
+        val controller = Robolectric.buildService(RingingService::class.java, intent).create()
+        controller.startCommand(0, 1)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
 
-        notifier.clearRinging()
-        assertNull(notifier.foregroundNotification().actions)
+        assertTrue(shadowOf(manager).allNotifications.none { it.fullScreenIntent != null })
+    }
+
+    class ThrowingTypedService : RingingService() {
+        override fun startForegroundTyped(id: Int, notification: Notification) = throw SecurityException("typed")
+    }
+
+    class ThrowingBothService : RingingService() {
+        override fun startForegroundTyped(id: Int, notification: Notification) = throw SecurityException("typed")
+        override fun startForegroundPlain(id: Int, notification: Notification) = throw IllegalStateException("plain")
+    }
+
+    private fun fireIntent() = android.content.Intent(context, RingingService::class.java)
+        .putExtra(AlarmIntents.EXTRA_ALARM_ID, "alarm-work")
+        .putExtra(AlarmIntents.EXTRA_OCCURRENCE, 1000L)
+
+    @Test
+    fun typedStartForegroundFailureFallsBackToPlainAndSessionStarts() {
+        val controller = Robolectric.buildService(ThrowingTypedService::class.java, fireIntent()).create()
+        controller.startCommand(0, 1)
+
+        assertNotNull(shadowOf(controller.get()).lastForegroundNotification)
+        assertEquals(1, controller.get().sessionsStarted)
+    }
+
+    @Test
+    fun startForegroundFailingEntirelyStillStartsSession() {
+        val controller = Robolectric.buildService(ThrowingBothService::class.java, fireIntent()).create()
+        controller.startCommand(0, 1)
+
+        assertEquals(1, controller.get().sessionsStarted)
+    }
+
+    @Test
+    fun serviceReleasesFireWakeLockAfterTakingItsOwn() {
+        FireWakeLock.acquire(context)
+        val fire = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+        assertTrue(fire.isHeld)
+        Robolectric.buildService(RingingService::class.java, fireIntent()).create().startCommand(0, 1)
+        assertFalse(fire.isHeld)
+        val own = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+        assertTrue(own !== fire && own.isHeld)
     }
 
     @Test
@@ -145,7 +219,7 @@ class NotificationActionsTest {
         controller.startCommand(0, 1)
         val shadow = shadowOf(controller.get())
         // The promotion happened (id recorded), then the idle service removed it and stopped itself.
-        assertEquals(RingingService.NOTIFICATION_ID, shadow.lastForegroundNotificationId)
+        assertEquals(AndroidRingingNotifier.PREP_NOTIFICATION_ID, shadow.lastForegroundNotificationId)
         assertTrue(shadow.isForegroundStopped)
         assertTrue(shadow.isStoppedBySelf)
     }
