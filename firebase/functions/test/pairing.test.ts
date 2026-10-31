@@ -2,10 +2,6 @@ import { getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { createPairCodeFor, joinHouseholdFor, requireUid, unpairFor } from "../src/pairing";
 
-// firebase-admin's auth module pulls in jwks-rsa -> jose, which is ESM-only and cannot be require()d under
-// Jest on Node < 24.9. These tests never verify tokens, so stub it out.
-jest.mock("jwks-rsa", () => ({}));
-
 if (getApps().length === 0) initializeApp({ projectId: "demo-tandem" });
 
 const A = "uidA";
@@ -131,6 +127,10 @@ describe("joinHousehold", () => {
 
   it("rejects a garbage code", async () => {
     await rejects(joinHouseholdFor(B, { code: "ZZZZZZ" }), ...INVALID);
+  });
+
+  it.each(["AB/CDE", ".", "..", "ABC", "ABCDEFG", "ABC0DE"])("rejects malformed code %p", async (code) => {
+    await rejects(joinHouseholdFor(B, { code }), ...INVALID);
   });
 
   it.each([undefined, null, 123, "", "   "])("rejects a bad code argument %p", async (code) => {

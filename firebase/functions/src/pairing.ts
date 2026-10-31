@@ -71,6 +71,8 @@ export async function joinHouseholdFor(uid: string, data: { code?: unknown }): P
     throw new HttpsError("invalid-argument", "code is required");
   }
   const code = raw.trim().toUpperCase();
+  // Reject anything that could not be a real code before it reaches a document path.
+  if (!new RegExp(`^[${CODE_ALPHABET}]{${CODE_LENGTH}}$`).test(code)) throw invalidCode();
   const db = getFirestore();
   const codeRef = db.doc(`pairCodes/${code}`);
   const userRef = db.doc(`users/${uid}`);
