@@ -1,5 +1,12 @@
 import { randomInt } from "crypto";
-import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
+import {
+  DocumentReference,
+  DocumentSnapshot,
+  FieldValue,
+  getFirestore,
+  Timestamp,
+  Transaction,
+} from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
 import { CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 
@@ -78,7 +85,7 @@ export async function joinHouseholdFor(uid: string, data: { code?: unknown }): P
   const codeRef = db.doc(`pairCodes/${code}`);
   const userRef = db.doc(`users/${uid}`);
 
-  return db.runTransaction(async (tx) => {
+  const result = await db.runTransaction(async (tx) => {
     const codeDoc = await tx.get(codeRef);
     const expiresAt = codeDoc.get("expiresAt") as Timestamp | undefined;
     if (!codeDoc.exists || !expiresAt || expiresAt.toMillis() <= Date.now()) throw invalidCode();
@@ -86,15 +93,52 @@ export async function joinHouseholdFor(uid: string, data: { code?: unknown }): P
     const householdRef = db.doc(`households/${codeDoc.get("householdId")}`);
     const [household, user] = await Promise.all([tx.get(householdRef), tx.get(userRef)]);
     if (!household.exists) throw invalidCode(); // household was unpaired after the code was issued
-    if (user.exists) throw new HttpsError("failed-precondition", "already in a household");
+    // All reads happen before any write.
+    const soloRef = await findSoloHousehold(tx, uid, user, householdRef);
+    const soloCodes = soloRef ? await tx.get(db.collection("pairCodes").where("householdId", "==", soloRef.id)) : null;
     const members = household.get("members") as string[];
     if (members.length >= MAX_MEMBERS) throw new HttpsError("failed-precondition", "household is full");
 
+    if (soloRef && soloCodes) {
+      tx.delete(soloRef);
+      soloCodes.forEach((c) => tx.delete(c.ref));
+    }
     tx.update(householdRef, { members: [...members, uid] });
     tx.set(userRef, { householdId: householdRef.id });
     tx.delete(codeRef);
-    return { householdId: householdRef.id };
+    return { householdId: householdRef.id, soloRef };
   });
+  // The dissolved household's subcollections (e.g. the joiner's device doc) are unreachable now.
+  if (result.soloRef) {
+    try {
+      await db.recursiveDelete(result.soloRef);
+    } catch (e) {
+      logger.error("solo household cleanup failed", { householdId: result.soloRef.id, error: e });
+    }
+  }
+  return { householdId: result.householdId };
+}
+
+/**
+ * Checks the caller's current household. Returns its ref when the caller is its only member
+ * (it will be dissolved), null when they have none (or a stale index), and throws when they
+ * are in a paired household or the code's own household.
+ */
+async function findSoloHousehold(
+  tx: Transaction,
+  uid: string,
+  user: DocumentSnapshot,
+  targetRef: DocumentReference,
+): Promise<DocumentReference | null> {
+  if (!user.exists) return null;
+  const currentRef = getFirestore().doc(`households/${user.get("householdId")}`);
+  const current = await tx.get(currentRef);
+  if (!current.exists) return null; // stale index
+  const members = current.get("members") as string[];
+  if (currentRef.path === targetRef.path || members.length !== 1 || members[0] !== uid) {
+    throw new HttpsError("failed-precondition", "already in a household");
+  }
+  return currentRef;
 }
 
 export async function unpairFor(uid: string): Promise<void> {

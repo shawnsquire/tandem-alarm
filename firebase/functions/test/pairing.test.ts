@@ -109,10 +109,62 @@ describe("joinHousehold", () => {
     await rejects(joinHouseholdFor(C, { code: "FULLHH" }), "failed-precondition", "household is full");
   });
 
-  it("rejects a caller who is already in a household", async () => {
-    const { code } = await createPairCodeFor(A);
-    await createPairCodeFor(B);
+  it("dissolves a solo household when its owner joins another", async () => {
+    const { code: codeA } = await createPairCodeFor(A);
+    const { code: codeB } = await createPairCodeFor(B);
+    const hidA = (await db().doc(`users/${A}`).get()).get("householdId");
+    const hidB = (await db().doc(`users/${B}`).get()).get("householdId");
+    await db().doc(`households/${hidB}/devices/${B}`).set({ displayName: "b" });
+
+    const { householdId } = await joinHouseholdFor(B, { code: codeA });
+
+    expect(householdId).toBe(hidA);
+    expect((await db().doc(`users/${B}`).get()).data()).toEqual({ householdId: hidA });
+    expect((await db().doc(`households/${hidA}`).get()).get("members")).toEqual([A, B]);
+    expect((await db().doc(`households/${hidB}`).get()).exists).toBe(false);
+    expect((await db().doc(`households/${hidB}/devices/${B}`).get()).exists).toBe(false);
+    expect((await db().doc(`pairCodes/${codeB}`).get()).exists).toBe(false);
+    expect((await db().doc(`pairCodes/${codeA}`).get()).exists).toBe(false);
+  });
+
+  it("rejects a caller who is already in a paired household", async () => {
+    const hid = await pairedHousehold();
+    expect((await db().doc(`households/${hid}`).get()).get("members")).toHaveLength(2);
+    const { code } = await createPairCodeFor(C);
     await rejects(joinHouseholdFor(B, { code }), "failed-precondition", "already in a household");
+    expect((await db().doc(`households/${hid}`).get()).exists).toBe(true);
+  });
+
+  it("treats a users doc pointing at a missing household as not in one", async () => {
+    const { code } = await createPairCodeFor(A);
+    await db().doc(`users/${B}`).set({ householdId: "no-such-household" });
+    const { householdId } = await joinHouseholdFor(B, { code });
+    expect((await db().doc(`users/${B}`).get()).data()).toEqual({ householdId });
+    expect((await db().doc(`households/${householdId}`).get()).get("members")).toEqual([A, B]);
+  });
+
+  it("lets only one of two concurrent joins on the same code win", async () => {
+    const { code } = await createPairCodeFor(A);
+    const hid = (await db().doc(`users/${A}`).get()).get("householdId");
+
+    const results = await Promise.allSettled([
+      joinHouseholdFor(B, { code }),
+      joinHouseholdFor(C, { code }),
+    ]);
+
+    const ok = results.filter((r) => r.status === "fulfilled");
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(ok).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect(["invalid or expired code", "household is full"]).toContain(failed[0].reason.message);
+
+    const members = (await db().doc(`households/${hid}`).get()).get("members") as string[];
+    expect(members).toHaveLength(2);
+    const winner = results[0].status === "fulfilled" ? B : C;
+    const loser = winner === B ? C : B;
+    expect(members).toEqual([A, winner]);
+    expect((await db().doc(`users/${winner}`).get()).exists).toBe(true);
+    expect((await db().doc(`users/${loser}`).get()).exists).toBe(false);
   });
 
   it("rejects joining your own code", async () => {
