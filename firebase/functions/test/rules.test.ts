@@ -311,6 +311,22 @@ describe("households/{hid}/commands: create", () => {
     const { expiresAt: _omit, ...noExpiry } = command();
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), noExpiry));
   });
+  it("accepts an expiry of 24 hours", async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(dbFor(ALICE), cmdPath("c1")),
+        command({ expiresAt: Timestamp.fromMillis(Date.now() + 24 * 3_600_000) }),
+      ),
+    );
+  });
+  it("denies an expiry a year out", async () => {
+    await assertFails(
+      setDoc(
+        doc(dbFor(ALICE), cmdPath("c1")),
+        command({ expiresAt: Timestamp.fromMillis(Date.now() + 365 * 24 * 3_600_000) }),
+      ),
+    );
+  });
   it("denies an unknown extra key", async () => {
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ foo: "x" })));
   });
