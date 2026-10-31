@@ -34,6 +34,7 @@ class RingingSession(
     private val preFireCheck: PreFireCheck,
     private val alarmScheduler: AlarmScheduler,
     private val controller: RingingController,
+    private val ringSlot: RingSlot,
     private val sound: AlarmSound,
     private val vibration: AlarmVibration,
     private val notifier: RingingNotifier,
@@ -107,29 +108,29 @@ class RingingSession(
     }
 
     private suspend fun executeSnooze(alarmId: String, snoozeRingId: String?) {
-        var readFailed = false
-        val state = try {
-            ringStateStore.state.first()
-        } catch (e: Throwable) {
-            currentCoroutineContext().ensureActive()
-            log("state read failed; ringing with the snooze ringId", e)
-            readFailed = true
-            null
-        }
-        if (readFailed) {
-            val alarm = guarded("alarm read", null as Alarm?) { alarmRepository.get(alarmId) }
-            if (snoozeRingId == null) fallbackRing() else ring(alarm, snoozeRingId, observe = false)
+        if (snoozeRingId == null) {
+            // Cannot be matched to any snooze. As before: quiet if local state is readable, else ring.
+            val readOk = guarded("state read", false) { ringStateStore.state.first(); true }
+            if (readOk) finish() else fallbackRing()
             return
         }
-        if (state == null || state.ringId != snoozeRingId || state.snoozedUntil == null) {
+        // Liveness check, ledger cleanup, supersede and the state write happen in one critical section.
+        var claimFailed = false
+        val live = try {
+            ringSlot.claimSnoozeResume(snoozeRingId, alarmId)
+        } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
+            log("snooze claim failed; ringing with the snooze ringId", e)
+            claimFailed = true
+            true
+        }
+        if (!live) {
             finish() // dismissed while snoozed
             return
         }
         val alarm = guarded("alarm read", null as Alarm?) { alarmRepository.get(alarmId) }
-        guarded("cancel snoozed notification", Unit) { notifier.cancelSnoozed() }
-        val ringing = state.copy(snoozedUntil = null)
-        val written = guarded("state write", false) { ringStateStore.set(ringing); true }
-        ring(alarm, ringing.ringId, observe = written)
+        if (claimFailed) guarded("cancel snoozed notification", Unit) { notifier.cancelSnoozed(snoozeRingId) }
+        ring(alarm, snoozeRingId, observe = !claimFailed)
     }
 
     private suspend fun executeFire(alarmId: String, occurrence: Instant) {
@@ -157,12 +158,9 @@ class RingingSession(
         }
 
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
-        guarded("superseding old ring", Unit) {
-            val old = ringStateStore.state.first()
-            if (old != null) controller.dismiss(old.ringId) // newest alarm supersedes
-        }
-        val written = guarded("state write", false) {
-            ringStateStore.set(RingState(alarmId, ringId, now(), null)); true
+        // Newest alarm supersedes a sounding ring; a snoozed one is parked and keeps its snooze.
+        val written = guarded("ring slot claim", false) {
+            ringSlot.claimFire(RingState(alarmId, ringId, now(), null)); true
         }
         ring(alarm, ringId, observe = written)
     }

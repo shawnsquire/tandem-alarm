@@ -11,6 +11,8 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -66,6 +68,12 @@ private class ThrowingReadStore(inner: FakeRingStateStore) : RingStateStore by i
     override val state: Flow<RingState?> = flow { throw IllegalStateException("read") }
 }
 
+/** Reads and writes suspend first, so two sessions' claims interleave unless the slot is locked. */
+private class YieldingRingStateStore(private val inner: FakeRingStateStore) : RingStateStore {
+    override val state: Flow<RingState?> = inner.state.onStart { yield() }
+    override suspend fun set(state: RingState?) { yield(); inner.set(state) }
+}
+
 private class ThrowingSettings : SettingsRepository by FakeSettingsRepository() {
     override val defaultRingtoneUri: Flow<String?> = flow { throw IllegalStateException("datastore") }
 }
@@ -102,11 +110,14 @@ class RingingSessionTest {
         val sound = RecordingSound { scope.testScheduler.currentTime }
         val vibration = RecordingVibration()
         var finished = 0
-        val controller = RingingControllerImpl(repo, store, settings, scheduler, { _, _, _ -> }, notifier) { now }
+        var clock: Instant = now
+        val ledger = InMemorySnoozeLedger()
+        val armer = RecordingArmer()
+        val controller = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger) { clock }
         private val dispatcher = ioDispatcher ?: StandardTestDispatcher(scope.testScheduler)
         val session = RingingSession(
-            repo, store, settings, preFire, scheduler, controller, sound, vibration, notifier,
-            scope.backgroundScope, dispatcher, { now }, { ids.next() },
+            repo, store, settings, preFire, scheduler, controller, controller, sound, vibration, notifier,
+            scope.backgroundScope, dispatcher, { clock }, { ids.next() },
             onFinished = { finished++ },
         )
         fun fire(id: String = "a", occ: Instant) = session.start(id, occ, false, null)
@@ -184,7 +195,7 @@ class RingingSessionTest {
         val h = harness()
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { throw IllegalStateException("uuid") },
             onFinished = {},
         )
@@ -202,7 +213,7 @@ class RingingSessionTest {
         var finished = 0
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
-            scheduler ?: h.scheduler, h.controller, h.sound, h.vibration, notifier ?: h.notifier,
+            scheduler ?: h.scheduler, h.controller, h.controller, h.sound, h.vibration, notifier ?: h.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
             onFinished = { h.finished++ },
         )
@@ -271,7 +282,7 @@ class RingingSessionTest {
         val job = Job()
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { awaitCancellation() },
-            h.scheduler, h.controller, h.sound, h.vibration, h.notifier,
+            h.scheduler, h.controller, h.controller, h.sound, h.vibration, h.notifier,
             CoroutineScope(StandardTestDispatcher(testScheduler) + job),
             StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = {},
         )
@@ -291,7 +302,7 @@ class RingingSessionTest {
         }
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
-            h.scheduler, ctl, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.scheduler, ctl, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = { h.finished++ },
         )
         session.start("a", occurrence, false, null)
@@ -313,7 +324,7 @@ class RingingSessionTest {
         val h = harness(state = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow))
         h.session.start("a", clockNow, true, "ring-X")
         runCurrent()
-        assertEquals(1, h.notifier.cancelSnoozedCount)
+        assertEquals(listOf("ring-X"), h.notifier.cancelledSnoozed)
     }
 
     @Test fun skipAppliedBySuccessfulCheckSuppresses() = runTest {
@@ -457,7 +468,7 @@ class RingingSessionTest {
         var bFinished = 0
         val sessionB = RingingSession(
             shared.repo, shared.store, FakeSettingsRepository(), LambdaPreFire { true },
-            shared.scheduler, shared.controller, bSound, RecordingVibration(), shared.notifier,
+            shared.scheduler, shared.controller, shared.controller, bSound, RecordingVibration(), shared.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { clockNow },
             { "ring-2" }, onFinished = { bFinished++ },
         )
@@ -498,11 +509,114 @@ class RingingSessionTest {
         }
         val session = RingingSession(
             failingRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "ring-9" }, onFinished = {},
         )
         session.start("a", occurrence, false, null)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
+    }
+
+    // ---- D1: snoozes survive a supersede; atomic slot claims ----
+
+    private fun TestScope.secondSession(
+        h: Harness,
+        sound: RecordingSound,
+        ringId: String,
+        onFinished: () -> Unit,
+    ) = RingingSession(
+        h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+        h.controller, h.controller, sound, RecordingVibration(), h.notifier, backgroundScope,
+        StandardTestDispatcher(testScheduler), { h.clock }, { ringId }, onFinished = onFinished,
+    )
+
+    @Test fun managerScenario_parkedSnoozeRingsAfterSupersedingRingIsStopped() = runTest {
+        val sevenOhFive = Instant.parse("2026-03-02T07:05:00Z")
+        val sevenTen = Instant.parse("2026-03-02T07:10:00Z")
+        val snoozedA = RingState("a", "ring-A", sevenTen.minusSeconds(600), sevenTen)
+        val h = Harness(
+            this, listOf(alarm("a"), alarm("b")), snoozedA, LambdaPreFire { true }, sevenOhFive,
+            ids = listOf("ring-B").iterator(),
+        )
+        h.ledger.put("ring-A", "a", sevenTen) // as snooze() left it
+
+        // 7:05: B fires while A is snoozed, and the user stops B.
+        h.fire("b", sevenOhFive)
+        runCurrent()
+        assertEquals("ring-B", h.rawStore.state.first()!!.ringId)
+        assertEquals(1, h.sound.starts.size)
+        h.controller.dismiss("ring-B")
+        runCurrent()
+        assertEquals(1, h.finished)
+        assertFalse(h.repo.get("b")!!.enabled)
+        assertFalse("ring-A" in h.armer.cancelled)
+        assertNotNull(h.ledger.get("ring-A"))
+        assertTrue(h.repo.get("a")!!.enabled)
+
+        // 7:10: A's snooze fires (the service builds a fresh session per start).
+        h.clock = sevenTen
+        val aSound = RecordingSound { currentTime }
+        var aFinished = 0
+        secondSession(h, aSound, "unused") { aFinished++ }.start("a", sevenTen, true, "ring-A")
+        runCurrent()
+        assertEquals(1, aSound.starts.size)
+        assertEquals(0, aFinished)
+        assertEquals(RingState("a", "ring-A", sevenTen, null), h.rawStore.state.first())
+        assertEquals(listOf("ring-B", "ring-A"), h.notifier.ringing)
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertNull(h.ledger.get("ring-A"))
+    }
+
+    @Test fun snoozeFireAfterDismissWhileSnoozedIsQuiet() = runTest {
+        val h = harness(state = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow))
+        h.ledger.put("ring-X", "a", clockNow)
+        h.controller.dismiss("ring-X")
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun snoozeFireAfterDismissingParkedSnoozeIsQuiet() = runTest {
+        val ringB = RingState("b", "ring-B", clockNow, null)
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringB)
+        h.ledger.put("ring-X", "a", clockNow)
+        h.controller.dismiss("ring-X") // from X's snoozed notification, while B sounds
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(1, h.finished)
+        assertEquals(ringB, h.rawStore.state.first())
+    }
+
+    @Test fun parkedSnoozeFireSupersedesSoundingRing() = runTest {
+        val ringB = RingState("b", "ring-B", clockNow, null)
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringB)
+        h.ledger.put("ring-X", "a", clockNow)
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(RingState("a", "ring-X", clockNow, null), h.rawStore.state.first())
+        assertFalse(h.repo.get("b")!!.enabled)
+    }
+
+    @Test fun twoSameMinuteFiresLeaveExactlyOneRingSounding() = runTest {
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), storeWrap = { YieldingRingStateStore(it) })
+        val bSound = RecordingSound { currentTime }
+        var bFinished = 0
+        val sessionB = secondSession(h, bSound, "ring-B") { bFinished++ }
+        h.fire("a", occurrence)
+        sessionB.start("b", occurrence, false, null)
+        runCurrent()
+
+        val sounding = (h.sound.starts.size - h.sound.stops) + (bSound.starts.size - bSound.stops)
+        assertEquals(1, sounding)
+        assertEquals(1, h.finished + bFinished)
+        val winner = if (h.finished == 0) "ring-1" else "ring-B"
+        assertEquals(winner, h.rawStore.state.first()!!.ringId)
+        // The loser (a one-shot) was dismissed, not silently overwritten.
+        val loserAlarm = if (winner == "ring-1") "b" else "a"
+        assertFalse(h.repo.get(loserAlarm)!!.enabled)
     }
 }

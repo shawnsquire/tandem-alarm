@@ -11,7 +11,7 @@ import java.time.Instant
  * Single home for the intents, actions and extras shared by the alarm engine.
  *
  * PendingIntent identity ignores extras, so each intent gets a unique data URI
- * (`tandem://alarm/<id>` for fires, `tandem://snooze` for the single snooze slot).
+ * (`tandem://alarm/<id>` for fires, `tandem://snooze/<ringId>` for snoozes, one per ring).
  */
 object AlarmIntents {
     const val EXTRA_ALARM_ID = "me.shawnsquire.tandem.extra.ALARM_ID"
@@ -34,8 +34,8 @@ object AlarmIntents {
     private fun fireIntent(context: Context, alarmId: String) =
         Intent(ACTION_FIRE, Uri.parse("tandem://alarm/$alarmId"), context, AlarmReceiver::class.java)
 
-    private fun snoozeIntent(context: Context) =
-        Intent(ACTION_SNOOZE_FIRE, Uri.parse("tandem://snooze"), context, AlarmReceiver::class.java)
+    private fun snoozeIntent(context: Context, ringId: String) =
+        Intent(ACTION_SNOOZE_FIRE, Uri.parse("tandem://snooze/${Uri.encode(ringId)}"), context, AlarmReceiver::class.java)
 
     fun firePendingIntent(context: Context, alarmId: String, occurrence: Instant): PendingIntent =
         PendingIntent.getBroadcast(
@@ -55,11 +55,12 @@ object AlarmIntents {
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
         )
 
+    /** Snooze fire for [ringId]; the fixed request code is fine because the data URI is per ring. */
     fun snoozePendingIntent(context: Context, alarmId: String, ringId: String, at: Instant): PendingIntent =
         PendingIntent.getBroadcast(
             context,
             SNOOZE_REQUEST_CODE,
-            snoozeIntent(context)
+            snoozeIntent(context, ringId)
                 .putExtra(EXTRA_ALARM_ID, alarmId)
                 .putExtra(EXTRA_RING_ID, ringId)
                 .putExtra(EXTRA_IS_SNOOZE, true)
@@ -67,11 +68,11 @@ object AlarmIntents {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-    fun existingSnoozePendingIntent(context: Context): PendingIntent? =
+    fun existingSnoozePendingIntent(context: Context, ringId: String): PendingIntent? =
         PendingIntent.getBroadcast(
             context,
             SNOOZE_REQUEST_CODE,
-            snoozeIntent(context),
+            snoozeIntent(context, ringId),
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
         )
 

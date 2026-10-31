@@ -19,9 +19,9 @@ interface RingingNotifier {
     /** Update the foreground notification: label plus Stop and Snooze actions. */
     fun showRinging(alarm: Alarm?, ringId: String)
 
-    /** Non-foreground notification with a Dismiss action. */
+    /** Non-foreground notification with a Dismiss action, one per ring so parked snoozes coexist. */
     fun showSnoozed(ringId: String, until: Instant)
-    fun cancelSnoozed()
+    fun cancelSnoozed(ringId: String)
 }
 
 /**

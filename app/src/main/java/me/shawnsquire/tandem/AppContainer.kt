@@ -66,13 +66,17 @@ class AppContainer(private val context: Context) {
     val settingsRepository: SettingsRepository = SettingsRepositoryImpl(context.settingsDataStore)
 
     // U3: swap to real
+    private val snoozeLedger: me.shawnsquire.tandem.alarm.SnoozeLedger =
+        me.shawnsquire.tandem.alarm.SharedPrefsSnoozeLedger(context)
     private val alarmSchedulerImpl =
-        me.shawnsquire.tandem.alarm.AlarmSchedulerImpl(context, alarmRepository, ringStateStore)
+        me.shawnsquire.tandem.alarm.AlarmSchedulerImpl(context, alarmRepository, ringStateStore, snoozeLedger)
     val alarmScheduler: AlarmScheduler = alarmSchedulerImpl
-    val ringingController: RingingController = me.shawnsquire.tandem.alarm.RingingControllerImpl(
+    private val ringingControllerImpl = me.shawnsquire.tandem.alarm.RingingControllerImpl(
         alarmRepository, ringStateStore, settingsRepository, alarmScheduler, alarmSchedulerImpl,
-        me.shawnsquire.tandem.alarm.AndroidRingingNotifier(context),
+        me.shawnsquire.tandem.alarm.AndroidRingingNotifier(context), snoozeLedger,
     )
+    val ringingController: RingingController = ringingControllerImpl
+    val ringSlot: me.shawnsquire.tandem.alarm.RingSlot = ringingControllerImpl
 
     // U4: swap to real
     val syncScope = CoroutineScope(

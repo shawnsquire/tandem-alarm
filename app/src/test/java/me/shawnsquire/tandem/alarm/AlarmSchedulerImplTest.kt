@@ -50,7 +50,12 @@ class AlarmSchedulerImplTest {
         repo: FakeAlarmRepository,
         ring: FakeRingStateStore = FakeRingStateStore(),
         next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
-    ) = AlarmSchedulerImpl(context, repo, ring, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher())
+        ledger: SnoozeLedger = InMemorySnoozeLedger(),
+    ) = AlarmSchedulerImpl(context, repo, ring, ledger, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher())
+
+    private fun ledgerOf(vararg entries: SnoozeEntry) = InMemorySnoozeLedger().apply {
+        entries.forEach { put(it.ringId, it.alarmId, it.until) }
+    }
 
     private val scheduled get() = shadowOf(alarmManager).scheduledAlarms
 
@@ -136,11 +141,10 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
-    fun futureSnoozeIsScheduledAndClearedWhenRingStateCleared() = runTest {
+    fun futureLedgerSnoozeIsScheduledAndCancelSnoozeClearsIt() = runTest {
         val repo = FakeAlarmRepository(emptyList())
         val until = at(2, 5, 10)
-        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 5, 0), until))
-        val s = scheduler(repo, ring)
+        val s = scheduler(repo, ledger = ledgerOf(SnoozeEntry("ring-1", "a", until)))
         s.rescheduleAll()
 
         assertEquals(1, scheduled.size)
@@ -151,41 +155,43 @@ class AlarmSchedulerImplTest {
         assertEquals("ring-1", intent.getStringExtra(AlarmIntents.EXTRA_RING_ID))
         assertTrue(intent.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false))
         assertNotNull(snooze.showIntent)
+        assertEquals("tandem://snooze/ring-1", intent.data.toString())
 
-        ring.set(null)
-        s.rescheduleAll()
+        s.cancelSnooze("ring-1")
         assertTrue(scheduled.isEmpty())
-        assertNull(AlarmIntents.existingSnoozePendingIntent(context))
+        assertNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
     }
 
     @Test
     fun snoozeDueWhilePhoneWasOffIsRearmedShortlyAfterNowOnBoot() = runTest {
-        // snoozedUntil 5 minutes ago: inside the 10 minute window.
-        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 50), at(2, 4, 55)))
-        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll(rearmOverdueSnooze = true)
+        // Snooze came due 5 minutes ago: inside the 10 minute window.
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 4, 55)))
+        scheduler(FakeAlarmRepository(emptyList()), ledger = ledger).rescheduleAll(rearmOverdueSnooze = true)
         val snooze = scheduled.single()
         assertEquals(now.plusSeconds(5).toEpochMilli(), snooze.triggerAtMs)
         val intent = shadowOf(snooze.operation!!).savedIntent
         assertEquals("ring-1", intent.getStringExtra(AlarmIntents.EXTRA_RING_ID))
         assertTrue(intent.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false))
+        assertNotNull(ledger.get("ring-1"))
     }
 
     @Test
     fun overdueSnoozeIsNotRearmedByPlainReschedule() = runTest {
-        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 50), at(2, 4, 55)))
-        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll()
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 4, 55)))
+        scheduler(FakeAlarmRepository(emptyList()), ledger = ledger).rescheduleAll()
         assertTrue(scheduled.isEmpty())
+        assertNotNull(ledger.get("ring-1")) // left alone, not dropped
     }
 
     @Test
     fun overdueSnoozeIsLeftUntouchedByPlainReschedule() = runTest {
-        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 50), at(2, 4, 55)))
-        val s = scheduler(FakeAlarmRepository(emptyList()), ring)
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 4, 55)))
+        val s = scheduler(FakeAlarmRepository(emptyList()), ledger = ledger)
         s.armSnooze("a", "ring-1", at(2, 4, 55))
         val before = scheduled.single().triggerAtMs
         s.rescheduleAll()
         assertEquals(before, scheduled.single().triggerAtMs)
-        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context))
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
     }
 
     @Test
@@ -198,28 +204,41 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
-    fun snoozeWellPastIsNotScheduled() = runTest {
-        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 0), at(2, 4, 10)))
-        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll(rearmOverdueSnooze = true)
+    fun snoozeWellPastIsCancelledAndDropped() = runTest {
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 4, 10)))
+        val s = scheduler(FakeAlarmRepository(emptyList()), ledger = ledger)
+        s.armSnooze("a", "ring-1", at(2, 4, 10))
+        s.rescheduleAll(rearmOverdueSnooze = true)
         assertTrue(scheduled.isEmpty())
-        assertNull(AlarmIntents.existingSnoozePendingIntent(context))
+        assertNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
+        assertNull(ledger.get("ring-1"))
+    }
+
+    @Test
+    fun snoozeWellPastIsDroppedByPlainRescheduleToo() = runTest {
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 4, 49)))
+        val s = scheduler(FakeAlarmRepository(emptyList()), ledger = ledger)
+        s.armSnooze("a", "ring-1", at(2, 4, 49))
+        s.rescheduleAll()
+        assertNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
+        assertNull(ledger.get("ring-1"))
     }
 
     @Test
     fun failingAlarmDoesNotBlockOthersOrSnooze() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
-        val ring = FakeRingStateStore(RingState("z", "ring-1", at(2, 4, 59), at(2, 5, 10)))
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "z", at(2, 5, 10)))
         val throwingForA: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
             if (alarm.id == "a") error("bad alarm") else nextOccurrence(alarm, n, z)
         }
-        scheduler(repo, ring, throwingForA).rescheduleAll()
+        scheduler(repo, next = throwingForA, ledger = ledger).rescheduleAll()
 
         assertEquals(
             setOf(at(2, 7, 0).toEpochMilli(), at(2, 5, 10).toEpochMilli()),
             scheduled.map { it.triggerAtMs }.toSet(),
         )
         assertNotNull(AlarmIntents.existingFirePendingIntent(context, "b"))
-        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context))
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
     }
 
     @Test
@@ -273,8 +292,7 @@ class AlarmSchedulerImplTest {
     @Test
     fun snoozeAndAlarmWithSameIdCoexist() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30)))
-        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 5, 0), at(2, 5, 10)))
-        scheduler(repo, ring).rescheduleAll()
+        scheduler(repo, ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 5, 10)))).rescheduleAll()
 
         assertEquals(2, scheduled.size)
         assertEquals(
@@ -282,6 +300,86 @@ class AlarmSchedulerImplTest {
             scheduled.map { it.triggerAtMs }.toSet(),
         )
         assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
-        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context))
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
+    }
+
+    // ---- D1: one snooze PendingIntent per ringId, armed from the ledger ----
+
+    @Test
+    fun snoozesForTwoRingIdsCoexist() = runTest {
+        val s = scheduler(FakeAlarmRepository(emptyList()))
+        s.armSnooze("a", "ring-A", at(2, 5, 10))
+        s.armSnooze("b", "ring-B", at(2, 5, 20))
+        assertEquals(setOf(at(2, 5, 10).toEpochMilli(), at(2, 5, 20).toEpochMilli()), scheduled.map { it.triggerAtMs }.toSet())
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-A"))
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-B"))
+
+        s.cancelSnooze("ring-A")
+        assertNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-A"))
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-B"))
+        assertEquals("ring-B", shadowOf(scheduled.single().operation!!).savedIntent.getStringExtra(AlarmIntents.EXTRA_RING_ID))
+    }
+
+    @Test
+    fun everyLedgerEntryIsArmed() = runTest {
+        val ledger = ledgerOf(SnoozeEntry("ring-A", "a", at(2, 5, 10)), SnoozeEntry("ring-B", "b", at(2, 5, 20)))
+        scheduler(FakeAlarmRepository(emptyList()), ledger = ledger).rescheduleAll()
+        assertEquals(setOf(at(2, 5, 10).toEpochMilli(), at(2, 5, 20).toEpochMilli()), scheduled.map { it.triggerAtMs }.toSet())
+    }
+
+    @Test
+    fun ringStateIsNoLongerTheSnoozeSource() = runTest {
+        // A snoozed RingState with no ledger entry arms nothing; a ledger entry arms regardless of RingState.
+        val ring = FakeRingStateStore(RingState("b", "ring-B", at(2, 4, 59), null))
+        val ledger = ledgerOf(SnoozeEntry("ring-A", "a", at(2, 5, 10)))
+        scheduler(FakeAlarmRepository(emptyList()), ring, ledger = ledger).rescheduleAll()
+        assertEquals("ring-A", shadowOf(scheduled.single().operation!!).savedIntent.getStringExtra(AlarmIntents.EXTRA_RING_ID))
+    }
+
+    @Test
+    fun managerScenario_parkedSnoozeStaysArmedThroughSupersedingRingsReschedule() = runTest {
+        // A snoozed until 5:10 and parked; B (a one-shot) now owns the slot and is stopped, which reschedules.
+        val until = at(2, 5, 10)
+        val ledger = ledgerOf(SnoozeEntry("ring-A", "a", until))
+        val ring = FakeRingStateStore(RingState("b", "ring-B", at(2, 5, 5), null))
+        val s = scheduler(FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0))), ring, ledger = ledger)
+        s.armSnooze("a", "ring-A", until)
+        ring.set(null)
+        s.rescheduleAll()
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-A"))
+        assertTrue(until.toEpochMilli() in scheduled.map { it.triggerAtMs })
+    }
+
+    @Test
+    fun managerScenario_endToEndWithRealController() = runTest {
+        clock = at(2, 5, 0)
+        val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
+        val ring = FakeRingStateStore(RingState("a", "ring-A", at(2, 5, 0), null))
+        val ledger = InMemorySnoozeLedger()
+        val s = scheduler(repo, ring, ledger = ledger)
+        val settings = me.shawnsquire.tandem.fakes.FakeSettingsRepository().also { it.setSnoozeMinutes(10) }
+        val controller = RingingControllerImpl(repo, ring, settings, s, s, RecordingNotifier(), ledger) { clock }
+
+        controller.snooze() // A snoozed until 5:10
+        clock = at(2, 5, 5)
+        controller.claimFire(RingState("b", "ring-B", clock, null)) // B fires at 5:05
+        controller.dismiss("ring-B") // user stops B: real rescheduleAll runs
+
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-A"))
+        assertTrue(at(2, 5, 10).toEpochMilli() in scheduled.map { it.triggerAtMs })
+        assertNotNull(ledger.get("ring-A"))
+        assertTrue(repo.get("a")!!.enabled)
+    }
+
+    @Test
+    fun entryRemovedWhileArmingIsCancelled() = runTest {
+        // all() still lists it, but the controller dropped it before the re-check.
+        val racing = object : SnoozeLedger by InMemorySnoozeLedger() {
+            override fun all() = listOf(SnoozeEntry("ring-1", "a", at(2, 5, 10)))
+            override fun get(ringId: String): SnoozeEntry? = null
+        }
+        scheduler(FakeAlarmRepository(emptyList()), ledger = racing).rescheduleAll()
+        assertNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
+        assertTrue(scheduled.isEmpty())
     }
 }

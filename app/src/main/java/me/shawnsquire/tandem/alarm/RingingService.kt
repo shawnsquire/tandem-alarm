@@ -64,6 +64,7 @@ class RingingService : Service() {
             preFireCheck = container.preFireCheck,
             alarmScheduler = container.alarmScheduler,
             controller = container.ringingController,
+            ringSlot = container.ringSlot,
             sound = sound,
             vibration = vibration,
             notifier = notifier,

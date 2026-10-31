@@ -80,14 +80,15 @@ class AndroidRingingNotifier(private val context: Context) : RingingNotifier {
             .setOngoing(true)
             .addAction(dismiss)
             .build()
-        manager.notify(SNOOZED_NOTIFICATION_ID, notification)
+        manager.notify(ringId, SNOOZED_NOTIFICATION_ID, notification)
     }
 
-    override fun cancelSnoozed() = manager.cancel(SNOOZED_NOTIFICATION_ID)
+    override fun cancelSnoozed(ringId: String) = manager.cancel(ringId, SNOOZED_NOTIFICATION_ID)
 
     companion object {
         const val ALARM_CHANNEL = "alarm"
         const val SNOOZE_CHANNEL = "snooze"
+        /** Snoozed notifications are tagged with their ringId; the (tag, id) pair is per ring. */
         const val SNOOZED_NOTIFICATION_ID = 0x534E5A
     }
 }

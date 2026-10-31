@@ -14,7 +14,6 @@ import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
-import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import java.time.Duration
 import java.time.Instant
@@ -25,13 +24,15 @@ internal val OVERDUE_SNOOZE_WINDOW: Duration = Duration.ofMinutes(10)
 internal val OVERDUE_SNOOZE_DELAY: Duration = Duration.ofSeconds(5)
 
 /**
- * Registers one `setAlarmClock` per enabled alarm (plus the pending snooze) from local state only.
+ * Registers one `setAlarmClock` per enabled alarm, plus one per armed snooze in [ledger], from
+ * local state only.
  * [now] and [zone] are read on every [rescheduleAll] so time and timezone changes are honored.
  */
 class AlarmSchedulerImpl(
     private val context: Context,
     private val alarmRepository: AlarmRepository,
-    private val ringStateStore: RingStateStore,
+    @Suppress("unused") private val ringStateStore: RingStateStore,
+    private val ledger: SnoozeLedger,
     private val now: () -> Instant = Instant::now,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
@@ -55,23 +56,34 @@ class AlarmSchedulerImpl(
         withContext(io) { rescheduleLocked(rearmOverdueSnooze) }
     }
 
-    /** Arms the snooze alarm directly; throws on failure so the caller can keep ringing. */
+    /** Arms the snooze alarm for [ringId] directly; throws on failure so the caller can keep ringing. */
     override fun armSnooze(alarmId: String, ringId: String, at: Instant) {
         setSnoozeAlarm(alarmId, ringId, at)
+    }
+
+    override fun cancelSnooze(ringId: String) {
+        cancel(AlarmIntents.existingSnoozePendingIntent(context, ringId))
     }
 
     private suspend fun rescheduleLocked(rearmOverdueSnooze: Boolean) {
         val nowInstant = now()
         val zoneId = zone()
         val alarms = alarmRepository.alarms.first()
-        val ring = ringStateStore.state.first()
 
-        // Snooze first: one bad alarm must never cost the user a pending snooze (I1).
-        try {
-            armSnoozeFromState(ring, nowInstant, rearmOverdueSnooze)
+        // Snoozes first: one bad alarm must never cost the user a pending snooze (I1).
+        val snoozes = try {
+            ledger.all()
         } catch (e: Throwable) {
-            if (e is CancellationException) throw e
-            Log.e(TAG, "snooze scheduling failed", e)
+            Log.e(TAG, "snooze ledger read failed", e)
+            emptyList()
+        }
+        for (entry in snoozes) {
+            try {
+                armSnoozeFromLedger(entry, nowInstant, rearmOverdueSnooze)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.e(TAG, "snooze scheduling failed for ring ${entry.ringId}", e)
+            }
         }
 
         val previous = prefs.getStringSet(KEY_SCHEDULED_IDS, emptySet()).orEmpty().toSet()
@@ -118,22 +130,30 @@ class AlarmSchedulerImpl(
         prefs.edit().putStringSet(KEY_SCHEDULED_IDS, scheduledNow).commit()
     }
 
-    private fun armSnoozeFromState(ring: RingState?, nowInstant: Instant, rearmOverdue: Boolean) {
-        val until = ring?.snoozedUntil
-        val overdue = until != null && !until.isAfter(nowInstant) && until.isAfter(nowInstant.minus(OVERDUE_SNOOZE_WINDOW))
-        if (overdue && !rearmOverdue) return // leave whatever is registered untouched
+    /**
+     * Only ledger entries are touched: a snooze armed but not yet written to the ledger (the
+     * controller arms first) must survive a concurrent reschedule.
+     */
+    private fun armSnoozeFromLedger(entry: SnoozeEntry, nowInstant: Instant, rearmOverdue: Boolean) {
+        val until = entry.until
         val snoozeAt = when {
-            until == null -> null
             until.isAfter(nowInstant) -> until
-            // Came due while the phone was off: bring the ring back shortly rather than dropping it.
-            overdue -> nowInstant.plus(OVERDUE_SNOOZE_DELAY)
-            else -> null
+            until.isAfter(nowInstant.minus(OVERDUE_SNOOZE_WINDOW)) -> {
+                if (!rearmOverdue) return // leave whatever is registered untouched
+                // Came due while the phone was off: bring the ring back shortly rather than dropping it.
+                nowInstant.plus(OVERDUE_SNOOZE_DELAY)
+            }
+            else -> {
+                // Long past: it can no longer ring.
+                cancel(AlarmIntents.existingSnoozePendingIntent(context, entry.ringId))
+                ledger.remove(entry.ringId)
+                return
+            }
         }
-        if (ring != null && snoozeAt != null) {
-            setSnoozeAlarm(ring.alarmId, ring.ringId, snoozeAt)
-        } else {
-            cancel(AlarmIntents.existingSnoozePendingIntent(context))
-        }
+        setSnoozeAlarm(entry.alarmId, entry.ringId, snoozeAt)
+        // Dismissed while we were arming it: the controller removes the entry before cancelling,
+        // so re-checking here closes the race in every interleaving.
+        if (ledger.get(entry.ringId) == null) cancel(AlarmIntents.existingSnoozePendingIntent(context, entry.ringId))
     }
 
     private fun setSnoozeAlarm(alarmId: String, ringId: String, at: Instant) {

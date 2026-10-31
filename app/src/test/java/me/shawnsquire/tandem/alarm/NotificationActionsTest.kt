@@ -75,13 +75,39 @@ class NotificationActionsTest {
         val notifier = AndroidRingingNotifier(context)
 
         notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"))
-        val posted = shadowOf(manager).getNotification(AndroidRingingNotifier.SNOOZED_NOTIFICATION_ID)
+        val posted = snoozed("r1")
         assertNotNull(posted)
-        assertEquals(1, posted.actions.size)
+        assertEquals(1, posted!!.actions.size)
         assertEquals("Dismiss", posted.actions[0].title.toString())
 
-        notifier.cancelSnoozed()
-        assertNull(shadowOf(manager).getNotification(AndroidRingingNotifier.SNOOZED_NOTIFICATION_ID))
+        notifier.cancelSnoozed("r1")
+        assertNull(snoozed("r1"))
+    }
+
+    private fun snoozed(ringId: String): Notification? = manager.activeNotifications
+        .firstOrNull { it.tag == ringId && it.id == AndroidRingingNotifier.SNOOZED_NOTIFICATION_ID }
+        ?.notification
+
+    @Test
+    fun snoozedNotificationsForTwoRingsCoexist() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"))
+        notifier.showSnoozed("r2", Instant.parse("2026-01-01T07:40:00Z"))
+        assertNotNull(snoozed("r1"))
+        assertNotNull(snoozed("r2"))
+
+        notifier.cancelSnoozed("r1")
+        assertNull(snoozed("r1"))
+        assertNotNull(snoozed("r2"))
+    }
+
+    @Test
+    fun snoozePendingIntentsAreDistinctPerRing() {
+        val at = Instant.parse("2026-01-01T07:30:00Z")
+        val a = AlarmIntents.snoozePendingIntent(context, "x", "ring-A", at)
+        val b = AlarmIntents.snoozePendingIntent(context, "x", "ring-B", at)
+        assertTrue(a != b)
+        assertEquals(a, AlarmIntents.existingSnoozePendingIntent(context, "ring-A"))
     }
 
     @Test
