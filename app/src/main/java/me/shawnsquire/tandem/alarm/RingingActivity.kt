@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -83,10 +84,22 @@ class RingingActivity : ComponentActivity() {
                 val current = ring
                 val alarm by produceState<Alarm?>(null, current?.ringId) {
                     value = null
-                    value = current?.let { container.alarmRepository.get(it.alarmId) }
+                    value = try {
+                        current?.let { container.alarmRepository.get(it.alarmId) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
                 val defaultPath by produceState<String?>(null) {
-                    container.settingsRepository.defaultWallpaperPath.collect { value = it }
+                    try {
+                        container.settingsRepository.defaultWallpaperPath.collect { value = it }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        value = null
+                    }
                 }
                 RingingScreen(
                     label = alarm?.label.orEmpty(),
@@ -193,5 +206,7 @@ private fun decodeSampled(path: String, reqW: Int, reqH: Int): Bitmap? = try {
         BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 } catch (e: Exception) {
+    null
+} catch (e: OutOfMemoryError) {
     null
 }
