@@ -101,9 +101,12 @@ class SwitchableAlarmRepository(
         write(DeferredWrite.SetSkip(id, occurrence), { it.copy(skippedOccurrenceAt = occurrence) }) { it.setSkip(id, occurrence) }
 
     /**
-     * Non-suspending and idempotent. Calls made from now on wait for the drain; a failing op stops
-     * it and stays queued (with the rest) for the next process's attach. Forwarding starts
-     * regardless, even if [scope] is already dead, so no caller waits forever.
+     * Non-suspending and idempotent. Calls made from now on wait for the drain. A queued op that
+     * fails is retried once, then logged and dropped, and the drain goes on with the rest, so the
+     * queue ends empty. Kept, a failed op would replay at the next process's attach over writes made
+     * since; once unlocked, Room is the single source of truth (MirrorUpdater rewrites the mirror
+     * from it, so the dropped op leaves the mirror too). Forwarding starts regardless, even if
+     * [scope] is already dead, so no caller waits forever.
      */
     fun attach(real: AlarmRepository) {
         val a = synchronized(lock) {
@@ -114,28 +117,42 @@ class SwitchableAlarmRepository(
     }
 
     private suspend fun drain(real: AlarmRepository) {
-        var applied = 0
+        // Complete: once attachment is set, no locked write can append.
+        val writes = deferred.all()
+        // Applied or dropped. Only a cancelled drain leaves any untried, for the next process.
+        var handled = 0
         try {
-            for (w in deferred.all()) {
-                when (w) {
-                    is DeferredWrite.SetEnabled -> real.setEnabled(w.id, w.enabled)
-                    is DeferredWrite.SetSkip -> real.setSkip(w.id, w.occurrence)
-                }
-                applied++
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            log("replaying deferred alarm write failed; the rest stay queued", e)
-        } finally {
-            if (applied > 0) {
+            for (w in writes) {
                 try {
-                    deferred.removeFirst(applied)
+                    replay(real, w)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Throwable) {
-                    log("dropping $applied replayed alarm writes failed", e)
+                    log("replaying deferred alarm write $w failed; retrying once", e)
+                    try {
+                        replay(real, w)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        logError("replaying deferred alarm write $w failed twice; dropped", e)
+                    }
+                }
+                handled++
+            }
+        } finally {
+            if (handled > 0) {
+                try {
+                    deferred.removeFirst(handled)
+                } catch (e: Throwable) {
+                    logError("removing $handled replayed alarm writes failed", e)
                 }
             }
         }
+    }
+
+    private suspend fun replay(real: AlarmRepository, w: DeferredWrite) = when (w) {
+        is DeferredWrite.SetEnabled -> real.setEnabled(w.id, w.enabled)
+        is DeferredWrite.SetSkip -> real.setSkip(w.id, w.occurrence)
     }
 
     private suspend fun write(w: DeferredWrite, change: (Alarm) -> Alarm, forward: suspend (AlarmRepository) -> Unit) {
@@ -234,6 +251,10 @@ class SwitchablePreFireCheck : PreFireCheck {
 // runCatching: Log is unavailable in plain JVM tests.
 private fun log(message: String, e: Throwable) {
     runCatching { Log.w(TAG, message, e) }
+}
+
+private fun logError(message: String, e: Throwable) {
+    runCatching { Log.e(TAG, message, e) }
 }
 
 private const val TAG = "SwitchablePorts"

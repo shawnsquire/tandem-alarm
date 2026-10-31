@@ -25,14 +25,15 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
-/** Records every write; [gate] holds each one until it completes, [failSkip] makes setSkip throw. */
+/** Records every write; [gate] holds each one until it completes, setSkip throws its first [skipFailures] calls. */
 private class RecordingRepository(
     initial: List<Alarm>,
     private val gate: CompletableDeferred<Unit>? = null,
-    private val failSkip: Boolean = false,
+    private var skipFailures: Int = 0,
     private val delegate: FakeAlarmRepository = FakeAlarmRepository(initial),
 ) : AlarmRepository by delegate {
     val ops = mutableListOf<DeferredWrite>()
+    var skipCalls = 0
 
     override suspend fun setEnabled(id: String, enabled: Boolean) {
         gate?.await()
@@ -42,7 +43,11 @@ private class RecordingRepository(
 
     override suspend fun setSkip(id: String, occurrence: Instant?) {
         gate?.await()
-        if (failSkip) throw IllegalStateException("disk full")
+        skipCalls++
+        if (skipFailures > 0) {
+            skipFailures--
+            throw IllegalStateException("disk full")
+        }
         ops += DeferredWrite.SetSkip(id, occurrence)
         delegate.setSkip(id, occurrence)
     }
@@ -205,20 +210,42 @@ class SwitchablePortsTest {
     }
 
     @Test
-    fun failingDrainOpKeepsTheRestQueuedAndForwardingStarts() = runTest {
+    fun drainOpFailingTwiceIsDroppedAndTheRestStillApply() = runTest {
         val repo = repo(mirrorOf(alarm("a"), alarm("b")))
         repo.setEnabled("a", false)
         repo.setSkip("b", now.plusSeconds(60))
         repo.setEnabled("b", false)
-        val real = RecordingRepository(listOf(alarm("a"), alarm("b"), alarm("c")), failSkip = true)
+        val real = RecordingRepository(listOf(alarm("a"), alarm("b"), alarm("c")), skipFailures = Int.MAX_VALUE)
 
         repo.attach(real)
         runCurrent()
 
-        assertEquals(listOf(DeferredWrite.SetEnabled("a", false)), real.ops)
-        assertEquals(listOf(DeferredWrite.SetSkip("b", now.plusSeconds(60)), DeferredWrite.SetEnabled("b", false)), queue.all())
+        // Retried once, then dropped: kept, it would replay over newer writes at the next attach.
+        assertEquals(2, real.skipCalls)
+        assertEquals(listOf(DeferredWrite.SetEnabled("a", false), DeferredWrite.SetEnabled("b", false)), real.ops)
+        assertTrue(queue.all().isEmpty())
         assertTrue(repo.isAttached)
         assertEquals(alarm("c"), repo.get("c"))
+    }
+
+    @Test
+    fun drainOpFailingOnceIsRetriedInOrder() = runTest {
+        val repo = repo(mirrorOf(alarm("a"), alarm("b")))
+        val skip = now.plusSeconds(60)
+        repo.setEnabled("a", false)
+        repo.setSkip("b", skip)
+        repo.setEnabled("b", false)
+        val real = RecordingRepository(listOf(alarm("a"), alarm("b")), skipFailures = 1)
+
+        repo.attach(real)
+        runCurrent()
+
+        assertEquals(2, real.skipCalls)
+        assertEquals(
+            listOf(DeferredWrite.SetEnabled("a", false), DeferredWrite.SetSkip("b", skip), DeferredWrite.SetEnabled("b", false)),
+            real.ops,
+        )
+        assertTrue(queue.all().isEmpty())
     }
 
     @Test
