@@ -96,10 +96,12 @@ class WallpaperImporterTest {
 
     @Test fun importDeletesLeftoverTmpFiles() = runTest {
         wallpapers.mkdirs()
-        val stale = File(wallpapers, "dead.tmp").apply { writeText("x") }
+        val stale = File(wallpapers, "dead.tmp").apply { writeText("x"); setLastModified(System.currentTimeMillis() - 11 * 60_000) }
+        val young = File(wallpapers, "live.tmp").apply { writeText("x") }
         val keep = File(wallpapers, "keep.jpg").apply { writeText("x") }
         importer().import(uri)
         assertFalse(stale.exists())
+        assertTrue(young.exists())
         assertTrue(keep.exists())
     }
 }

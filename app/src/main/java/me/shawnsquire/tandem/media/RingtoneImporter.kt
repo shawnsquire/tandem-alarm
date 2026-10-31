@@ -37,6 +37,7 @@ class RingtoneImporter(
     private val open: (Uri) -> InputStream?,
     private val displayName: (Uri) -> String?,
     private val release: (Uri) -> Unit,
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     constructor(context: Context) : this(
         filesDir = context.filesDir,
@@ -55,8 +56,9 @@ class RingtoneImporter(
     suspend fun import(uri: Uri): String = withContext(Dispatchers.IO) {
         val dir = dir
         check(dir.isDirectory || dir.mkdirs()) { "Cannot create $dir" }
-        // Leftovers from a process death mid-import.
-        dir.listFiles { f -> f.extension == "tmp" }?.forEach { it.delete() }
+        // Leftovers from a process death mid-import; a young one may belong to a concurrent import.
+        val cutoff = now() - STALE_TMP_MS
+        dir.listFiles { f -> f.extension == "tmp" && f.lastModified() < cutoff }?.forEach { it.delete() }
         val id = UUID.randomUUID().toString()
         val name = sanitizeRingtoneName(try { displayName(uri) } catch (e: Exception) { null })
         val tmp = File(dir, "$id.tmp")
@@ -86,6 +88,7 @@ class RingtoneImporter(
 
     companion object {
         internal const val RINGTONES_DIR = "ringtones"
+        private const val STALE_TMP_MS = 10 * 60 * 1000L
 
         /** The display-name part of a copy made by [import], or null if [uri] is not one of ours. */
         internal fun titleOf(filesDir: File, uri: Uri): String? {

@@ -54,8 +54,9 @@ class WallpaperImporter(
     suspend fun import(uri: Uri): String = withContext(Dispatchers.IO) {
         val dir = dir
         check(dir.isDirectory || dir.mkdirs()) { "Cannot create $dir" }
-        // Leftovers from a process death mid-import.
-        dir.listFiles { f -> f.extension == "tmp" }?.forEach { it.delete() }
+        // Leftovers from a process death mid-import; a young one may belong to a concurrent import.
+        val cutoff = System.currentTimeMillis() - 10 * 60 * 1000L
+        dir.listFiles { f -> f.extension == "tmp" && f.lastModified() < cutoff }?.forEach { it.delete() }
         val name = UUID.randomUUID().toString()
         val tmp = File(dir, "$name.tmp")
         val out = File(dir, "$name.jpg")

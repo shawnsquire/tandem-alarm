@@ -86,12 +86,15 @@ class RingtoneImporterTest {
         assertTrue(File(Uri.parse(i.import(uri)).path!!).isFile)
     }
 
-    @Test fun sweepsStaleTmpFiles() = runTest {
+    @Test fun sweepsOnlyStaleTmpFiles() = runTest {
         ringtones.mkdirs()
-        val stale = File(ringtones, "dead.tmp").apply { writeText("x") }
-        val keep = File(ringtones, "keep.mp3").apply { writeText("x") }
-        importer().import(uri)
+        val t0 = 1_000_000_000_000L
+        val stale = File(ringtones, "dead.tmp").apply { writeText("x"); setLastModified(t0 - 11 * 60_000) }
+        val young = File(ringtones, "live.tmp").apply { writeText("x"); setLastModified(t0 - 60_000) }
+        val keep = File(ringtones, "keep.mp3").apply { writeText("x"); setLastModified(t0 - 60 * 60_000) }
+        RingtoneImporter(tmp.root, { ByteArrayInputStream(bytes) }, { "a.mp3" }, {}, { t0 }).import(uri)
         assertFalse(stale.exists())
+        assertTrue(young.exists())
         assertTrue(keep.exists())
     }
 
