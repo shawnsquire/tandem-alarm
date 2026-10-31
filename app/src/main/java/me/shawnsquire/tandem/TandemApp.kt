@@ -6,6 +6,9 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.functions
+import kotlinx.coroutines.launch
+import me.shawnsquire.tandem.sync.SyncWorker
+import me.shawnsquire.tandem.sync.refreshFcmToken
 
 class TandemApp : Application() {
     lateinit var container: AppContainer
@@ -18,6 +21,12 @@ class TandemApp : Application() {
         // Must run before anything touches a Firebase instance.
         if (BuildConfig.USE_EMULATOR) connectToEmulators()
         container = AppContainer(this)
+        container.authManager.start(container.syncScope)
+        container.statePublisher.start()
+        container.syncScope.launch { container.statePublisherImpl.publishNow() }
+        container.ringingCommandListener.start()
+        SyncWorker.schedule(this)
+        refreshFcmToken(container.syncScope, container.fcmTokenStore)
     }
 
     private fun connectToEmulators() {

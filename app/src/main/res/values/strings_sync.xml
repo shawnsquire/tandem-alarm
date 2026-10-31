@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="partner_commands_channel_name">Partner changes</string>
+    <string name="partner_cmd_skipped">%1$s skipped your %2$s alarm</string>
+    <string name="partner_cmd_unskipped">%1$s un-skipped your %2$s alarm</string>
+    <string name="partner_cmd_turned_off">%1$s turned off your %2$s alarm</string>
+    <string name="partner_cmd_turned_on">%1$s turned on your %2$s alarm</string>
+    <string name="partner_cmd_stopped">%1$s stopped your alarm</string>
+</resources>

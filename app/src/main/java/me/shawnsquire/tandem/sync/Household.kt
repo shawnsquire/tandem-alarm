@@ -1,0 +1,71 @@
+package me.shawnsquire.tandem.sync
+
+import com.google.firebase.firestore.DocumentReference
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.shareIn
+
+/** A complete two-member household, from [myUid]'s point of view. */
+data class Household(val id: String, val myUid: String, val partnerUid: String)
+
+/**
+ * Resolves the signed-in user's household. Emits null when signed out, unpaired, waiting for a
+ * partner (one member), or when Firestore denies access (e.g. after unpair); never fails.
+ */
+class HouseholdSource(
+    uid: Flow<String?>,
+    private val db: FirebaseFirestore,
+    scope: CoroutineScope,
+) {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val household: Flow<Household?> = uid
+        .distinctUntilChanged()
+        .flatMapLatest { u ->
+            if (u == null) {
+                flowOf(null)
+            } else {
+                snapshots(db.collection("users").document(u))
+                    .map { it?.getString("householdId")?.takeIf(String::isNotEmpty) }
+                    .distinctUntilChanged()
+                    .flatMapLatest { hid ->
+                        if (hid == null) {
+                            flowOf(null)
+                        } else {
+                            snapshots(db.collection("households").document(hid))
+                                .map { householdFrom(hid, u, it?.get("members")) }
+                        }
+                    }
+            }
+        }
+        .distinctUntilChanged()
+        .shareIn(scope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+
+    /** Snapshots of [ref]; a missing doc is a snapshot with exists() false. Errors emit null and end the flow. */
+    private fun snapshots(ref: DocumentReference): Flow<DocumentSnapshot?> = callbackFlow {
+        val reg = ref.addSnapshotListener { snap, err ->
+            if (err != null || snap == null || !snap.exists()) {
+                trySend(null)
+            } else {
+                trySend(snap)
+            }
+            if (err != null) close()
+        }
+        awaitClose { reg.remove() }
+    }
+}
+
+internal fun householdFrom(id: String, myUid: String, members: Any?): Household? {
+    val list = (members as? List<*>)?.filterIsInstance<String>() ?: return null
+    if (list.size != 2 || myUid !in list || list[0] == list[1]) return null
+    return Household(id, myUid, list.first { it != myUid })
+}
