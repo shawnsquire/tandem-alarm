@@ -1,7 +1,63 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function householdMembers(hid) {
+      return get(/databases/$(database)/documents/households/$(hid)).data.members;
+    }
+
+    function isMember(hid) {
+      return isSignedIn() && request.auth.uid in householdMembers(hid);
+    }
+
+    // Written only by Cloud Functions (Admin SDK bypasses these rules).
+    match /users/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /households/{hid} {
+      allow read: if isMember(hid);
+      allow write: if false;
+
+      // Each device doc is written only by its own user.
+      match /devices/{uid} {
+        allow read: if isMember(hid);
+        allow create, update: if isSignedIn() && request.auth.uid == uid && isMember(hid);
+        allow delete: if false;
+      }
+
+      match /commands/{cid} {
+        // No field conditions on read, so list queries pass (membership only).
+        allow read: if isMember(hid);
+
+        // The sender must be a member, and `to` must be the other member.
+        allow create: if isMember(hid)
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.to != request.auth.uid
+          && request.resource.data.to in householdMembers(hid)
+          && request.resource.data.status == 'pending'
+          && request.resource.data.type in
+               ['SKIP_NEXT', 'UNSKIP', 'DISABLE', 'ENABLE', 'STOP_RINGING']
+          && request.resource.data.expiresAt > request.time;
+
+        // Only the recipient may resolve a pending command, touching nothing else.
+        allow update: if isMember(hid)
+          && request.auth.uid == resource.data.to
+          && resource.data.status == 'pending'
+          && request.resource.data.status in ['applied', 'rejected']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reason']);
+
+        allow delete: if false;
+      }
+    }
+
+    // Server only: pair codes are created and redeemed by Cloud Functions.
+    match /pairCodes/{code} {
       allow read, write: if false;
     }
   }
