@@ -2,12 +2,12 @@ package me.shawnsquire.tandem.ui.alarms
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
@@ -60,12 +60,6 @@ internal fun buildAlarmsState(alarms: List<Alarm>, now: Instant, zone: ZoneId): 
     return AlarmsUiState(loaded = true, rows = rows, zone = zone)
 }
 
-/** One-off events for the screen. */
-sealed interface AlarmsEvent {
-    /** Show "Alarm deleted · Undo"; report the outcome via [AlarmsViewModel.undoDelete] or [AlarmsViewModel.onDeleteSnackbarDismissed]. */
-    data class AlarmDeleted(val alarmId: String) : AlarmsEvent
-}
-
 class AlarmsViewModel(
     private val repository: AlarmRepository,
     private val edits: AlarmEdits,
@@ -79,11 +73,16 @@ class AlarmsViewModel(
         combine(repository.alarms, ticker) { alarms, _ -> buildAlarmsState(alarms, clock.instant(), clock.zone) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlarmsUiState(zone = clock.zone))
 
-    private val eventChannel = Channel<AlarmsEvent>(Channel.BUFFERED)
-    val events: Flow<AlarmsEvent> = eventChannel.receiveAsFlow()
-
     /** The deleted alarm whose snackbar is showing; its media is purged only if undo never happens. */
     private var pendingDelete: Alarm? = null
+
+    private val _pendingDeleteId = MutableStateFlow<String?>(null)
+
+    /**
+     * The id whose "Alarm deleted · Undo" snackbar should be showing. State, not an event, so the screen
+     * re-shows it after rotation or navigation; report the outcome via [undoDelete] or [onDeleteSnackbarDismissed].
+     */
+    val pendingDeleteId: StateFlow<String?> = _pendingDeleteId.asStateFlow()
 
     fun setEnabled(id: String, enabled: Boolean) {
         viewModelScope.launch { edits.setEnabled(id, enabled) }
@@ -114,7 +113,7 @@ class AlarmsViewModel(
             pendingDelete?.let(onAlarmPurged)
             pendingDelete = alarm
             edits.delete(id)
-            eventChannel.send(AlarmsEvent.AlarmDeleted(id))
+            _pendingDeleteId.value = id
         }
     }
 
@@ -122,6 +121,7 @@ class AlarmsViewModel(
     fun undoDelete(alarmId: String) {
         val alarm = pendingDelete?.takeIf { it.id == alarmId } ?: return
         pendingDelete = null
+        _pendingDeleteId.value = null
         viewModelScope.launch { edits.upsert(alarm) }
     }
 
@@ -129,6 +129,7 @@ class AlarmsViewModel(
     fun onDeleteSnackbarDismissed(alarmId: String) {
         val alarm = pendingDelete?.takeIf { it.id == alarmId } ?: return
         pendingDelete = null
+        _pendingDeleteId.value = null
         onAlarmPurged(alarm)
     }
 

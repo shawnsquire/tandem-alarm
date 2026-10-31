@@ -1,6 +1,9 @@
 package me.shawnsquire.tandem.ui.alarms
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
@@ -9,6 +12,7 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 
@@ -49,5 +53,21 @@ class AlarmEditsTest {
         edits.setSkip(a.id, null)
         assertNull(repo.alarms.first().first { it.id == a.id }.skippedOccurrenceAt)
         assertEquals(2, scheduler.rescheduleCount)
+    }
+
+    @Test fun cancelledCallerStillReschedulesAfterWrite() = runTest(UnconfinedTestDispatcher()) {
+        val gate = CompletableDeferred<Unit>()
+        var rescheduled = false
+        val repo = object : AlarmRepository by FakeAlarmRepository() {
+            override suspend fun upsert(alarm: Alarm) { gate.await() }
+        }
+        val scheduler = object : me.shawnsquire.tandem.alarm.AlarmScheduler {
+            override suspend fun rescheduleAll() { rescheduled = true }
+        }
+        val job = launch { AlarmEdits(repo, scheduler).upsert(a) }
+        job.cancel() // caller goes away while the write is in flight
+        gate.complete(Unit)
+        job.join()
+        assertTrue("reschedule must still run after the write committed", rescheduled)
     }
 }

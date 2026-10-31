@@ -134,11 +134,13 @@ class AlarmsViewModelTest {
     @Test fun deleteThenUndoRestoresAndDoesNotPurge() = runTest {
         val w = alarm("w")
         val e = env(w)
-        e.vm.events.test {
+        e.vm.pendingDeleteId.test {
+            assertNull(awaitItem())
             e.vm.delete("w")
-            assertEquals(AlarmsEvent.AlarmDeleted("w"), awaitItem())
+            assertEquals("w", awaitItem())
             assertNull(e.repo.get("w"))
             e.vm.undoDelete("w")
+            assertNull(awaitItem())
             assertEquals(w, e.repo.get("w"))
             e.vm.onDeleteSnackbarDismissed("w") // dismissal after undo must not purge
             assertTrue(e.purged.isEmpty())
@@ -170,5 +172,27 @@ class AlarmsViewModelTest {
         assertEquals(1, e.purged.size)
         e.vm.onDeleteSnackbarDismissed("b")
         assertEquals(listOf("a", "b"), e.purged.map { it.id })
+    }
+
+    @Test fun pendingDeleteSurvivesUntilReportedAndClearsOnDismiss() = runTest {
+        val e = env(alarm("w"))
+        assertNull(e.vm.pendingDeleteId.value)
+        e.vm.delete("w")
+        // A screen that left composition never reports; the state must still be there for the next one.
+        assertEquals("w", e.vm.pendingDeleteId.value)
+        assertTrue(e.purged.isEmpty())
+        e.vm.onDeleteSnackbarDismissed("w")
+        assertNull(e.vm.pendingDeleteId.value)
+        assertEquals(1, e.purged.size)
+    }
+
+    @Test fun secondDeleteMovesPendingIdAndStaleUndoKeepsIt() = runTest {
+        val e = env(alarm("a"), alarm("b"))
+        e.vm.delete("a")
+        e.vm.delete("b")
+        assertEquals("b", e.vm.pendingDeleteId.value)
+        e.vm.undoDelete("a")
+        e.vm.onDeleteSnackbarDismissed("a")
+        assertEquals("b", e.vm.pendingDeleteId.value)
     }
 }

@@ -1,5 +1,7 @@
 package me.shawnsquire.tandem.ui.alarms
 
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.alarm.AlarmScheduler
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
@@ -10,23 +12,28 @@ class AlarmEdits(
     private val repository: AlarmRepository,
     private val scheduler: AlarmScheduler,
 ) {
-    suspend fun upsert(alarm: Alarm) {
-        repository.upsert(alarm)
+    /**
+     * The write and its reschedule are one unit: a caller cancelled in between must not leave an alarm
+     * stored but never armed (I1), so both run NonCancellable.
+     */
+    private suspend fun write(block: suspend () -> Unit) = withContext(NonCancellable) {
+        block()
         scheduler.rescheduleAll()
+    }
+
+    suspend fun upsert(alarm: Alarm) {
+        write { repository.upsert(alarm) }
     }
 
     suspend fun delete(id: String) {
-        repository.delete(id)
-        scheduler.rescheduleAll()
+        write { repository.delete(id) }
     }
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
-        repository.setEnabled(id, enabled)
-        scheduler.rescheduleAll()
+        write { repository.setEnabled(id, enabled) }
     }
 
     suspend fun setSkip(id: String, occurrence: Instant?) {
-        repository.setSkip(id, occurrence)
-        scheduler.rescheduleAll()
+        write { repository.setSkip(id, occurrence) }
     }
 }

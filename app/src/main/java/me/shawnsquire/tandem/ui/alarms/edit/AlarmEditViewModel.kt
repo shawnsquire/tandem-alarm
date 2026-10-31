@@ -3,6 +3,9 @@ package me.shawnsquire.tandem.ui.alarms.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,14 +53,18 @@ class AlarmEditViewModel(
     /** The id of the alarm being edited; null for a new one. */
     val existingId: String? get() = alarmId
 
-    private var original: Alarm? = null
-
     /** Files imported during this session and not yet saved. */
     private var sessionRingtone: String? = null
     private var sessionWallpaper: String? = null
 
     /** Set when the session ended (saved, cancelled, discarded); late imports are cleaned up. */
     private var finished = false
+
+    /** True from [save] until its write settles; the session's files must not be touched meanwhile. */
+    private var saving = false
+
+    /** A new alarm keeps one id across failed saves so a retry cannot create a duplicate. */
+    private var newAlarmId: String? = null
 
     init {
         viewModelScope.launch {
@@ -68,7 +75,6 @@ class AlarmEditViewModel(
                 if (alarm == null) {
                     _state.update { it.copy(loaded = true, closed = true) }
                 } else {
-                    original = alarm
                     _state.update {
                         it.copy(
                             loaded = true, isNew = false, hour = alarm.hour, minute = alarm.minute,
@@ -94,13 +100,14 @@ class AlarmEditViewModel(
 
     /** A URI returned by the system sound picker; stored exactly as returned. */
     fun onSystemRingtonePicked(uri: String) {
+        if (saving || finished) return
         replaceRingtone(uri)
         updateTitle(uri)
     }
 
     /** A document URI from the file picker; copied into app storage right away. */
     fun onRingtoneFilePicked(documentUri: String) {
-        if (_state.value.busy || finished) return
+        if (_state.value.busy || saving || finished) return
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }
             val imported = try {
@@ -122,7 +129,7 @@ class AlarmEditViewModel(
     }
 
     fun onWallpaperPicked(contentUri: String) {
-        if (_state.value.busy || finished) return
+        if (_state.value.busy || saving || finished) return
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }
             val path = try {
@@ -144,6 +151,7 @@ class AlarmEditViewModel(
     }
 
     fun removeWallpaper() {
+        if (saving || finished) return
         // A file imported this session was never saved, so drop it now; the original goes on save.
         sessionWallpaper?.let(deleteWallpaperFile)
         sessionWallpaper = null
@@ -165,38 +173,61 @@ class AlarmEditViewModel(
 
     fun save() {
         val s = _state.value
-        if (!s.loaded || s.busy || finished) return
-        viewModelScope.launch {
-            _state.update { it.copy(busy = true, error = null) }
-            val orig = original
-            val unchanged = orig != null && orig.hour == s.hour && orig.minute == s.minute && orig.days == s.days
-            val alarm = Alarm(
-                id = orig?.id ?: alarmId ?: newId(),
-                label = s.label.trim(),
-                hour = s.hour,
-                minute = s.minute,
-                days = s.days,
-                enabled = true,
-                skippedOccurrenceAt = if (unchanged) orig?.skippedOccurrenceAt else null,
-                ringtoneUri = s.ringtoneUri,
-                wallpaperPath = s.wallpaperPath,
-            )
+        if (!s.loaded || s.busy || saving || finished) return
+        saving = true
+        // ATOMIC: even if the scope is cancelled before the body starts, the catch below settles the session.
+        viewModelScope.launch(start = CoroutineStart.ATOMIC) {
+            var current: Alarm? = null
+            var alarm: Alarm? = null
             try {
+                _state.update { it.copy(busy = true, error = null) }
+                // Re-read the row: a partner skip may have been applied while the editor was open.
+                current = alarmId?.let { repository.get(it) }
+                val unchanged = current != null && current.hour == s.hour && current.minute == s.minute &&
+                    current.days == s.days
+                alarm = Alarm(
+                    id = alarmId ?: newAlarmId ?: newId().also { newAlarmId = it },
+                    label = s.label.trim(),
+                    hour = s.hour,
+                    minute = s.minute,
+                    days = s.days,
+                    enabled = true,
+                    skippedOccurrenceAt = if (unchanged) current?.skippedOccurrenceAt else null,
+                    ringtoneUri = s.ringtoneUri,
+                    wallpaperPath = s.wallpaperPath,
+                )
                 edits.upsert(alarm)
             } catch (e: CancellationException) {
+                // The upsert is NonCancellable, so it may have committed even though we were cancelled.
+                withContext(NonCancellable) { settleInterrupted(alarm, current) }
                 throw e
             } catch (_: Exception) {
+                saving = false
                 _state.update { it.copy(busy = false, error = EditError.Save) }
                 return@launch
             }
-            finished = true
-            orig?.ringtoneUri?.takeIf { it != alarm.ringtoneUri }?.let(deleteRingtoneFile)
-            orig?.wallpaperPath?.takeIf { it != alarm.wallpaperPath }?.let(deleteWallpaperFile)
+            saving = false
+            finishSaved(alarm, current)
             _state.update { it.copy(busy = false, closed = true) }
         }
     }
 
+    /** The write committed: replaced files of the stored row are now unreferenced. */
+    private fun finishSaved(alarm: Alarm, previous: Alarm?) {
+        finished = true
+        previous?.ringtoneUri?.takeIf { it != alarm.ringtoneUri }?.let(deleteRingtoneFile)
+        previous?.wallpaperPath?.takeIf { it != alarm.wallpaperPath }?.let(deleteWallpaperFile)
+    }
+
+    private suspend fun settleInterrupted(alarm: Alarm?, previous: Alarm?) {
+        val committed = alarm != null &&
+            runCatching { repository.get(alarm.id) }.getOrNull() == alarm
+        saving = false
+        if (committed) finishSaved(alarm!!, previous) else dropSessionFiles()
+    }
+
     fun cancel() {
+        if (saving) return
         discardSession()
         _state.update { it.copy(closed = true) }
     }
@@ -208,7 +239,11 @@ class AlarmEditViewModel(
 
     /** Drops files imported this session without saving; the caller handles navigation. */
     fun discardSession() {
-        if (finished) return
+        if (finished || saving) return
+        dropSessionFiles()
+    }
+
+    private fun dropSessionFiles() {
         finished = true
         sessionRingtone?.let(deleteRingtoneFile)
         sessionWallpaper?.let(deleteWallpaperFile)

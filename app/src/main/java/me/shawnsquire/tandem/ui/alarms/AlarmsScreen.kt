@@ -52,7 +52,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.flow.collectLatest
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
 import me.shawnsquire.tandem.ui.alarmsViewModelFactory
@@ -94,22 +93,19 @@ fun AlarmsRoute(
         }
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.events.collectLatest { event ->
-            when (event) {
-                is AlarmsEvent.AlarmDeleted -> {
-                    val result = snackbarHostState.showSnackbar(
-                        message = message,
-                        actionLabel = undo,
-                        withDismissAction = false,
-                        duration = SnackbarDuration.Long,
-                    )
-                    when (result) {
-                        SnackbarResult.ActionPerformed -> viewModel.undoDelete(event.alarmId)
-                        SnackbarResult.Dismissed -> viewModel.onDeleteSnackbarDismissed(event.alarmId)
-                    }
-                }
-            }
+    // Driven by VM state, so rotation or navigation while the snackbar shows re-shows it.
+    val pendingDeleteId by viewModel.pendingDeleteId.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingDeleteId) {
+        val id = pendingDeleteId ?: return@LaunchedEffect
+        val result = snackbarHostState.showSnackbar(
+            message = message,
+            actionLabel = undo,
+            withDismissAction = false,
+            duration = SnackbarDuration.Long,
+        )
+        when (result) {
+            SnackbarResult.ActionPerformed -> viewModel.undoDelete(id)
+            SnackbarResult.Dismissed -> viewModel.onDeleteSnackbarDismissed(id)
         }
     }
 
@@ -289,7 +285,8 @@ private fun AlarmRow(
             onCheckedChange = onToggleEnabled,
             modifier = Modifier.semantics { contentDescription = switchDescription },
         )
-        Box {
+        val hasMenu = row.skipped || row.enabled
+        if (hasMenu) Box {
             IconButton(onClick = { menuOpen = true }) {
                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.alarm_more_options))
             }

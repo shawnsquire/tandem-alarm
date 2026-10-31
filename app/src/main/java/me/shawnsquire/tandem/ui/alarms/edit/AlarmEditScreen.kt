@@ -95,7 +95,8 @@ fun AlarmEditRoute(
         if (uri != null) viewModel.onWallpaperPicked(uri.toString())
     }
 
-    BackHandler(onBack = viewModel::cancel)
+    // Back is consumed as a no-op while busy so an in-flight save or import can finish (the VM also ignores cancel then).
+    BackHandler { if (!state.busy) viewModel.cancel() }
 
     AlarmEditScreen(
         state = state,
@@ -136,6 +137,8 @@ fun AlarmEditScreen(
     onErrorShown: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Busy covers imports and saves; none of the controls may act while one is in flight.
+    val locked = state.busy
     val snackbarHostState = remember { SnackbarHostState() }
     val errorText = when (state.error) {
         EditError.RingtoneImport -> stringResource(R.string.edit_error_ringtone)
@@ -158,12 +161,12 @@ fun AlarmEditScreen(
                     Text(stringResource(if (state.isNew) R.string.edit_title_new else R.string.edit_title_existing))
                 },
                 navigationIcon = {
-                    IconButton(onClick = onCancel) {
+                    IconButton(onClick = onCancel, enabled = !locked) {
                         Icon(Icons.Default.Close, contentDescription = stringResource(R.string.edit_close))
                     }
                 },
                 actions = {
-                    TextButton(onClick = onSave, enabled = state.loaded && !state.busy) {
+                    TextButton(onClick = onSave, enabled = state.loaded && !locked) {
                         Text(stringResource(R.string.edit_save))
                     }
                 },
@@ -228,16 +231,18 @@ fun AlarmEditScreen(
                 ListItem(
                     headlineContent = { Text(stringResource(R.string.edit_ringtone)) },
                     supportingContent = { Text(state.ringtoneTitle) },
-                    modifier = Modifier.clickable { ringtoneMenu = true },
+                    modifier = Modifier.clickable(enabled = !locked) { ringtoneMenu = true },
                 )
                 DropdownMenu(expanded = ringtoneMenu, onDismissRequest = { ringtoneMenu = false }) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.edit_ringtone_system)) },
                         onClick = { ringtoneMenu = false; onPickSystemRingtone() },
+                        enabled = !locked,
                     )
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.edit_ringtone_file)) },
                         onClick = { ringtoneMenu = false; onPickRingtoneFile() },
+                        enabled = !locked,
                     )
                 }
             }
@@ -252,11 +257,11 @@ fun AlarmEditScreen(
                             ),
                         )
                         Row {
-                            TextButton(onClick = onPickWallpaper, enabled = !state.busy) {
+                            TextButton(onClick = onPickWallpaper, enabled = !locked) {
                                 Text(stringResource(R.string.edit_wallpaper_choose))
                             }
                             if (state.wallpaperPath != null) {
-                                TextButton(onClick = onRemoveWallpaper) {
+                                TextButton(onClick = onRemoveWallpaper, enabled = !locked) {
                                     Text(stringResource(R.string.edit_wallpaper_remove))
                                 }
                             }
@@ -269,6 +274,7 @@ fun AlarmEditScreen(
             if (!state.isNew) {
                 OutlinedButton(
                     onClick = onDelete,
+                    enabled = !locked,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.padding(16.dp),
                 ) {

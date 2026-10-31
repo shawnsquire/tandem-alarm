@@ -1,6 +1,8 @@
 package me.shawnsquire.tandem.ui.alarms.edit
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.schedule.Alarm
@@ -24,8 +26,14 @@ class AlarmEditViewModelTest {
         "file:///old-ring", "/old-wall",
     )
 
-    private class Env(id: String?, initial: List<Alarm>) {
+    /** Holds every upsert until [gate] completes, so tests can act mid-save. */
+    private class GatedRepo(val inner: FakeAlarmRepository, val gate: CompletableDeferred<Unit>) : AlarmRepository by inner {
+        override suspend fun upsert(alarm: Alarm) { gate.await(); inner.upsert(alarm) }
+    }
+
+    private class Env(id: String?, initial: List<Alarm>, gate: CompletableDeferred<Unit>? = null) {
         val repo = FakeAlarmRepository(initial)
+        private val vmRepo: AlarmRepository = if (gate == null) repo else GatedRepo(repo, gate)
         val scheduler = FakeAlarmScheduler()
         val titleCalls = mutableListOf<String?>()
         val importedRingtones = mutableListOf<String>()
@@ -35,8 +43,8 @@ class AlarmEditViewModelTest {
         var failImport = false
         val vm = AlarmEditViewModel(
             alarmId = id,
-            repository = repo,
-            edits = AlarmEdits(repo, scheduler),
+            repository = vmRepo,
+            edits = AlarmEdits(vmRepo, scheduler),
             ringtoneTitle = { titleCalls += it; "title:${it ?: "default"}" },
             importRingtone = {
                 importedRingtones += it
@@ -233,5 +241,71 @@ class AlarmEditViewModelTest {
         e.vm.cancel()
         e.vm.onCleared()
         assertEquals(listOf("file:///imported-1"), e.deletedRingtones)
+    }
+
+    @Test fun saveKeepsPartnerSkipAppliedWhileEditorWasOpen() = runTest {
+        val e = Env("a1", listOf(existing.copy(skippedOccurrenceAt = null)))
+        val partnerSkip = Instant.parse("2026-11-10T06:30:00Z")
+        e.repo.setSkip("a1", partnerSkip)
+        e.vm.setLabel("renamed")
+        e.vm.save()
+        assertEquals(partnerSkip, e.repo.get("a1")!!.skippedOccurrenceAt)
+        assertEquals("renamed", e.repo.get("a1")!!.label)
+    }
+
+    @Test fun saveAfterRowDeletedElsewhereUpsertsWithNoSkip() = runTest {
+        val e = edit()
+        e.repo.delete("a1")
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertNull(saved.skippedOccurrenceAt)
+        assertTrue(e.deletedRingtones.isEmpty() && e.deletedWallpapers.isEmpty())
+    }
+
+    @Test fun leavingDuringSaveDeletesNothingAndSavedFilesSurvive() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val e = Env("a1", listOf(existing), gate)
+        e.vm.onWallpaperPicked("content://img/1")
+        e.vm.onRingtoneFilePicked("content://doc/1")
+        e.vm.save() // suspends in the gated upsert
+        e.vm.cancel()
+        e.vm.removeWallpaper()
+        e.vm.discardSession()
+        e.vm.onSystemRingtonePicked("content://media/x")
+        e.vm.onWallpaperPicked("content://img/2")
+        e.vm.onRingtoneFilePicked("content://doc/2")
+        assertFalse(e.vm.state.value.closed)
+        gate.complete(Unit)
+        val saved = e.repo.get("a1")!!
+        assertEquals("/wall-1", saved.wallpaperPath)
+        assertEquals("file:///imported-1", saved.ringtoneUri)
+        assertEquals(listOf("/old-wall"), e.deletedWallpapers)
+        assertEquals(listOf("file:///old-ring"), e.deletedRingtones)
+        assertTrue(e.vm.state.value.closed)
+    }
+
+    @Test fun clearedDuringSaveThatCommitsKeepsSavedFiles() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val e = Env("a1", listOf(existing), gate)
+        e.vm.onWallpaperPicked("content://img/1")
+        e.vm.save()
+        e.vm.onCleared()
+        assertTrue(e.deletedWallpapers.isEmpty())
+        gate.complete(Unit)
+        assertEquals("/wall-1", e.repo.get("a1")!!.wallpaperPath)
+        assertFalse("/wall-1" in e.deletedWallpapers)
+    }
+
+    @Test fun failedSaveKeepsSessionFilesForRetry() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        gate.completeExceptionally(IllegalStateException("db"))
+        val e = Env("a1", listOf(existing), gate)
+        e.vm.onWallpaperPicked("content://img/1")
+        e.vm.save()
+        assertEquals(EditError.Save, e.vm.state.value.error)
+        assertFalse(e.vm.state.value.busy)
+        assertTrue(e.deletedWallpapers.isEmpty())
+        e.vm.cancel()
+        assertEquals(listOf("/wall-1"), e.deletedWallpapers)
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -99,7 +100,7 @@ fun PartnerScreen(state: PartnerUiState, callbacks: PartnerCallbacks, modifier: 
 @Composable
 private fun UnpairedContent(state: PartnerUiState, callbacks: PartnerCallbacks, modifier: Modifier) {
     Column(
-        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        modifier = modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
@@ -263,6 +264,7 @@ private fun RingingCard(banner: RingingBanner, is24Hour: Boolean, onStop: () -> 
             Text(title, style = MaterialTheme.typography.headlineSmall)
             Button(
                 onClick = onStop,
+                enabled = banner.stopStatus != CommandUiStatus.Pending,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 contentPadding = ButtonDefaults.ContentPadding,
                 colors = ButtonDefaults.buttonColors(
@@ -338,6 +340,8 @@ private fun AlarmCard(
                 StateChip(row.chip)
             }
             if (row.actions.isNotEmpty()) {
+                // A second tap while the first command is in flight would just report a false rejection.
+                val idle = row.commandStatus != CommandUiStatus.Pending
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     row.actions.forEach { action ->
                         val label = stringResource(
@@ -349,9 +353,9 @@ private fun AlarmCard(
                             },
                         )
                         if (action == PartnerAction.TURN_OFF) {
-                            TextButton(onClick = { onAction(action, row.id) }) { Text(label) }
+                            TextButton(onClick = { onAction(action, row.id) }, enabled = idle) { Text(label) }
                         } else {
-                            OutlinedButton(onClick = { onAction(action, row.id) }) { Text(label) }
+                            OutlinedButton(onClick = { onAction(action, row.id) }, enabled = idle) { Text(label) }
                         }
                     }
                 }
