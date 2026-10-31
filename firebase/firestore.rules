@@ -10,13 +10,13 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/households/$(hid)).data.members;
     }
 
-    // Optional fields: absent, or the expected type.
+    // Optional fields: absent, null, or the expected type.
     function optionalTimestamp(data, field) {
-      return !(field in data) || data[field] is timestamp;
+      return !(field in data) || data[field] == null || data[field] is timestamp;
     }
 
     function optionalString(data, field) {
-      return !(field in data) || data[field] is string;
+      return !(field in data) || data[field] == null || data[field] is string;
     }
 
     function isMember(hid) {

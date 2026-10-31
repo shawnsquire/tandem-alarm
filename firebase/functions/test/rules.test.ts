@@ -277,6 +277,14 @@ describe("households/{hid}/commands: create", () => {
       setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ type: "STOP_RINGING", ringId: "r1" })),
     );
   });
+  it("accepts a null occurrenceAt", async () => {
+    await assertSucceeds(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ occurrenceAt: null })));
+  });
+  it("accepts a null ringId", async () => {
+    await assertSucceeds(
+      setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ type: "STOP_RINGING", ringId: null })),
+    );
+  });
   it("denies a missing createdAt", async () => {
     const { createdAt: _omit, ...noCreated } = command();
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), noCreated));
