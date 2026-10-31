@@ -16,6 +16,7 @@ import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
 import me.shawnsquire.tandem.ui.alarms.AlarmsViewModel
 import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditViewModel
+import me.shawnsquire.tandem.ui.partner.PartnerViewModel
 import java.util.UUID
 
 /** The only place ui touches [AppContainer]. */
@@ -59,6 +60,19 @@ val alarmEditViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
             newId = { UUID.randomUUID().toString() },
+        )
+    }
+}
+
+val partnerViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
+    initializer {
+        val container = container()
+        PartnerViewModel(
+            pairing = container.pairingRepository,
+            partnerRepository = container.partnerRepository,
+            sender = container.commandSender,
+            clock = LiveZoneClock,
+            ticker = tickerFlow(),
         )
     }
 }

@@ -25,7 +25,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import me.shawnsquire.tandem.ui.alarms.AlarmsRoute
-import me.shawnsquire.tandem.ui.partner.PartnerScreen
+import me.shawnsquire.tandem.ui.partner.PartnerRoute
 import me.shawnsquire.tandem.ui.settings.SettingsScreen
 
 private const val DELETED_ALARM_KEY = "deletedAlarmId"
@@ -99,7 +99,7 @@ fun MainScreen() {
                     },
                 )
             }
-            composable(Tab.Partner.route) { PartnerScreen() }
+            composable(Tab.Partner.route) { PartnerRoute() }
             composable(Tab.Settings.route) { SettingsScreen() }
         }
     }
