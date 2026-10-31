@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.ui
 
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Notifications
@@ -14,15 +15,26 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavHostController
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import me.shawnsquire.tandem.ui.alarms.AlarmsScreen
-import me.shawnsquire.tandem.ui.partner.PartnerScreen
-import me.shawnsquire.tandem.ui.settings.SettingsScreen
+import androidx.navigation.navArgument
+import me.shawnsquire.tandem.ui.alarms.AlarmsRoute
+import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditRoute
+import me.shawnsquire.tandem.ui.partner.PartnerRoute
+import me.shawnsquire.tandem.ui.settings.SettingsRoute
+import me.shawnsquire.tandem.ui.settings.health.HealthRoute
+
+private const val DELETED_ALARM_KEY = "deletedAlarmId"
+private const val EDIT_ROUTE = "alarm/edit"
+private const val HEALTH_ROUTE = "settings/health"
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     Alarms("alarms", "Alarms", Icons.Default.Notifications),
@@ -30,15 +42,26 @@ private enum class Tab(val route: String, val label: String, val icon: ImageVect
     Settings("settings", "Settings", Icons.Default.Settings),
 }
 
+/**
+ * Runs [action] only while [entry] is still the top destination. Once a navigation or pop has started
+ * the top entry changes at once, so a repeat tap during the transition is dropped (no second editor, no
+ * pop of the start destination), while a legitimate action is never refused because of the lifecycle
+ * state (e.g. a save finishing while the app is stopped).
+ */
+private fun NavHostController.ifCurrent(entry: NavBackStackEntry, action: NavHostController.() -> Unit) {
+    if (currentBackStackEntry?.id == entry.id) action()
+}
+
 @Composable
 fun MainScreen() {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val destination = backStackEntry?.destination
+    val isTabRoute = Tab.entries.any { tab -> destination?.hierarchy?.any { it.route == tab.route } == true }
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            if (isTabRoute) NavigationBar {
                 Tab.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = destination?.hierarchy?.any { it.route == tab.route } == true,
@@ -61,11 +84,46 @@ fun MainScreen() {
         NavHost(
             navController = navController,
             startDestination = Tab.Alarms.route,
-            modifier = Modifier.padding(innerPadding),
+            // Tabs have no top bar of their own, so they take the system-bar and bottom-bar padding.
+            // The full-screen routes (editor, health) own a Scaffold and apply their insets themselves.
+            modifier = if (isTabRoute) Modifier.padding(innerPadding).consumeWindowInsets(innerPadding) else Modifier,
         ) {
-            composable(Tab.Alarms.route) { AlarmsScreen() }
-            composable(Tab.Partner.route) { PartnerScreen() }
-            composable(Tab.Settings.route) { SettingsScreen() }
+            composable(Tab.Alarms.route) { entry ->
+                val deletedId by entry.savedStateHandle
+                    .getStateFlow<String?>(DELETED_ALARM_KEY, null)
+                    .collectAsStateWithLifecycle()
+                AlarmsRoute(
+                    onAddAlarm = { navController.ifCurrent(entry) { navigate(EDIT_ROUTE) } },
+                    onEditAlarm = { id -> navController.ifCurrent(entry) { navigate("alarm/edit?id=$id") } },
+                    deletedAlarmId = deletedId,
+                    onDeletedConsumed = { entry.savedStateHandle[DELETED_ALARM_KEY] = null },
+                    onOpenHealth = { navController.navigate(HEALTH_ROUTE) },
+                )
+            }
+            composable(
+                route = "alarm/edit?id={$ALARM_ID_ARG}",
+                arguments = listOf(
+                    navArgument(ALARM_ID_ARG) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
+            ) { entry ->
+                AlarmEditRoute(
+                    onClose = { navController.ifCurrent(entry) { popBackStack() } },
+                    onDelete = { id, discardSession ->
+                        navController.ifCurrent(entry) {
+                            discardSession()
+                            previousBackStackEntry?.savedStateHandle?.set(DELETED_ALARM_KEY, id)
+                            popBackStack()
+                        }
+                    },
+                )
+            }
+            composable(Tab.Partner.route) { PartnerRoute() }
+            composable(Tab.Settings.route) { SettingsRoute(onOpenHealth = { navController.navigate(HEALTH_ROUTE) }) }
+            composable(HEALTH_ROUTE) { HealthRoute(onBack = { navController.popBackStack() }) }
         }
     }
 }
