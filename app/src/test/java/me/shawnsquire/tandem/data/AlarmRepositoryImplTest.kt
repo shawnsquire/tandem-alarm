@@ -27,6 +27,11 @@ private class MutableClock(var now: Instant) : Clock() {
     override fun instant(): Instant = now
 }
 
+/** Delegates to a real DAO but fails the expired-skip cleanup write. */
+private class FailingCleanupDao(private val real: AlarmDao) : AlarmDao by real {
+    override suspend fun clearExpiredSkips(cutoffMillis: Long) = throw IllegalStateException("disk full")
+}
+
 @RunWith(RobolectricTestRunner::class)
 class AlarmRepositoryImplTest {
     private lateinit var db: TandemDatabase
@@ -218,6 +223,50 @@ class AlarmRepositoryImplTest {
             clock.now = clock.now.plusSeconds(120).plus(FIRE_GRACE.toJavaDuration())
             repo.setEnabled("a", false)
             assertNull(awaitItem().single().skippedOccurrenceAt)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun getReturnsRowWhenCleanupFails() = runTest {
+        repo.upsert(alarm())
+        val failing = AlarmRepositoryImpl(FailingCleanupDao(dao), clock)
+        assertEquals(alarm(), failing.get("a"))
+    }
+
+    @Test
+    fun getMapsExpiredSkipToNullWhenCleanupFails() = runTest {
+        val t = clock.now
+        repo.upsert(alarm(skip = t))
+        clock.now = t.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(1)
+        val failing = AlarmRepositoryImpl(FailingCleanupDao(dao), clock)
+        assertNull(failing.get("a")!!.skippedOccurrenceAt)
+        assertEquals(t.toEpochMilli(), dao.get("a")!!.skippedOccurrenceAt)
+    }
+
+    @Test
+    fun getKeepsLiveSkipWhenCleanupFails() = runTest {
+        val t = clock.now
+        repo.upsert(alarm(skip = t))
+        clock.now = t.plusSeconds(1)
+        val failing = AlarmRepositoryImpl(FailingCleanupDao(dao), clock)
+        assertEquals(t, failing.get("a")!!.skippedOccurrenceAt)
+    }
+
+    @Test
+    fun alarmsStillEmitsWithMappingWhenCleanupFails() = runTest {
+        val t = clock.now
+        repo.upsert(alarm(id = "expired", skip = t))
+        repo.upsert(alarm(id = "live", skip = t.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(60)))
+        repo.upsert(alarm(id = "none"))
+        clock.now = t.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(1)
+        val failing = AlarmRepositoryImpl(FailingCleanupDao(dao), clock)
+        failing.alarms.test {
+            val byId = awaitItem().associateBy { it.id }
+            assertEquals(3, byId.size)
+            assertNull(byId.getValue("expired").skippedOccurrenceAt)
+            assertEquals(t.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(60), byId.getValue("live").skippedOccurrenceAt)
+            assertNull(byId.getValue("none").skippedOccurrenceAt)
             cancelAndIgnoreRemainingEvents()
         }
     }
