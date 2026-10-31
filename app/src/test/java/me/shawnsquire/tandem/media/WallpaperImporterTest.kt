@@ -77,11 +77,29 @@ class WallpaperImporterTest {
     }
 
     @Test fun targetSizeCoversScreenWithoutUpscale() {
-        // 4000x3000 into 1080x2400: scale = max(0.27, 0.8) = 0.8
-        assertEquals(3200 to 2400, targetSize(4000, 3000, 1080, 2400))
+        // 4000x3000 into 1080x2400: cover scale is 0.8 (3200x2400), then capped to 2x screen pixels
+        assertEquals(2629 to 1971, targetSize(4000, 3000, 1080, 2400))
+        // 2000x1000 into 1080x2400: cover scale = 1.0 (no upscale), 2M px under the cap
+        assertEquals(2000 to 1000, targetSize(2000, 1000, 1080, 2400))
         // small image is never upscaled
         assertEquals(100 to 50, targetSize(100, 50, 1080, 2400))
         // exact fit
         assertEquals(1080 to 2400, targetSize(1080, 2400, 1080, 2400))
+    }
+
+    @Test fun targetSizeCapsPanorama() {
+        val (w, h) = targetSize(12000, 3000, 1440, 3120)
+        assertTrue(w.toLong() * h <= 2L * 1440 * 3120)
+        assertEquals(4.0, w.toDouble() / h, 0.01)
+        assertTrue(w > 5900 && h > 1400)
+    }
+
+    @Test fun importDeletesLeftoverTmpFiles() = runTest {
+        wallpapers.mkdirs()
+        val stale = File(wallpapers, "dead.tmp").apply { writeText("x") }
+        val keep = File(wallpapers, "keep.jpg").apply { writeText("x") }
+        importer().import(uri)
+        assertFalse(stale.exists())
+        assertTrue(keep.exists())
     }
 }

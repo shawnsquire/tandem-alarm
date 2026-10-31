@@ -5,7 +5,13 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
+import android.content.ContentProvider
+import android.content.ContentValues
+import android.database.MatrixCursor
 import android.net.Uri
+import android.provider.OpenableColumns
+import kotlinx.coroutines.test.runTest
+import org.robolectric.Robolectric
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -77,13 +83,28 @@ class RingtonePickerTest {
         assertNull(c.parseResult(Activity.RESULT_OK, null))
     }
 
-    @Test fun titleBlankIsDefaultAlarm() {
+    @Test fun titleBlankIsDefaultAlarm() = runTest {
         assertEquals("Default alarm", ringtoneTitle(context, null))
         assertEquals("Default alarm", ringtoneTitle(context, "  "))
     }
 
-    @Test fun titleUnresolvableFallsBack() {
+    @Test fun titleUnresolvableFallsBack() = runTest {
         val t = ringtoneTitle(context, "content://nope/1")
         assertTrue(t.isNotBlank())
+    }
+
+    @Test fun documentTitleUsesDisplayName() = runTest {
+        val docUri = Uri.parse("content://com.android.providers.downloads.documents/document/msf%3A123")
+        val provider = object : ContentProvider() {
+            override fun onCreate() = true
+            override fun query(u: Uri, p: Array<String>?, s: String?, a: Array<String>?, o: String?) =
+                MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME)).apply { addRow(arrayOf("Wake.mp3")) }
+            override fun getType(u: Uri): String? = null
+            override fun insert(u: Uri, v: ContentValues?): Uri? = null
+            override fun delete(u: Uri, s: String?, a: Array<String>?) = 0
+            override fun update(u: Uri, v: ContentValues?, s: String?, a: Array<String>?) = 0
+        }
+        Robolectric.setupContentProvider(provider.javaClass, docUri.authority)
+        assertEquals("Wake.mp3", ringtoneTitle(context, docUri.toString()))
     }
 }

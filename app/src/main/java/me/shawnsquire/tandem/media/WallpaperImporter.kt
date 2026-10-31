@@ -12,10 +12,19 @@ import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /** Size to decode an image of [w]x[h] so it covers the screen, never upscaling. */
 internal fun targetSize(w: Int, h: Int, screenW: Int, screenH: Int): Pair<Int, Int> {
-    val scale = min(1.0, max(screenW.toDouble() / w, screenH.toDouble() / h))
+    var scale = min(1.0, max(screenW.toDouble() / w, screenH.toDouble() / h))
+    // Cap the pixel count so a panorama can't decode to a bitmap too large to draw.
+    val maxPixels = 2.0 * screenW * screenH
+    val scaled = w * scale * h * scale
+    if (scaled > maxPixels) {
+        scale *= sqrt(maxPixels / scaled)
+        // Truncate so rounding can't push the product back over the cap.
+        return max(1, (w * scale).toInt()) to max(1, (h * scale).toInt())
+    }
     return max(1, (w * scale).roundToInt()) to max(1, (h * scale).roundToInt())
 }
 
@@ -45,6 +54,8 @@ class WallpaperImporter(
     suspend fun import(uri: Uri): String = withContext(Dispatchers.IO) {
         val dir = dir
         check(dir.isDirectory || dir.mkdirs()) { "Cannot create $dir" }
+        // Leftovers from a process death mid-import.
+        dir.listFiles { f -> f.extension == "tmp" }?.forEach { it.delete() }
         val name = UUID.randomUUID().toString()
         val tmp = File(dir, "$name.tmp")
         val out = File(dir, "$name.jpg")

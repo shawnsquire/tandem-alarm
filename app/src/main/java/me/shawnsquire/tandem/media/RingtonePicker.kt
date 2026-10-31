@@ -6,8 +6,12 @@ import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.result.contract.ActivityResultContract
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.R
 
 /** System alarm-sound picker. Input is the current URI string (or null); output the picked URI string or null. */
@@ -25,7 +29,9 @@ class PickSystemRingtone : ActivityResultContract<String?, String?>() {
 
     override fun parseResult(resultCode: Int, intent: Intent?): String? {
         if (resultCode != Activity.RESULT_OK) return null
-        return intent?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)?.toString()
+        // The typed getParcelableExtra(name, Class) is buggy on API 33, so use the untyped one.
+        @Suppress("DEPRECATION")
+        return intent?.getParcelableExtra<Uri>(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)?.toString()
     }
 }
 
@@ -50,17 +56,36 @@ class PickAudioFile(private val resolver: ContentResolver) : ActivityResultContr
     }
 }
 
-/** Human-readable title for a stored sound URI, for UI display. Never throws. */
-fun ringtoneTitle(context: Context, uri: String?): String {
+/** Human-readable title for a stored sound URI, for UI display. Never throws (except cancellation). */
+suspend fun ringtoneTitle(context: Context, uri: String?): String {
     if (uri.isNullOrBlank()) return context.getString(R.string.ringtone_default_alarm)
     val fallback = context.getString(R.string.ringtone_unknown)
+    return withContext(Dispatchers.IO) {
+        try {
+            val parsed = Uri.parse(uri)
+            val system = parsed.authority.let { it == "media" || it == "settings" } &&
+                !DocumentsContract.isDocumentUri(context, parsed)
+            // Ringtone.getTitle falls back to the raw document id for document URIs, so ask the
+            // provider for DISPLAY_NAME first and use RingtoneManager only for system sounds.
+            if (system) {
+                systemTitle(context, parsed) ?: displayName(context, parsed)
+            } else {
+                displayName(context, parsed)
+            } ?: fallback
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            fallback
+        }
+    }
+}
+
+private fun systemTitle(context: Context, uri: Uri): String? {
+    val ringtone = RingtoneManager.getRingtone(context, uri) ?: return null
     return try {
-        val parsed = Uri.parse(uri)
-        RingtoneManager.getRingtone(context, parsed)?.getTitle(context)?.takeIf { it.isNotBlank() }
-            ?: displayName(context, parsed)
-            ?: fallback
-    } catch (_: Exception) {
-        fallback
+        ringtone.getTitle(context)?.takeIf { it.isNotBlank() }
+    } finally {
+        ringtone.stop()
     }
 }
 
