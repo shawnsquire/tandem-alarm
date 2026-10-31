@@ -4,6 +4,7 @@ import java.time.Instant
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.schedule.Command
@@ -118,5 +119,23 @@ class RingingCommandListenerTest {
         ringState.value = ring
         runCurrent()
         assertEquals(0, remote.pendingSubscriptions)
+    }
+
+    @Test
+    fun `resubscribes after the pending flow completes while ringing`() = runTest {
+        remote.pendingCompletes = true
+        listener().start()
+        ringState.value = ring
+        runCurrent()
+        assertEquals(1, remote.pendingSubscriptions)
+        advanceTimeBy(1_001)
+        runCurrent()
+        assertEquals(2, remote.pendingSubscriptions)
+        ringState.value = null
+        runCurrent()
+        val n = remote.pendingSubscriptions
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(n, remote.pendingSubscriptions)
     }
 }

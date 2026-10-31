@@ -65,11 +65,14 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
 
     /** Drives [pendingUpdates]; each collection counts as one subscription until it completes or is cancelled. */
     val pending = MutableSharedFlow<List<Command>>(extraBufferCapacity = 16)
+
+    /** When true, [pendingUpdates] completes right after subscribing (like a snapshot error). */
+    var pendingCompletes = false
     var pendingSubscriptions = 0
     var activePendingSubscriptions = 0
 
     override fun pendingUpdates(householdId: String, uid: String): Flow<List<Command>> =
-        pending
+        (if (pendingCompletes) kotlinx.coroutines.flow.emptyFlow() else pending)
             .onStart { pendingSubscriptions++; activePendingSubscriptions++ }
             .onCompletion { activePendingSubscriptions-- }
 }

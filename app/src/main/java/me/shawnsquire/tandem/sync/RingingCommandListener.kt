@@ -7,7 +7,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
@@ -42,7 +44,17 @@ class RingingCommandListener(
                         emptyFlow()
                     } else {
                         household.flatMapLatest { h ->
-                            if (h == null) emptyFlow() else remote.pendingUpdates(h.id, h.myUid).map { h to it }
+                            if (h == null) {
+                                emptyFlow()
+                            } else {
+                                // pendingUpdates completes quietly on a snapshot error; reattach while still active.
+                                flow {
+                                    while (true) {
+                                        emitAll(remote.pendingUpdates(h.id, h.myUid).map { h to it })
+                                        delay(RETRY_DELAY_MS)
+                                    }
+                                }
+                            }
                         }
                     }
                 }

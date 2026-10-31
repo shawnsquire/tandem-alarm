@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -72,29 +73,32 @@ class AppContainer(private val context: Context) {
     )
     private val firestore by lazy { Firebase.firestore }
     val authManager = AuthManager(Firebase.auth, context.syncDataStore)
-    val household: StateFlow<Household?> =
-        HouseholdSource(authManager.uid, firestore, syncScope).household.stateIn(syncScope, SharingStarted.Eagerly, null)
+    // Live shared flow (replay 1): its first value is a real snapshot result, so cold-process pulls don't see a fake null.
+    val householdFlow: Flow<Household?> = HouseholdSource(authManager.uid, firestore, syncScope).household
+
+    // Only for CommandSenderImpl, which needs a synchronous .value; everything else uses householdFlow.
+    val household: StateFlow<Household?> = householdFlow.stateIn(syncScope, SharingStarted.Eagerly, null)
     val fcmTokenStore = FcmTokenStore(context.syncDataStore)
     private val commandRemote = FirestoreCommandRemote(firestore)
-    val partnerRepository: PartnerRepository = PartnerRepositoryImpl(household, firestore)
+    val partnerRepository: PartnerRepository = PartnerRepositoryImpl(householdFlow, firestore)
     val pairingRepository: PairingRepository =
-        PairingRepositoryImpl(authManager, household, partnerRepository.partner, Firebase.functions)
+        PairingRepositoryImpl(authManager, householdFlow, partnerRepository.partner, Firebase.functions)
     val commandApplierImpl = CommandApplierImpl(
-        alarmRepository, ringStateStore, alarmScheduler, ringingController, commandRemote, household,
+        alarmRepository, ringStateStore, alarmScheduler, ringingController, commandRemote, householdFlow,
         partnerRepository.partner.map { it?.displayName },
         ProcessedCommands(context.syncDataStore, Clock.systemDefaultZone()),
         AndroidCommandNotifier(context), Clock.systemDefaultZone(),
     )
     val commandApplier: CommandApplier = commandApplierImpl
-    val preFireCheckImpl = PreFireCheckImpl(household, commandRemote, commandApplierImpl::applyPending)
+    val preFireCheckImpl = PreFireCheckImpl(householdFlow, commandRemote, commandApplierImpl::applyPending)
     val preFireCheck: PreFireCheck = preFireCheckImpl
     val commandSender: CommandSender = CommandSenderImpl(commandRemote, household, Clock.systemDefaultZone())
     val statePublisher: StatePublisher = StatePublisherImpl(
-        alarmRepository, ringStateStore, household, authManager.displayName, fcmTokenStore.token,
+        alarmRepository, ringStateStore, householdFlow, authManager.displayName, fcmTokenStore.token,
         FirestoreDeviceDocWriter(firestore), Clock.systemDefaultZone(), syncScope,
     )
     val ringingCommandListener =
-        RingingCommandListener(ringStateStore.state, household, commandRemote, commandApplierImpl::applyPending, syncScope)
+        RingingCommandListener(ringStateStore.state, householdFlow, commandRemote, commandApplierImpl::applyPending, syncScope)
     val healthSignalsImpl = HealthSignalsImpl(context.syncDataStore, fcmTokenStore)
     val healthSignals: HealthSignals = healthSignalsImpl
     val fcmCommandHandler = FcmCommandHandler(
