@@ -456,6 +456,28 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
+    fun disablingWithinReplayWindowCancelsTheReplay() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertNotNull(AlarmIntents.existingReplayPendingIntent(context, "a"))
+        repo.setEnabled("a", false)
+        s.rescheduleAll()
+        assertNull(AlarmIntents.existingReplayPendingIntent(context, "a"))
+        assertNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+    }
+
+    @Test
+    fun deletingWithinReplayWindowCancelsTheReplay() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        repo.delete("a")
+        s.rescheduleAll()
+        assertNull(AlarmIntents.existingReplayPendingIntent(context, "a"))
+    }
+
+    @Test
     fun noReplayWhenRecordIsOlderThanTenMinutes() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
         val s = armedThenLater(repo, at(2, 5, 11))

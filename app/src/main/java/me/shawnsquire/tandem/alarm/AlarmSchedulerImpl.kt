@@ -126,6 +126,8 @@ class AlarmSchedulerImpl(
         for (id in (old.records.keys + old.legacyIds) - scheduledNow.keys) {
             try {
                 cancel(AlarmIntents.existingFirePendingIntent(context, id))
+                // A replay armed at boot for an alarm disabled or deleted within its 5 s window.
+                cancel(AlarmIntents.existingReplayPendingIntent(context, id))
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
                 Log.e(TAG, "cancel failed for alarm $id", e)

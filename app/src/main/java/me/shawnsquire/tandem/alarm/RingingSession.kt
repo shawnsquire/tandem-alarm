@@ -88,17 +88,19 @@ class RingingSession(
                 currentCoroutineContext().ensureActive() // only real session cancellation propagates
                 // I1: an unexpected error never silences a ring, started or not.
                 log("ringing session failed", e)
-                if (!ringStarted) fallbackRing() else ensureAutoSilence(null)
+                if (!ringStarted) fallbackRing(if (isSnooze) null else alarmId to occurrence) else ensureAutoSilence(null)
             }
         }
     }
 
     /** Best-effort ring when something unexpected failed before sound started. */
-    private suspend fun fallbackRing() {
+    private suspend fun fallbackRing(fire: Pair<String, Instant>? = null) {
         currentCoroutineContext().ensureActive()
         ringStarted = true
-        guarded("fallback sound", Unit) { sound.start(emptyList()) }
+        // Vibration first: sound setup must never delay or prevent it.
         guarded("fallback vibration", Unit) { vibration.start() }
+        guarded("fallback sound", Unit) { sound.start(emptyList()) }
+        if (fire != null) guarded("fired ledger write", Unit) { firedLedger.markRang(fire.first, fire.second) }
         guarded("fallback reschedule", Unit) { alarmScheduler.rescheduleAll() }
         ensureAutoSilence(null)
     }
@@ -176,13 +178,11 @@ class RingingSession(
 
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
         register(ringId)
-        // The session has decided to ring: remember this occurrence so a duplicate fire stays quiet.
-        guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
         // Newest alarm supersedes a sounding ring; a snoozed one is parked and keeps its snooze.
         val written = guarded("ring slot claim", false) {
             ringSlot.claimFire(RingState(alarmId, ringId, now(), null)); true
         }
-        ring(alarm, ringId, observe = written)
+        ring(alarm, ringId, observe = written, fire = alarmId to occurrence)
     }
 
     /** I1: hard 3 s bound that also holds when the check blocks a thread without cooperating. */
@@ -204,12 +204,16 @@ class RingingSession(
         }
     }
 
-    private suspend fun ring(alarm: Alarm?, ringId: String, observe: Boolean) {
+    /** [fire] is set on the fire path: the occurrence is marked as rung only once sound has started. */
+    private suspend fun ring(alarm: Alarm?, ringId: String, observe: Boolean, fire: Pair<String, Instant>? = null) {
         val default = guarded("settings read", null as String?) { settingsRepository.defaultRingtoneUri.first() }
         currentCoroutineContext().ensureActive() // never start sound after the session was cancelled
         ringStarted = true
-        guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
+        // Vibration first: sound setup must never delay or prevent it.
         guarded("vibration", Unit) { vibration.start() }
+        guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
+        // Marked after the ring has begun, so a process death before this point still gets a boot replay.
+        if (fire != null) guarded("fired ledger write", Unit) { firedLedger.markRang(fire.first, fire.second) }
         guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
         guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
 

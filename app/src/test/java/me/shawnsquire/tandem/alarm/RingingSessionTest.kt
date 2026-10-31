@@ -45,14 +45,16 @@ class RecordingSound(private val clock: () -> Long) : AlarmSound {
     val starts = mutableListOf<List<String>>()
     val startTimes = mutableListOf<Long>()
     var stops = 0
-    override fun start(candidates: List<String>) { starts += candidates; startTimes += clock() }
+    var events: MutableList<String>? = null
+    override fun start(candidates: List<String>) { starts += candidates; startTimes += clock(); events?.add("sound") }
     override fun stop() { stops++ }
 }
 
 class RecordingVibration : AlarmVibration {
     var starts = 0
     var stops = 0
-    override fun start() { starts++ }
+    var events: MutableList<String>? = null
+    override fun start() { starts++; events?.add("vibration") }
     override fun stop() { stops++ }
 }
 
@@ -710,5 +712,73 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(listOf("register:ring-1", "unregister:ring-1"), events)
         assertFalse(reg.isLive("ring-1"))
+    }
+    // ---- D4: ordering and ledger timing ----
+
+    @Test fun vibrationStartsBeforeSound() = runTest {
+        val h = harness()
+        val events = mutableListOf<String>()
+        h.sound.events = events; h.vibration.events = events
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf("vibration", "sound"), events)
+    }
+
+    @Test fun fallbackVibrationStartsBeforeSound() = runTest {
+        val h = harness(storeWrap = { ThrowingReadStore(it) })
+        val events = mutableListOf<String>()
+        h.sound.events = events; h.vibration.events = events
+        h.session.start("a", clockNow, true, null)
+        runCurrent()
+        assertEquals(listOf("vibration", "sound"), events)
+    }
+
+    @Test fun vibrationStillStartsWhenSoundThrows() = runTest {
+        val h = harness()
+        val vib = RecordingVibration()
+        val session = RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler, h.controller, h.controller,
+            object : AlarmSound { override fun start(candidates: List<String>) = throw IllegalStateException("audio"); override fun stop() {} },
+            vib, h.notifier, backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
+            onFinished = {},
+        )
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(1, vib.starts)
+    }
+
+    @Test fun occurrenceIsMarkedOnlyAfterSoundStarts() = runTest {
+        val events = mutableListOf<String>()
+        val fired = object : FiredLedger {
+            val inner = InMemoryFiredLedger()
+            override fun lastRang(alarmId: String) = inner.lastRang(alarmId)
+            override fun markRang(alarmId: String, occurrence: Instant) { events += "mark"; inner.markRang(alarmId, occurrence) }
+        }
+        val h = ledgerHarness(fired)
+        h.sound.events = events
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf("sound", "mark"), events)
+    }
+
+    @Test fun occurrenceNotMarkedWhenSessionDiesBeforeRing() = runTest {
+        val fired = InMemoryFiredLedger()
+        val h = Harness(this, listOf(alarm()), null, LambdaPreFire { kotlinx.coroutines.delay(2000); true }, clockNow, fired = fired)
+        h.fire(occ = occurrence)
+        runCurrent()
+        // Killed while the pre-fire check is still running: nothing rang, so a boot replay must still be allowed.
+        backgroundScope.coroutineContext[Job]!!.children.forEach { it.cancel() }
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertNull(fired.lastRang("a"))
+    }
+
+    @Test fun snoozeFallbackRingDoesNotMark() = runTest {
+        val fired = InMemoryFiredLedger()
+        val h = Harness(this, listOf(alarm()), null, LambdaPreFire { true }, clockNow,
+            storeWrap = { ThrowingReadStore(it) }, fired = fired)
+        h.session.start("a", occurrence, true, null)
+        runCurrent()
+        assertNull(fired.lastRang("a"))
     }
 }
