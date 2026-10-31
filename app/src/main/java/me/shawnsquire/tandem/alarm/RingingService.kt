@@ -19,6 +19,7 @@ class RingingService : Service() {
     private val sessions = mutableSetOf<RingingSession>()
     private val adapters = mutableListOf<Pair<AlarmSound, AlarmVibration>>()
     private var wakeLock: PowerManager.WakeLock? = null
+    private val vibrationArbiter by lazy { VibrationArbiter.forContext(this) }
     private lateinit var notifier: AndroidRingingNotifier
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -44,7 +45,7 @@ class RingingService : Service() {
 
         val container = (application as TandemApp).container
         val sound = MediaPlayerAlarmSound(this)
-        val vibration = SystemAlarmVibration(this)
+        val vibration = SystemAlarmVibration(vibrationArbiter)
         adapters += sound to vibration
         lateinit var session: RingingSession
         session = RingingSession(
@@ -73,6 +74,7 @@ class RingingService : Service() {
 
     private fun stopIfIdle() {
         if (sessions.isNotEmpty()) return
+        notifier.clearRinging()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -86,6 +88,7 @@ class RingingService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        notifier.clearRinging()
         adapters.forEach { (sound, vibration) ->
             runCatching { sound.stop() }
             runCatching { vibration.stop() }

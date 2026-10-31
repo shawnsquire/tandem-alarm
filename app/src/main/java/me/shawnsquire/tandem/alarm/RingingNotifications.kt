@@ -15,6 +15,14 @@ import java.time.format.FormatStyle
 class AndroidRingingNotifier(private val context: Context) : RingingNotifier {
     private val manager = context.getSystemService(NotificationManager::class.java)
 
+    /** Last notification built by [showRinging]; reused so a re-entrant start does not wipe label and actions. */
+    @Volatile
+    private var ringing: Notification? = null
+
+    fun clearRinging() {
+        ringing = null
+    }
+
     fun ensureChannels() {
         val alarm = NotificationChannel(ALARM_CHANNEL, context.getString(R.string.alarm_channel_name), NotificationManager.IMPORTANCE_HIGH).apply {
             description = context.getString(R.string.alarm_channel_description)
@@ -31,6 +39,7 @@ class AndroidRingingNotifier(private val context: Context) : RingingNotifier {
 
     /** Initial notification for `startForeground`: high priority, full-screen intent to the ringing UI. */
     fun foregroundNotification(): Notification {
+        ringing?.let { return it }
         ensureChannels()
         return builder(label = null).build()
     }
@@ -54,6 +63,7 @@ class AndroidRingingNotifier(private val context: Context) : RingingNotifier {
         val stop = Notification.Action.Builder(null, context.getString(R.string.alarm_action_stop), AlarmIntents.dismissPendingIntent(context, ringId)).build()
         val snooze = Notification.Action.Builder(null, context.getString(R.string.alarm_action_snooze), AlarmIntents.snoozeActionPendingIntent(context)).build()
         val notification = builder(alarm?.label).addAction(stop).addAction(snooze).build()
+        ringing = notification
         manager.notify(RingingService.NOTIFICATION_ID, notification)
     }
 

@@ -6,6 +6,7 @@ import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.PowerManager
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.util.Log
@@ -64,19 +65,49 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
     private companion object { const val TAG = "AlarmSound" }
 }
 
-class SystemAlarmVibration(context: Context) : AlarmVibration {
-    private val vibrator = context.getSystemService(VibratorManager::class.java).defaultVibrator
+/**
+ * Service-level vibration ownership. `Vibrator.cancel()` cancels all of the app's vibration, so a
+ * superseded session's late `stop()` must not silence the session that replaced it.
+ */
+class VibrationArbiter(
+    private val startVibration: () -> Unit,
+    private val cancelVibration: () -> Unit,
+) {
+    private var owner: Any? = null
 
-    override fun start() {
-        // VibrationAttributes is only public from API 36; AudioAttributes carries the alarm usage on 33+.
-        @Suppress("DEPRECATION")
-        vibrator.vibrate(
-            VibrationEffect.createWaveform(PATTERN, 0),
-            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build(),
-        )
+    @Synchronized
+    fun start(owner: Any) {
+        this.owner = owner
+        startVibration()
     }
 
-    override fun stop() = vibrator.cancel()
+    @Synchronized
+    fun stop(owner: Any) {
+        if (this.owner !== owner) return
+        this.owner = null
+        cancelVibration()
+    }
 
-    private companion object { val PATTERN = longArrayOf(0, 800, 600) }
+    companion object {
+        private val PATTERN = longArrayOf(0, 800, 600)
+
+        fun forContext(context: Context): VibrationArbiter {
+            val vibrator = context.getSystemService(VibratorManager::class.java).defaultVibrator
+            return VibrationArbiter(
+                startVibration = {
+                    vibrator.vibrate(
+                        VibrationEffect.createWaveform(PATTERN, 0),
+                        VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM),
+                    )
+                },
+                cancelVibration = { vibrator.cancel() },
+            )
+        }
+    }
+}
+
+/** One instance per [RingingSession]; all instances of a service share one [VibrationArbiter]. */
+class SystemAlarmVibration(private val arbiter: VibrationArbiter) : AlarmVibration {
+    override fun start() = arbiter.start(this)
+    override fun stop() = arbiter.stop(this)
 }

@@ -101,4 +101,26 @@ class NotificationActionsTest {
 
         assertNotNull(shadowOf(controller.get()).lastForegroundNotification)
     }
+
+    @Test
+    fun foregroundNotificationReusesCurrentRingingUntilCleared() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showRinging(null, "r1")
+        val ringing = notifier.foregroundNotification()
+        assertEquals(2, ringing.actions.size)
+
+        notifier.clearRinging()
+        assertNull(notifier.foregroundNotification().actions)
+    }
+
+    @Test
+    fun serviceStartsForegroundForNullIntent() {
+        val controller = Robolectric.buildService(RingingService::class.java).create()
+        controller.startCommand(0, 1)
+        val shadow = shadowOf(controller.get())
+        // The promotion happened (id recorded), then the idle service removed it and stopped itself.
+        assertEquals(RingingService.NOTIFICATION_ID, shadow.lastForegroundNotificationId)
+        assertTrue(shadow.isForegroundStopped)
+        assertTrue(shadow.isStoppedBySelf)
+    }
 }
