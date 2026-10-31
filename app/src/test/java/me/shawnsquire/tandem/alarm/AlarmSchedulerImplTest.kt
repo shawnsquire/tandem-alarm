@@ -278,7 +278,7 @@ class AlarmSchedulerImplTest {
     @Test
     fun idsArePersistedBeforeFinalCommit() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
-        val prefs = context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+        val prefs = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
         var idsWhenComputingB: Set<String>? = null
         val probe: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
             if (alarm.id == "b") idsWhenComputingB = prefs.getStringSet("scheduled_records", null)?.map { it.substringAfter('|') }?.toSet()
@@ -487,13 +487,13 @@ class AlarmSchedulerImplTest {
 
     @Test
     fun legacyIdSetIsMigratedWithoutReplayAndStillCancelled() = runTest {
-        context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE).edit()
+        context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE).edit()
             .putStringSet("scheduled_ids", setOf("gone")).commit()
         val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
         scheduler(repo).rescheduleAll(rearmOverdueSnooze = true)
         assertTrue(replays.isEmpty())
         assertEquals(1, scheduled.size)
-        val prefs = context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+        val prefs = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
         assertFalse(prefs.contains("scheduled_ids"))
         assertTrue(prefs.contains("scheduled_records"))
     }

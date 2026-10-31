@@ -40,7 +40,7 @@ class AlarmSchedulerImpl(
 ) : AlarmScheduler, SnoozeArmer {
 
     private val alarmManager: AlarmManager = context.getSystemService(AlarmManager::class.java)
-    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    private val prefs by lazy { deviceProtectedPrefs(context, PREFS) }
 
     // rescheduleAll() can run concurrently (boot, time change, UI, ringing); serialize the read-modify-write.
     private val mutex = Mutex()

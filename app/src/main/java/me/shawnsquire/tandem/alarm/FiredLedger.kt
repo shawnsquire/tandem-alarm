@@ -15,7 +15,7 @@ interface FiredLedger {
 
 /** Durable ledger. Writes use commit(): receivers may kill the process right after. */
 class SharedPrefsFiredLedger(context: Context) : FiredLedger {
-    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    private val prefs by lazy { deviceProtectedPrefs(context, PREFS) }
 
     override fun lastRang(alarmId: String): Instant? =
         if (prefs.contains(alarmId)) Instant.ofEpochMilli(prefs.getLong(alarmId, 0L)) else null
