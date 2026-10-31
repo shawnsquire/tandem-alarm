@@ -19,6 +19,11 @@ service cloud.firestore {
       return !(field in data) || data[field] == null || data[field] is string;
     }
 
+    // Absent, or a string. Null is not accepted.
+    function reasonOk(data) {
+      return !('reason' in data) || data.reason is string;
+    }
+
     function isMember(hid) {
       return isSignedIn() && request.auth.uid in householdMembers(hid);
     }
@@ -45,6 +50,9 @@ service cloud.firestore {
 
         // The sender must be a member, and `to` must be the other member.
         allow create: if isMember(hid)
+          && request.resource.data.keys().hasOnly(
+               ['from', 'to', 'type', 'alarmId', 'createdAt', 'expiresAt', 'status',
+                'occurrenceAt', 'ringId'])
           && request.resource.data.from == request.auth.uid
           && request.resource.data.to != request.auth.uid
           && request.resource.data.to in householdMembers(hid)
@@ -63,7 +71,8 @@ service cloud.firestore {
           && request.auth.uid == resource.data.to
           && resource.data.status == 'pending'
           && request.resource.data.status in ['applied', 'rejected']
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reason']);
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reason'])
+          && reasonOk(request.resource.data);
 
         allow delete: if false;
       }

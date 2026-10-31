@@ -132,16 +132,6 @@ describe("notifyCommandTarget", () => {
     expect(send.mock.calls[0][0]).toMatchObject({ android: { ttl: 24 * 3_600_000 } });
   });
 
-  it("includes reason when set", async () => {
-    await seedDevice({ fcmToken: TOKEN });
-    const data = await seedCommand({ type: "DISABLE", status: "rejected", reason: "expired" });
-
-    await notifyCommandTarget(HID, CID, data);
-
-    const { data: payload } = send.mock.calls[0][0] as { data: Record<string, string> };
-    expect(payload.reason).toBe("expired");
-  });
-
   it("sends only string values and no reserved FCM keys", async () => {
     await seedDevice({ fcmToken: TOKEN });
     const data = await seedCommand({
@@ -163,6 +153,7 @@ describe("notifyCommandTarget", () => {
       expect(key.startsWith("gcm.")).toBe(false);
     }
     expect(payload).not.toHaveProperty("extra");
+    expect(payload).not.toHaveProperty("reason");
   });
 
   it("does not send when the device has no fcmToken", async () => {

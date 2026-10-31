@@ -311,6 +311,12 @@ describe("households/{hid}/commands: create", () => {
     const { expiresAt: _omit, ...noExpiry } = command();
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), noExpiry));
   });
+  it("denies an unknown extra key", async () => {
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ foo: "x" })));
+  });
+  it("denies a reason on create", async () => {
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ reason: "x" })));
+  });
 });
 
 describe("households/{hid}/commands: update", () => {
@@ -324,6 +330,11 @@ describe("households/{hid}/commands: update", () => {
   it("lets the recipient move pending to rejected with a reason", async () => {
     await assertSucceeds(
       updateDoc(doc(dbFor(BOB), cmdPath("c1")), { status: "rejected", reason: "stale" }),
+    );
+  });
+  it("denies a non-string reason", async () => {
+    await assertFails(
+      updateDoc(doc(dbFor(BOB), cmdPath("c1")), { status: "rejected", reason: 5 }),
     );
   });
   it("denies the sender updating the status", async () => {

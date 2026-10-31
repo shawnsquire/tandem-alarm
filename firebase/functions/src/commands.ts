@@ -26,7 +26,6 @@ function commandPayload(householdId: string, commandId: string, c: CommandData):
   data.createdAt = millis(c.createdAt);
   data.expiresAt = millis(c.expiresAt);
   data.status = c.status;
-  if (c.reason != null) data.reason = c.reason;
   return data;
 }
 
