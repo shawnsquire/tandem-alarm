@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -45,18 +46,25 @@ class SwitchableAlarmRepository(
     // Guards the attached check together with a locked write, so every locked write is either
     // queued before the drain reads the queue or forwarded after it.
     private val lock = Any()
-    @Volatile private var attachment: Attachment? = null
+    private val attachment = MutableStateFlow<Attachment?>(null)
     private val mirrored = MutableStateFlow(mirror.read().alarms.map { it.alarm })
-    private val forwarding = MutableStateFlow<AlarmRepository?>(null)
 
     /** True once the drain has finished and calls go to the real repository. */
-    val isAttached: Boolean get() = forwarding.value != null
+    val isAttached: Boolean get() = attachment.value?.drained?.isCompleted == true
 
+    /** Collected after [attach], it waits for the drain like every other call (a reschedule reads it). */
     @OptIn(ExperimentalCoroutinesApi::class)
-    override val alarms: Flow<List<Alarm>> = forwarding.flatMapLatest { real ->
-        real?.alarms ?: mirrored.map { list ->
-            val now = clock()
-            list.map { it.withoutExpiredSkip(now) }
+    override val alarms: Flow<List<Alarm>> = attachment.flatMapLatest { a ->
+        if (a == null) {
+            mirrored.map { list ->
+                val now = clock()
+                list.map { it.withoutExpiredSkip(now) }
+            }
+        } else {
+            flow {
+                a.drained.await()
+                emitAll(a.real.alarms)
+            }
         }
     }
 
@@ -82,13 +90,10 @@ class SwitchableAlarmRepository(
      */
     fun attach(real: AlarmRepository) {
         val a = synchronized(lock) {
-            if (attachment != null) return
-            Attachment(real).also { attachment = it }
+            if (attachment.value != null) return
+            Attachment(real).also { attachment.value = it }
         }
-        scope.launch { drain(real) }.invokeOnCompletion {
-            forwarding.value = real
-            a.drained.complete(Unit)
-        }
+        scope.launch { drain(real) }.invokeOnCompletion { a.drained.complete(Unit) }
     }
 
     private suspend fun drain(real: AlarmRepository) {
@@ -118,7 +123,7 @@ class SwitchableAlarmRepository(
 
     private suspend fun write(w: DeferredWrite, change: (Alarm) -> Alarm, forward: suspend (AlarmRepository) -> Unit) {
         val attached = synchronized(lock) {
-            attachment ?: run {
+            attachment.value ?: run {
                 // Queue first: if that fails nothing changed; the mirror only reflects queued writes.
                 deferred.append(w)
                 mirror.update { s ->
@@ -133,7 +138,7 @@ class SwitchableAlarmRepository(
     }
 
     private suspend fun target(): AlarmRepository? {
-        val a = attachment ?: return null
+        val a = attachment.value ?: return null
         a.drained.await()
         return a.real
     }

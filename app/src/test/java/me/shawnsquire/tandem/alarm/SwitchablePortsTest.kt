@@ -166,13 +166,16 @@ class SwitchablePortsTest {
         repo.attach(real)
         runCurrent()
         val read = async { repo.get("a") }
+        val list = async { repo.alarms.first() }
         runCurrent()
         assertFalse(read.isCompleted)
+        assertFalse(list.isCompleted)
         assertFalse(repo.isAttached)
 
         gate.complete(Unit)
         runCurrent()
         assertEquals(alarm("a", enabled = false), read.await())
+        assertEquals(listOf(alarm("a", enabled = false)), list.await())
         assertTrue(repo.isAttached)
     }
 
