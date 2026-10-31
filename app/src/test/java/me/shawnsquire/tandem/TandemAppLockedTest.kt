@@ -9,7 +9,9 @@ import android.os.Looper
 import android.os.UserManager
 import androidx.work.WorkManager
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.alarm.AlarmEngine
 import me.shawnsquire.tandem.alarm.MirrorSnapshot
@@ -127,6 +129,7 @@ class TandemAppLockedTest {
         val alarms = engine.alarmRepository as SwitchableAlarmRepository
         assertFalse(alarms.isAttached)
         assertEquals(0, app.fullStartupRuns)
+        assertEquals(0, engine.scheduler.runs.get())
         // Weak on its own: Robolectric never runs WorkManager's InitializationProvider either way.
         assertFalse(WorkManager.isInitialized())
         assertEquals("CE storage touched while locked", emptyList<String>(), base.touches)
@@ -137,15 +140,23 @@ class TandemAppLockedTest {
         val container = app.container
         assertEquals(1, app.fullStartupRuns)
         assertSame(engine.scheduler, container.alarmScheduler)
-        awaitTrue("engine attached") { alarms.isAttached }
-        awaitTrue("mirror refreshed by rescheduleAll") {
-            SharedPrefsAlarmMirror(robolectricApp).read().snoozeMinutes != STALE_SNOOZE
-        }
+        // Exactly the stale-ring cleanup and one reschedule, both run to completion.
+        val work = app.startupAlarmWork
+        assertEquals(2, work.size)
+        withTimeout(10.seconds) { work.joinAll() }
+        assertTrue("startup alarm work completed normally", work.all { it.isCompleted && !it.isCancelled })
+        assertEquals("rescheduleAll runs at full startup", 1, engine.scheduler.runs.get())
+        assertTrue("engine attached", alarms.isAttached)
+        assertTrue(
+            "mirror refreshed by rescheduleAll",
+            SharedPrefsAlarmMirror(robolectricApp).read().snoozeMinutes != STALE_SNOOZE,
+        )
 
         // The receiver unregistered itself; a later broadcast or BOOT_COMPLETED changes nothing.
         unlock(app)
         app.ensureStarted()
         assertEquals(1, app.fullStartupRuns)
+        assertEquals(1, engine.scheduler.runs.get())
         assertSame(container, app.container)
     }
 

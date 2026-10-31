@@ -37,6 +37,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 import java.time.Instant
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -568,6 +569,27 @@ class RingingSessionTest {
         session.start("a", occurrence, false, null)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun claimReCheckReadFailureStillRings() = runTest {
+        val h = harness()
+        val reads = AtomicInteger()
+        // The first read succeeds; the re-check inside the claim (T2's stillDue) throws.
+        val flakyRepo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
+            override suspend fun get(id: String): Alarm? =
+                if (reads.incrementAndGet() == 1) h.repo.get(id) else throw IllegalStateException("db")
+        }
+        val session = RingingSession(
+            flakyRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = { h.finished++ },
+        )
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(2, reads.get()) // the re-check ran
+        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts) // the alarm from the first read
+        assertEquals(RingState("a", "ring-1", clockNow, null), h.rawStore.state.first())
+        assertEquals(0, h.finished)
     }
 
     // ---- D1: snoozes survive a supersede; atomic slot claims ----

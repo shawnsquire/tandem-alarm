@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,7 @@ import me.shawnsquire.tandem.schedule.nextOccurrence
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicInteger
 
 /** A snooze that came due this recently (same span as auto-silence) is re-armed instead of dropped. */
 internal val OVERDUE_SNOOZE_WINDOW: Duration = Duration.ofMinutes(10)
@@ -57,8 +59,13 @@ class AlarmSchedulerImpl(
      * that came due within the window, including those earlier plain runs set aside as missed.
      */
     suspend fun rescheduleAll(rearmOverdueSnooze: Boolean) = mutex.withLock {
+        runs.incrementAndGet()
         withContext(io) { rescheduleLocked(rearmOverdueSnooze) }
     }
+
+    /** Tests only: how many reschedules have started, so startup can be checked to run exactly one. */
+    @VisibleForTesting
+    internal val runs = AtomicInteger()
 
     /** Arms the snooze alarm for [ringId] directly; throws on failure so the caller can keep ringing. */
     override fun armSnooze(alarmId: String, ringId: String, at: Instant) {

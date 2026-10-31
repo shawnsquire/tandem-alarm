@@ -66,9 +66,10 @@ class AlarmEngineTest {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         shadowOf(app.getSystemService(UserManager::class.java)).setUserUnlocked(false)
         // TandemApp attaches the process engine at startup; its drain reads the same DE queue, so
-        // let it finish before a test queues anything.
+        // it must be done before a test queues anything. The startup rescheduleAll awaited above
+        // reads the alarms, which waits for that drain.
         val process = AlarmEngine.get(app).alarmRepository as SwitchableAlarmRepository
-        withTimeoutOrNull(5.seconds) { while (!process.isAttached) delay(10) }
+        assertTrue("process engine not attached after TandemApp's startup work", process.isAttached)
         // The ring-state DataStore is a static singleton: a RingState left by an earlier test survives.
         RingStateStoreImpl(app.ringStateDataStore).set(null)
     }
