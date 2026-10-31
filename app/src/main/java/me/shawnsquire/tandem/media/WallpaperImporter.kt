@@ -48,7 +48,7 @@ class WallpaperImporter(
         },
     )
 
-    private val dir get() = File(filesDir, "wallpapers")
+    private val dir get() = File(filesDir, WALLPAPERS_DIR)
 
     /** Decodes [uri] (downscaled to the screen), saves a JPEG, and returns its absolute path. */
     suspend fun import(uri: Uri): String = withContext(Dispatchers.IO) {
@@ -83,5 +83,9 @@ class WallpaperImporter(
         val file = File(path).canonicalFile
         if (file.parentFile != root) return false
         return file.isFile && file.delete()
+    }
+
+    companion object {
+        internal const val WALLPAPERS_DIR = "wallpapers"
     }
 }

@@ -14,9 +14,11 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.functions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.alarm.AlarmEngine
+import me.shawnsquire.tandem.media.MediaOrphanSweeper
 import me.shawnsquire.tandem.sync.SyncWorker
 import me.shawnsquire.tandem.sync.refreshFcmToken
 
@@ -104,6 +106,15 @@ class TandemApp : Application() {
         // refreshes the device-protected mirror on every start.
         val reschedule = container.syncScope.launch { container.alarmScheduler.rescheduleAll() }
         startupAlarmWork = listOf(clearStale, reschedule)
+        // Background housekeeping, never on a fire path; its repository reads wait for the drain.
+        container.syncScope.launch {
+            try {
+                MediaOrphanSweeper(filesDir, container.alarmRepository, container.settingsRepository).sweep()
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.w(TAG, "media orphan sweep failed", e)
+            }
+        }
     }
 
     private fun connectToEmulators() {

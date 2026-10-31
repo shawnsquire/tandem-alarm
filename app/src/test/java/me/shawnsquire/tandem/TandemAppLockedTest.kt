@@ -173,6 +173,25 @@ class TandemAppLockedTest {
     }
 
     @Test
+    fun fullStartupSweepsOrphanedMedia() = runBlocking {
+        val now = System.currentTimeMillis()
+        fun plant(dir: String, name: String, modified: Long) = File(File(robolectricApp.filesDir, dir).apply { mkdirs() }, name)
+            .apply { writeText("x"); check(setLastModified(modified)) }
+        val orphanWallpaper = plant("wallpapers", "orphan.jpg", now - 2 * HOUR)
+        val orphanTone = plant("ringtones", "orphan.mp3", now - 2 * HOUR)
+        val young = plant("ringtones", "editing.mp3", now - 60_000)
+
+        val (app, base) = startLockedApp()
+        assertTrue(orphanWallpaper.exists() && orphanTone.exists())
+
+        base.locked = false
+        unlock(app)
+
+        awaitTrue("orphans swept") { !orphanWallpaper.exists() && !orphanTone.exists() }
+        assertTrue(young.exists())
+    }
+
+    @Test
     fun ensureStartedWhileLockedDoesNothing() {
         val (app, base) = startLockedApp()
 
@@ -185,5 +204,6 @@ class TandemAppLockedTest {
 
     private companion object {
         const val STALE_SNOOZE = 99
+        const val HOUR = 60 * 60 * 1000L
     }
 }
