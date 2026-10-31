@@ -66,8 +66,12 @@ class AppContainer(private val context: Context) {
     val settingsRepository: SettingsRepository = SettingsRepositoryImpl(context.settingsDataStore)
 
     // U3: swap to real
-    val alarmScheduler: AlarmScheduler = FakeAlarmScheduler()
-    val ringingController: RingingController = FakeRingingController()
+    val alarmScheduler: AlarmScheduler =
+        me.shawnsquire.tandem.alarm.AlarmSchedulerImpl(context, alarmRepository, ringStateStore)
+    val ringingController: RingingController = me.shawnsquire.tandem.alarm.RingingControllerImpl(
+        alarmRepository, ringStateStore, settingsRepository, alarmScheduler,
+        me.shawnsquire.tandem.alarm.AndroidRingingNotifier(context),
+    )
 
     // U4: swap to real
     val syncScope = CoroutineScope(
