@@ -42,7 +42,7 @@ class RingingGuardsTest {
 class RingingServiceHelpersTest {
     private class RecordingSlot(private val hang: Boolean) : RingSlot {
         val clearStaleCalls = mutableListOf<Boolean>()
-        override suspend fun claimFire(newRing: RingState) = Unit
+        override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean) = true
         override suspend fun claimSnoozeResume(ringId: String, alarmId: String) = true
         override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) {
             clearStaleCalls += reschedule

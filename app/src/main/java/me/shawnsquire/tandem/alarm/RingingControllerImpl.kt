@@ -89,7 +89,14 @@ class RingingControllerImpl(
         Unit
     } }
 
-    override suspend fun claimFire(newRing: RingState) = withContext(NonCancellable) { mutex.withLock {
+    override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean = withContext(NonCancellable) { mutex.withLock {
+        val due = try {
+            stillDue()
+        } catch (e: Throwable) {
+            log("fire re-check failed; treating the ring as due", e)
+            true
+        }
+        if (!due) return@withLock false
         val current = try {
             ringStateStore.state.first()
         } catch (e: Throwable) {
@@ -99,6 +106,7 @@ class RingingControllerImpl(
         supersedeLocked(current, newRing.ringId)
         // Only this write may throw: a throw means the new ring was not written.
         ringStateStore.set(newRing)
+        true
     } }
 
     override suspend fun claimSnoozeResume(ringId: String, alarmId: String): Boolean =

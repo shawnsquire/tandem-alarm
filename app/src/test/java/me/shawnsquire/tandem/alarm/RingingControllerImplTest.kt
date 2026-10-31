@@ -1,11 +1,13 @@
 package me.shawnsquire.tandem.alarm
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
@@ -312,6 +314,37 @@ class RingingControllerImplTest {
         }
         val c = RingingControllerImpl(h.repo, unreadable, h.settings, h.scheduler, h.armer, h.notifier, h.ledger) { now }
         c.claimFire(ringB)
+        assertEquals(ringB, h.store.state.first())
+    }
+
+    @Test fun claimFireNotStillDueWritesNothingAndSupersedesNothing() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringing)
+        assertFalse(h.controller().claimFire(ringB) { false })
+        assertEquals(ringing, h.store.state.first()) // the sounding ring stays
+        assertTrue(h.repo.get("a")!!.enabled) // not dismissed
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun claimFireWritesWhenStillDueThrows() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        assertTrue(h.controller().claimFire(ringB) { throw IllegalStateException("db") })
+        assertEquals(ringB, h.store.state.first())
+    }
+
+    @Test fun claimFireStillDueRunsInsideTheLock() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringing)
+        val c = h.controller()
+        val gate = CompletableDeferred<Unit>()
+        val claim = launch { c.claimFire(ringB) { gate.await(); true } }
+        runCurrent()
+        val dismiss = launch { c.dismiss("ring-1") }
+        runCurrent()
+        // The dismiss waits for the claim: it cannot slip in between stillDue and the write.
+        assertTrue(dismiss.isActive)
+        assertEquals(ringing, h.store.state.first())
+        assertTrue(h.repo.get("a")!!.enabled)
+        gate.complete(Unit)
+        claim.join(); dismiss.join()
         assertEquals(ringB, h.store.state.first())
     }
 
