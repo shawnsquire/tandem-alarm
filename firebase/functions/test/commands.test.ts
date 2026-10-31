@@ -104,6 +104,34 @@ describe("notifyCommandTarget", () => {
     expect(payload).not.toHaveProperty("reason");
   });
 
+  it("omits null occurrenceAt and ringId from the payload", async () => {
+    await seedDevice({ fcmToken: TOKEN });
+    const data = await seedCommand({ type: "ENABLE", occurrenceAt: null, ringId: null });
+
+    await notifyCommandTarget(HID, CID, data);
+
+    const { data: payload } = send.mock.calls[0][0] as { data: Record<string, string> };
+    expect(payload).not.toHaveProperty("occurrenceAt");
+    expect(payload).not.toHaveProperty("ringId");
+  });
+
+  it("caps the FCM ttl at 24 hours", async () => {
+    await seedDevice({ fcmToken: TOKEN });
+    const data = await seedCommand({
+      type: "ENABLE",
+      expiresAt: Timestamp.fromMillis(CREATED_MS + 7 * 24 * 3_600_000),
+    });
+
+    const now = jest.spyOn(Date, "now").mockReturnValue(CREATED_MS);
+    try {
+      await notifyCommandTarget(HID, CID, data);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(send.mock.calls[0][0]).toMatchObject({ android: { ttl: 24 * 3_600_000 } });
+  });
+
   it("includes reason when set", async () => {
     await seedDevice({ fcmToken: TOKEN });
     const data = await seedCommand({ type: "DISABLE", status: "rejected", reason: "expired" });

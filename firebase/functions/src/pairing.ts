@@ -1,5 +1,6 @@
 import { randomInt } from "crypto";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
+import { logger } from "firebase-functions";
 import { CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 
 // No 0/O/1/I, which are easy to misread.
@@ -114,7 +115,14 @@ export async function unpairFor(uid: string): Promise<void> {
     return ref;
   });
   // The subcollections are unreachable by now; clear them out.
-  if (householdRef) await db.recursiveDelete(householdRef);
+  if (householdRef) {
+    try {
+      await db.recursiveDelete(householdRef);
+    } catch (e) {
+      // Swallowed: the pairing is already gone and a retry would no-op; leftovers are unreadable orphans.
+      logger.error("unpair cleanup failed", { householdId: householdRef.id, error: e });
+    }
+  }
 }
 
 export const createPairCode = onCall((request) => createPairCodeFor(requireUid(request)));

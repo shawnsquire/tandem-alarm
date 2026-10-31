@@ -5,6 +5,9 @@ import { sendMessage } from "./messaging";
 
 type CommandData = FirebaseFirestore.DocumentData;
 
+// Commands live 24 hours, so FCM never needs to hold one longer.
+const MAX_TTL_MS = 24 * 60 * 60 * 1000;
+
 const millis = (ts: Timestamp) => String(ts.toMillis());
 
 /** Builds the FCM data payload field by field; absent optional fields are omitted. */
@@ -42,7 +45,7 @@ export async function notifyCommandTarget(
     token,
     data: commandPayload(householdId, commandId, command),
     // Don't let FCM deliver a command after it has expired (default TTL is 4 weeks).
-    android: { priority: "high", ttl: Math.max(0, (command.expiresAt as Timestamp).toMillis() - Date.now()) },
+    android: { priority: "high", ttl: Math.min(MAX_TTL_MS, Math.max(0, (command.expiresAt as Timestamp).toMillis() - Date.now())) },
   });
 }
 
