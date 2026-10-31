@@ -15,9 +15,13 @@ import me.shawnsquire.tandem.media.ringtoneTitle
 import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
 import me.shawnsquire.tandem.ui.alarms.AlarmsViewModel
+import me.shawnsquire.tandem.ui.alarms.HealthBannerViewModel
+import me.shawnsquire.tandem.ui.alarms.SharedPrefsBannerPrefs
 import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditViewModel
 import me.shawnsquire.tandem.ui.partner.PartnerViewModel
 import me.shawnsquire.tandem.ui.settings.SettingsViewModel
+import me.shawnsquire.tandem.ui.settings.health.AndroidHealthProbe
+import me.shawnsquire.tandem.ui.settings.health.HealthViewModel
 import java.util.UUID
 
 /** The only place ui touches [AppContainer]. */
@@ -95,5 +99,26 @@ val settingsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
         )
+    }
+}
+
+val healthViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
+    initializer {
+        val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as TandemApp
+        val container = container()
+        HealthViewModel(
+            probe = AndroidHealthProbe(app),
+            signals = container.healthSignals,
+            partnerRepository = container.partnerRepository,
+            clock = LiveZoneClock,
+            ticker = tickerFlow(),
+        )
+    }
+}
+
+val healthBannerViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
+    initializer {
+        val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as TandemApp
+        HealthBannerViewModel(probe = AndroidHealthProbe(app), prefs = SharedPrefsBannerPrefs(app))
     }
 }

@@ -89,4 +89,32 @@
     <string name="settings_error_ringtone">Couldn\'t use that sound file.</string>
     <string name="settings_error_wallpaper">Couldn\'t use that image.</string>
     <string name="settings_error_save">Couldn\'t save that change. Try again.</string>
+
+    <string name="health_fix">Fix</string>
+    <string name="health_status_ok">OK</string>
+    <string name="health_status_problem">Needs attention</string>
+    <string name="health_status_info">Information</string>
+    <string name="health_exact_title">Exact alarms</string>
+    <string name="health_exact_ok">Alarms can ring at the exact time.</string>
+    <string name="health_exact_bad">Without this, alarms can ring late.</string>
+    <string name="health_fsi_title">Full-screen alarm</string>
+    <string name="health_fsi_ok">The alarm screen can open over the lock screen.</string>
+    <string name="health_fsi_bad">Without this, the alarm screen may not appear on a locked phone.</string>
+    <string name="health_notif_title">Notifications</string>
+    <string name="health_notif_ok">The ringing notification can show Stop and Snooze.</string>
+    <string name="health_notif_bad">Without it you can\'t stop an alarm from the notification.</string>
+    <string name="health_notif_required">Required</string>
+    <string name="health_battery_title">Battery optimization</string>
+    <string name="health_battery_ok">Not restricted. Sync can run in the background.</string>
+    <string name="health_battery_bad">Android may delay sync and partner commands while the phone is idle.</string>
+    <string name="health_token_title">Push token</string>
+    <string name="health_token_ok">This phone can receive messages from your partner.</string>
+    <string name="health_token_bad">No push token yet. Check your connection; it is created when you are online.</string>
+    <string name="health_lastfcm_title">Last message received</string>
+    <string name="health_lastfcm_never">None yet</string>
+    <string name="health_partner_title">Partner last seen</string>
+    <string name="health_partner_none">No activity from your partner yet.</string>
+    <string name="health_partner_stale">Their phone may be asleep or offline. Their alarms still ring on their own phone.</string>
+    <string name="setup_banner_text">Alarms might not ring properly. Tap to finish setup.</string>
+    <string name="setup_banner_dismiss">Dismiss</string>
 </resources>

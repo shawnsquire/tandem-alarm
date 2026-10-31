@@ -81,6 +81,7 @@ fun MainScreen() {
                     onEditAlarm = { id -> navController.navigate("alarm/edit?id=$id") },
                     deletedAlarmId = deletedId,
                     onDeletedConsumed = { entry.savedStateHandle[DELETED_ALARM_KEY] = null },
+                    onOpenHealth = { navController.navigate(HEALTH_ROUTE) },
                 )
             }
             composable(

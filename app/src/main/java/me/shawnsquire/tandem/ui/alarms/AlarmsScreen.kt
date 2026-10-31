@@ -15,6 +15,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import me.shawnsquire.tandem.ui.healthBannerViewModelFactory
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.SuggestionChip
@@ -66,9 +71,17 @@ fun AlarmsRoute(
     /** Set by the editor's Delete button; consumed once, then [onDeletedConsumed] clears it. */
     deletedAlarmId: String? = null,
     onDeletedConsumed: () -> Unit = {},
+    onOpenHealth: () -> Unit = {},
     viewModel: AlarmsViewModel = viewModel(factory = alarmsViewModelFactory),
+    bannerViewModel: HealthBannerViewModel = viewModel(factory = healthBannerViewModelFactory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val showBanner by bannerViewModel.visible.collectAsStateWithLifecycle()
+    // Returning from the Settings screens re-checks, so the card disappears once things are fixed.
+    LifecycleResumeEffect(bannerViewModel) {
+        bannerViewModel.refresh()
+        onPauseOrDispose {}
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val message = stringResource(R.string.alarm_deleted)
     val undo = stringResource(R.string.alarm_deleted_undo)
@@ -107,6 +120,12 @@ fun AlarmsRoute(
         onToggleEnabled = viewModel::setEnabled,
         onSkipNext = viewModel::skipNext,
         onUnskip = viewModel::unskip,
+        showSetupBanner = showBanner,
+        onSetupBannerClick = {
+            bannerViewModel.dismiss()
+            onOpenHealth()
+        },
+        onSetupBannerDismiss = bannerViewModel::dismiss,
         modifier = modifier,
     )
 }
@@ -121,6 +140,9 @@ fun AlarmsScreen(
     onSkipNext: (String) -> Unit,
     onUnskip: (String) -> Unit,
     modifier: Modifier = Modifier,
+    showSetupBanner: Boolean = false,
+    onSetupBannerClick: () -> Unit = {},
+    onSetupBannerDismiss: () -> Unit = {},
 ) {
     val is24Hour = DateFormat.is24HourFormat(LocalContext.current)
     Scaffold(
@@ -135,8 +157,10 @@ fun AlarmsScreen(
             )
         },
     ) { padding ->
+      Column(Modifier.fillMaxSize().padding(padding)) {
+        if (showSetupBanner) SetupBanner(onSetupBannerClick, onSetupBannerDismiss)
         if (state.loaded && state.rows.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(padding).padding(32.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.weight(1f).fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
                     stringResource(R.string.alarms_empty),
                     style = MaterialTheme.typography.bodyLarge,
@@ -145,7 +169,7 @@ fun AlarmsScreen(
             }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(padding),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 // Leave room so the FAB never covers the last row's switch.
                 contentPadding = PaddingValues(bottom = 96.dp),
             ) {
@@ -160,6 +184,35 @@ fun AlarmsScreen(
                         onUnskip = { onUnskip(row.id) },
                     )
                 }
+            }
+        }
+      }
+    }
+}
+
+@Composable
+private fun SetupBanner(onClick: () -> Unit, onDismiss: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                stringResource(R.string.setup_banner_text),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.setup_banner_dismiss),
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                )
             }
         }
     }
@@ -279,5 +332,16 @@ private fun AlarmsScreenPreview() {
 private fun AlarmsScreenEmptyPreview() {
     TandemTheme {
         AlarmsScreen(AlarmsUiState(loaded = true), remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {})
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun AlarmsScreenBannerPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            previewState, remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+            showSetupBanner = true,
+        )
     }
 }
