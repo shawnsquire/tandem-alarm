@@ -348,5 +348,7 @@ class AlarmEngineTest {
         assertTrue(pm.getActivityInfo(name(RingingActivity::class.java), 0).directBootAware)
         val boot = pm.queryBroadcastReceivers(Intent(Intent.ACTION_LOCKED_BOOT_COMPLETED).setPackage(app.packageName), 0)
         assertEquals(listOf(BootReceiver::class.java.name), boot.map { it.activityInfo.name })
+        val updated = pm.queryBroadcastReceivers(Intent(Intent.ACTION_MY_PACKAGE_REPLACED).setPackage(app.packageName), 0)
+        assertEquals(listOf(BootReceiver::class.java.name), updated.map { it.activityInfo.name })
     }
 }

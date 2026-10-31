@@ -14,6 +14,7 @@ import me.shawnsquire.tandem.schedule.nextOccurrence
 import me.shawnsquire.tandem.sync.PreFireCheck
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -91,6 +92,44 @@ class LockedComponentsTest {
         }
         assertEquals(nextOccurrence(repeating, Instant.now(), zone)!!.toEpochMilli(), armed.triggerAtMs)
         assertTrue("an alarm clock, with a show intent", armed.showIntent != null)
+    }
+
+    /** A record whose occurrence passed 2 minutes ago: a boot replays it, a plain reschedule must not. */
+    private fun seedRecentlyMissedRecord(id: String) {
+        val missedAt = Instant.now().minusSeconds(120).toEpochMilli()
+        deviceProtectedPrefs(app, "alarm_scheduler").edit()
+            .putStringSet("scheduled_records", setOf("$missedAt|$id")).commit()
+    }
+
+    @Test
+    fun bootCompletedReplaysARecentlyMissedAlarm() {
+        // Control for the test below: the same setup does show a replay on a boot.
+        val time = Instant.now().atZone(zone).plusHours(3)
+        val engine = lockedProcessEngine(alarm("a", time.hour, time.minute))
+        seedRecentlyMissedRecord("a")
+
+        BootReceiver().onReceive(app, Intent(Intent.ACTION_LOCKED_BOOT_COMPLETED))
+
+        awaitMain("replay armed") { AlarmIntents.existingReplayPendingIntent(app, "a") }
+        assertEquals(1, (engine.scheduler as AlarmSchedulerImpl).runs.get())
+    }
+
+    @Test
+    fun myPackageReplacedRunsAPlainRescheduleWithoutReplays() {
+        val time = Instant.now().atZone(zone).plusHours(3)
+        val engine = lockedProcessEngine(alarm("a", time.hour, time.minute))
+        seedRecentlyMissedRecord("a")
+
+        BootReceiver().onReceive(app, Intent(Intent.ACTION_MY_PACKAGE_REPLACED))
+
+        val alarmManager = shadowOf(app.getSystemService(AlarmManager::class.java))
+        awaitMain("alarm armed by the reschedule") {
+            alarmManager.scheduledAlarms.firstOrNull {
+                shadowOf(it.operation!!).savedIntent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID) == "a"
+            }
+        }
+        assertEquals("scheduler ran", 1, (engine.scheduler as AlarmSchedulerImpl).runs.get())
+        assertNull("no replay on an update", AlarmIntents.existingReplayPendingIntent(app, "a"))
     }
 
     private class CountingPreFire : PreFireCheck {
