@@ -12,22 +12,23 @@ const val RING_GRACE_MS = 10_000L
 
 /**
  * Decides when the ringing screen should finish. The activity launches before the session's
- * pre-fire check, so the first states may be null or stale; only a transition after a ring
- * was seen ends the screen.
+ * pre-fire check, so the first states may be null or stale. A different active ring replaces the
+ * one shown (a superseding alarm); the screen ends only when the shown ring ends (null or snoozed).
  */
 class RingingScreenModel {
-    /** The ringId of the active ring, once one has been seen. */
-    var ringId: String? = null
+    /** The ring currently shown, once one has been seen. */
+    var ring: RingState? = null
         private set
+
+    val ringId: String? get() = ring?.ringId
 
     /** Feed each store emission. Returns true when the screen should finish. */
     fun onState(state: RingState?): Boolean {
-        val seen = ringId
-        if (seen == null) {
-            if (state != null && state.snoozedUntil == null) ringId = state.ringId
-            return false
-        }
-        return state == null || state.ringId != seen || state.snoozedUntil != null
+        if (state == null) return ringId != null
+        if (state.snoozedUntil != null) return ringId != null
+        // First ring seen, or a superseding ring: adopt it without finishing.
+        ring = state
+        return false
     }
 
     /** The grace period elapsed. Finish only if no active ring was ever seen. */
@@ -35,6 +36,7 @@ class RingingScreenModel {
 }
 
 /**
+ * [onRing] is called with the ring being shown whenever it changes (first seen or superseded).
  * Returns when the screen should finish: a ring ended after being seen, or no active ring
  * appeared within [graceMs].
  */
@@ -42,9 +44,17 @@ suspend fun awaitRingEnd(
     states: Flow<RingState?>,
     model: RingingScreenModel = RingingScreenModel(),
     graceMs: Long = RING_GRACE_MS,
+    onRing: (RingState) -> Unit = {},
 ) = coroutineScope {
     val ended = CompletableDeferred<Unit>()
-    val collector = launch { states.collect { if (model.onState(it)) ended.complete(Unit) } }
+    val collector = launch {
+        states.collect {
+            val before = model.ringId
+            val done = model.onState(it)
+            model.ring?.takeIf { r -> r.ringId != before }?.let(onRing)
+            if (done) ended.complete(Unit)
+        }
+    }
     val timer = launch {
         delay(graceMs)
         if (model.onGraceElapsed()) ended.complete(Unit)

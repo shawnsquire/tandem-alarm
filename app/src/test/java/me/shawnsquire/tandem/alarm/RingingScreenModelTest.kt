@@ -31,11 +31,39 @@ class RingingScreenModelTest {
         assertTrue(m.onState(null))
     }
 
-    @Test fun differentRingIdFinishes() {
+    @Test fun differentRingIdIsAdopted() {
         val m = RingingScreenModel()
         m.onState(ring("X"))
         assertFalse(m.onState(ring("X")))
-        assertTrue(m.onState(ring("Y")))
+        assertFalse(m.onState(ring("Y")))
+        assertEquals("Y", m.ringId)
+        assertTrue(m.onState(null))
+    }
+
+    @Test fun adoptedRingSnoozeFinishes() {
+        val m = RingingScreenModel()
+        m.onState(ring("X"))
+        m.onState(ring("Y"))
+        assertTrue(m.onState(ring("Y", snoozed = true)))
+    }
+
+    @Test fun differentRingArrivingSnoozedFinishes() {
+        val m = RingingScreenModel()
+        m.onState(ring("X"))
+        assertTrue(m.onState(ring("Y", snoozed = true)))
+    }
+
+    @Test fun awaitReportsAdoptedRings() = runTest {
+        val flow = MutableStateFlow<RingState?>(null)
+        val seen = mutableListOf<String>()
+        var done = false
+        launch { awaitRingEnd(flow, graceMs = 10_000, onRing = { seen += it.ringId }); done = true }
+        flow.value = ring("X"); runCurrent()
+        flow.value = ring("Y"); runCurrent()
+        assertEquals(listOf("X", "Y"), seen)
+        assertFalse(done)
+        flow.value = null; runCurrent()
+        assertTrue(done)
     }
 
     @Test fun snoozeFinishes() {

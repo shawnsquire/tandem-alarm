@@ -59,7 +59,7 @@ import java.time.format.FormatStyle
 
 /** Full-screen ringing UI. Finishes when the ring ends (see [RingingScreenModel]). */
 class RingingActivity : ComponentActivity() {
-    private var ringId by mutableStateOf<String?>(null)
+    private var ring by mutableStateOf<RingState?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,21 +72,18 @@ class RingingActivity : ComponentActivity() {
 
         val container = (application as TandemApp).container
         val model = RingingScreenModel()
-        val states = container.ringStateStore.state
 
         lifecycleScope.launch {
-            launch {
-                states.collect { s -> ringId = if (s != null && s.snoozedUntil == null) s.ringId else null }
-            }
-            awaitRingEnd(states, model)
+            awaitRingEnd(container.ringStateStore.state, model, onRing = { ring = it })
             finish()
         }
 
         setContent {
             TandemTheme {
-                val state by produceState<RingState?>(null) { states.collect { value = it } }
-                val alarm by produceState<Alarm?>(null, state?.alarmId) {
-                    value = state?.alarmId?.let { container.alarmRepository.get(it) }
+                val current = ring
+                val alarm by produceState<Alarm?>(null, current?.ringId) {
+                    value = null
+                    value = current?.let { container.alarmRepository.get(it.alarmId) }
                 }
                 val defaultPath by produceState<String?>(null) {
                     container.settingsRepository.defaultWallpaperPath.collect { value = it }
@@ -94,9 +91,9 @@ class RingingActivity : ComponentActivity() {
                 RingingScreen(
                     label = alarm?.label.orEmpty(),
                     wallpaperPaths = chooseWallpaperPaths(alarm?.wallpaperPath, defaultPath),
-                    canAct = ringId != null,
+                    canAct = current != null,
                     onStop = {
-                        val id = ringId ?: return@RingingScreen
+                        val id = current?.ringId ?: return@RingingScreen
                         lifecycleScope.launch { container.ringingController.dismiss(id) }
                     },
                     onSnooze = {
