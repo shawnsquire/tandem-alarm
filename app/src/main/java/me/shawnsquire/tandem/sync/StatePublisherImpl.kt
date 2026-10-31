@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
@@ -93,6 +94,31 @@ class StatePublisherImpl(
                     }
                 }
         }
+    }
+
+    /**
+     * Heartbeat: rewrites the device doc from the current inputs (fresh `updatedAt`, `nextOccurrenceAt`
+     * in the live zone, current token) with one merge write, bypassing the pipeline's de-duplication.
+     * True when the server acknowledged the write; false when unpaired or the write failed. Only the
+     * caller's own cancellation propagates.
+     */
+    suspend fun publishNow(): Boolean = try {
+        val h = household.first()
+        if (h == null) {
+            false
+        } else {
+            val now = clock.instant()
+            val data = deviceDocMap(
+                displayName.first(), fcmToken.first(), alarms.alarms.first(), ringState.state.first(), now, clock.zone,
+            )
+            writer.writeAndAwait(h, data)
+            true
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Log.w(TAG, "device doc heartbeat failed", e)
+        false
     }
 
     private companion object {

@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.sync.AndroidCommandNotifier
 import me.shawnsquire.tandem.sync.AuthManager
 import me.shawnsquire.tandem.sync.CommandApplier
@@ -91,13 +92,18 @@ class AppContainer(private val context: Context) {
         AndroidCommandNotifier(context), LiveZoneClock, syncScope,
     )
     val commandApplier: CommandApplier = commandApplierImpl
-    val preFireCheckImpl = PreFireCheckImpl(householdFlow, commandRemote, commandApplierImpl::applyPending)
+    val preFireCheckImpl = PreFireCheckImpl(
+        householdFlow, commandRemote, commandApplierImpl::applyPending,
+        // Lazy capture: statePublisherImpl is declared below, but this only runs after construction.
+        onSuccess = { syncScope.launch { statePublisherImpl.publishNow() } },
+    )
     val preFireCheck: PreFireCheck = preFireCheckImpl
     val commandSender: CommandSender = CommandSenderImpl(commandRemote, household, LiveZoneClock)
-    val statePublisher: StatePublisher = StatePublisherImpl(
+    val statePublisherImpl = StatePublisherImpl(
         alarmRepository, ringStateStore, householdFlow, authManager.displayName, fcmTokenStore.token,
         FirestoreDeviceDocWriter(firestore), LiveZoneClock, syncScope,
     )
+    val statePublisher: StatePublisher = statePublisherImpl
     val ringingCommandListener =
         RingingCommandListener(ringStateStore.state, householdFlow, commandRemote, commandApplierImpl::applyPending, syncScope)
     val healthSignalsImpl = HealthSignalsImpl(context.syncDataStore, fcmTokenStore)

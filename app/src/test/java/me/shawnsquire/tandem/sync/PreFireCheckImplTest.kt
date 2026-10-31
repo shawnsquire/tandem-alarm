@@ -28,11 +28,13 @@ class PreFireCheckImplTest {
     private val applied = mutableListOf<Pair<Household, Command>>()
     private var applyFailsFor: String? = null
 
-    private fun check(household: kotlinx.coroutines.flow.Flow<Household?> = MutableStateFlow(hh)) =
-        PreFireCheckImpl(household, remote) { h, c ->
-            applied += h to c
-            if (c.id == applyFailsFor) error("boom")
-        }
+    private fun check(
+        household: kotlinx.coroutines.flow.Flow<Household?> = MutableStateFlow(hh),
+        onSuccess: () -> Unit = {},
+    ) = PreFireCheckImpl(household, remote, { h, c ->
+        applied += h to c
+        if (c.id == applyFailsFor) error("boom")
+    }, onSuccess)
 
     private fun cmd(id: String, createdAt: String) = Command(
         id, "them", "me", CommandType.STOP_RINGING, "a1", null, "r1",
@@ -121,5 +123,35 @@ class PreFireCheckImplTest {
         job.cancel()
         advanceUntilIdle()
         assertTrue(done.await())
+    }
+
+    @Test
+    fun `onSuccess runs after a successful pullAndApply`() = runTest {
+        var calls = 0
+        assertTrue(check(onSuccess = { calls++ }).pullAndApply(3.seconds))
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun `onSuccess does not run after a timed out or failed pull or unpaired`() = runTest {
+        var calls = 0
+        remote.fetchBlock = { awaitCancellation() }
+        assertFalse(check(onSuccess = { calls++ }).pullAndApply(1.seconds))
+        remote.fetchBlock = { error("net") }
+        assertFalse(check(onSuccess = { calls++ }).pullAndApply(3.seconds))
+        assertFalse(check(MutableStateFlow(null), onSuccess = { calls++ }).pullAndApply(3.seconds))
+        assertEquals(0, calls)
+    }
+
+    @Test
+    fun `a throwing onSuccess does not change the result`() = runTest {
+        assertTrue(check(onSuccess = { error("boom") }).pullAndApply(3.seconds))
+    }
+
+    @Test
+    fun `worker pull does not trigger onSuccess`() = runTest {
+        var calls = 0
+        assertTrue(check(onSuccess = { calls++ }).pull(30.seconds))
+        assertEquals(0, calls)
     }
 }

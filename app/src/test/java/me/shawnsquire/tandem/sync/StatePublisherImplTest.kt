@@ -29,6 +29,7 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class StatePublisherImplTest {
     private val zone = ZoneOffset.UTC
+    private var liveZone: ZoneId = ZoneOffset.UTC
     private val start = Instant.parse("2026-03-02T05:00:00Z") // Monday
     private val hh = Household("h1", "me", "them")
 
@@ -46,6 +47,13 @@ class StatePublisherImplTest {
                 error("boom")
             }
         }
+
+        val awaited = mutableListOf<Pair<Household, Map<String, Any?>>>()
+        var failAwait = false
+        override suspend fun writeAndAwait(household: Household, data: Map<String, Any?>) {
+            if (failAwait) error("offline")
+            awaited += household to data
+        }
     }
 
     private class Env(
@@ -62,7 +70,7 @@ class StatePublisherImplTest {
         fcmToken: kotlinx.coroutines.flow.Flow<String?> = MutableStateFlow("tok"),
     ): Env {
         val clock = object : Clock() {
-            override fun getZone(): ZoneId = ZoneOffset.UTC
+            override fun getZone(): ZoneId = liveZone
             override fun withZone(zone: ZoneId): Clock = this
             override fun instant(): Instant = start.plusMillis(testScheduler.currentTime)
         }
@@ -230,5 +238,74 @@ class StatePublisherImplTest {
         val pastSkip = weekly.copy(enabled = false, skippedOccurrenceAt = now.minusSeconds(5))
         assertNull(nextPublishBoundary(listOf(pastSkip), now, zone))
         assertNull(nextPublishBoundary(emptyList(), now, zone))
+    }
+
+    @Test
+    fun `publishNow writes again even when nothing changed since the pipeline write`() = runTest {
+        val e = env()
+        e.publisher.start()
+        advance(2_000)
+        assertEquals(1, e.writer.writes.size)
+        assertTrue(e.publisher.publishNow())
+        assertTrue(e.publisher.publishNow())
+        assertEquals(2, e.writer.awaited.size)
+        val (h, data) = e.writer.awaited.last()
+        assertEquals(hh, h)
+        assertTrue(data["updatedAt"] is com.google.firebase.firestore.FieldValue)
+        assertEquals("tok", data["fcmToken"])
+        // Pipeline write count is untouched: the heartbeat is its own single write.
+        assertEquals(1, e.writer.writes.size)
+    }
+
+    @Test
+    fun `publishNow returns false and does not write while unpaired`() = runTest {
+        val e = env(paired = false)
+        assertFalse(e.publisher.publishNow())
+        assertTrue(e.writer.awaited.isEmpty())
+        assertTrue(e.writer.writes.isEmpty())
+    }
+
+    @Test
+    fun `publishNow returns false when the write fails`() = runTest {
+        val e = env()
+        e.writer.failAwait = true
+        assertFalse(e.publisher.publishNow())
+    }
+
+    @Test
+    fun `publishNow recomputes nextOccurrenceAt from the live zone and instant`() = runTest {
+        val e = env()
+        assertTrue(e.publisher.publishNow())
+        assertEquals(
+            Timestamp(Instant.parse("2026-03-02T06:30:00Z").epochSecond, 0),
+            e.writer.awaited.last().second.firstAlarm()["nextOccurrenceAt"],
+        )
+        liveZone = ZoneId.of("America/New_York") // 06:30 EST = 11:30Z
+        assertTrue(e.publisher.publishNow())
+        assertEquals(
+            Timestamp(Instant.parse("2026-03-02T11:30:00Z").epochSecond, 0),
+            e.writer.awaited.last().second.firstAlarm()["nextOccurrenceAt"],
+        )
+    }
+
+    @Test
+    fun `runSyncOnce with no state change still heartbeats with updatedAt each run`() = runTest {
+        val e = env()
+        e.publisher.start()
+        advance(2_000)
+        var pulls = 0
+        repeat(2) { runSyncOnce(pull = { pulls++; true }, publishNow = e.publisher::publishNow) }
+        assertEquals(2, pulls)
+        assertEquals(2, e.writer.awaited.size)
+        assertTrue(e.writer.awaited.all { it.second.containsKey("updatedAt") })
+    }
+
+    @Test
+    fun `runSyncOnce heartbeats even when the pull throws and survives a hung heartbeat`() = runTest {
+        var beats = 0
+        runSyncOnce(pull = { error("net") }, publishNow = { beats++; true })
+        assertEquals(1, beats)
+        runSyncOnce(pull = { true }, publishNow = { kotlinx.coroutines.awaitCancellation() })
+        assertEquals(10_000, testScheduler.currentTime)
     }
 }

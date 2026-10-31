@@ -21,7 +21,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
     override suspend fun doWork(): Result {
         try {
             val app = applicationContext as? TandemApp ?: return Result.success()
-            app.container.preFireCheckImpl.pull(PULL_BUDGET)
+            val c = app.container
+            runSyncOnce(
+                pull = { c.preFireCheckImpl.pull(PULL_BUDGET) },
+                publishNow = { c.statePublisherImpl.publishNow() },
+            )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -67,3 +71,27 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         }
     }
 }
+
+/**
+ * One worker pass: pull pending commands, then heartbeat the device doc (awaiting the ack, capped at
+ * 10 s, so the process stays alive long enough for the write). The heartbeat runs even if the pull
+ * failed. Only the caller's cancellation propagates.
+ */
+internal suspend fun runSyncOnce(pull: suspend () -> Boolean, publishNow: suspend () -> Boolean) {
+    try {
+        pull()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Log.w("SyncWorker", "sync pull failed", e)
+    }
+    try {
+        kotlinx.coroutines.withTimeoutOrNull(HEARTBEAT_BUDGET) { publishNow() }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Log.w("SyncWorker", "heartbeat failed", e)
+    }
+}
+
+private val HEARTBEAT_BUDGET = 10.seconds

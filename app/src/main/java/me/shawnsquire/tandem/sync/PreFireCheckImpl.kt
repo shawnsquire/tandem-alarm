@@ -19,9 +19,21 @@ class PreFireCheckImpl(
     private val household: Flow<Household?>,
     private val remote: CommandRemote,
     private val applyPending: suspend (Household, Command) -> Unit,
+    /** Invoked after a successful pre-fire pull; must not block (the caller's 3 s budget is spent). */
+    private val onSuccess: () -> Unit = {},
 ) : PreFireCheck {
 
-    override suspend fun pullAndApply(timeout: Duration): Boolean = pull(minOf(timeout, MAX_TIMEOUT))
+    override suspend fun pullAndApply(timeout: Duration): Boolean {
+        val ok = pull(minOf(timeout, MAX_TIMEOUT))
+        if (ok) {
+            try {
+                onSuccess()
+            } catch (e: Throwable) {
+                Log.w(TAG, "onSuccess failed", e)
+            }
+        }
+        return ok
+    }
 
     /** Server pull with an explicit budget (the worker uses a longer one). True only if the server read succeeded. */
     internal suspend fun pull(timeout: Duration): Boolean = try {
