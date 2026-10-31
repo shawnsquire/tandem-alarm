@@ -492,6 +492,83 @@ class AlarmSchedulerImplTest {
         assertTrue(replays.isEmpty())
     }
 
+    // A plain reschedule (full startup, T4's clearStale, the UI) can take the mutex before the
+    // boot or time-change rearm run; the occurrence it moves past must still be replayed.
+
+    private val missed: Set<String>
+        get() = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+            .getStringSet("missed_records", emptySet()).orEmpty()
+
+    @Test
+    fun plainRescheduleBeforeRearmStillReplaysMissedAlarm() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        assertTrue(replays.isEmpty())
+        assertEquals(setOf("${at(2, 5, 0).toEpochMilli()}|a"), missed)
+
+        s.rescheduleAll(rearmOverdueSnooze = true)
+
+        val intent = shadowOf(replays.single().operation!!).savedIntent
+        assertEquals(at(2, 5, 0).toEpochMilli(), intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+        // Consumed by the rearm run.
+        assertTrue(missed.isEmpty())
+    }
+
+    @Test
+    fun missedOlderThanTheWindowIsPrunedAndNotReplayed() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        clock = at(2, 5, 11)
+        s.rescheduleAll()
+        assertTrue(missed.isEmpty())
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+    }
+
+    @Test
+    fun missedButOutOfWindowAtRearmIsNotReplayed() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        clock = at(2, 5, 11)
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+        assertTrue(missed.isEmpty())
+    }
+
+    @Test
+    fun missedSkippedOccurrenceIsNotReplayed() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        repo.setSkip("a", at(2, 5, 0))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+        assertTrue(missed.isEmpty())
+    }
+
+    @Test
+    fun missedSurvivesSeveralPlainReschedulesAndANewSchedulerInstance() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0), alarm("b", 5, 2)))
+        val s = armedThenLater(repo, at(2, 5, 1))
+        s.rescheduleAll() // a missed
+        clock = at(2, 5, 3)
+        s.rescheduleAll() // b missed; a kept
+        assertEquals(setOf("${at(2, 5, 0).toEpochMilli()}|a", "${at(2, 5, 2).toEpochMilli()}|b"), missed)
+
+        scheduler(repo).rescheduleAll(rearmOverdueSnooze = true)
+
+        val occurrences = replays.associate {
+            val intent = shadowOf(it.operation!!).savedIntent
+            intent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID) to intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1)
+        }
+        assertEquals(mapOf("a" to at(2, 5, 0).toEpochMilli(), "b" to at(2, 5, 2).toEpochMilli()), occurrences)
+        assertTrue(missed.isEmpty())
+    }
+
     @Test
     fun noReplayForSkippedOccurrence() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))

@@ -53,7 +53,8 @@ class AlarmSchedulerImpl(
     /**
      * [rearmOverdueSnooze] is true only for boot and time changes: a snooze that came due while the
      * phone was off is re-armed. Otherwise an overdue snooze is left untouched, so a ring that
-     * could not clear its own snooze state cannot re-arm itself in a loop.
+     * could not clear its own snooze state cannot re-arm itself in a loop. It also replays alarms
+     * that came due within the window, including those earlier plain runs set aside as missed.
      */
     suspend fun rescheduleAll(rearmOverdueSnooze: Boolean) = mutex.withLock {
         withContext(io) { rescheduleLocked(rearmOverdueSnooze) }
@@ -95,8 +96,16 @@ class AlarmSchedulerImpl(
 
         // What the previous run armed (alarmId -> triggerAt), read before anything is replaced.
         val old = readRecords()
-        if (rearmOverdueSnooze) {
-            armReplays(old.records, alarms, nowInstant)
+        // Occurrences that came due within the window, from the previous records and from what
+        // earlier plain runs set aside. A plain run (full startup, the UI, a ring) can take the
+        // mutex before the boot or time-change rearm run, and its records would otherwise drop the
+        // occurrence it moves past; so it carries them forward and the rearm run replays them.
+        val recent = recentlyDue(old, nowInstant)
+        val missed = if (rearmOverdueSnooze) {
+            armReplays(recent, alarms, nowInstant)
+            emptyMap()
+        } else {
+            recent
         }
         // Persisted before any PendingIntent is registered, so a process death in between
         // cannot orphan one.
@@ -113,7 +122,8 @@ class AlarmSchedulerImpl(
                 }
                 if (persisted[alarm.id] != at.toEpochMilli()) {
                     persisted[alarm.id] = at.toEpochMilli()
-                    writeRecords(persisted, old.legacyIds)
+                    // With the missed entries, so a record replaced here is never lost.
+                    writeRecords(persisted, old.legacyIds, missed)
                 }
                 // Added before arming: if setAlarmClock throws, the existing PendingIntent survives cleanup.
                 scheduledNow[alarm.id] = at.toEpochMilli()
@@ -142,13 +152,30 @@ class AlarmSchedulerImpl(
         }
         // commit(): the records must be durable before we return (receivers may kill the process).
         val triggers = scheduledNow.mapNotNull { (id, at) -> at?.let { id to it } }.toMap()
-        writeRecords(triggers, emptySet(), dropLegacy = true)
+        writeRecords(triggers, emptySet(), missed, dropLegacy = true)
         try {
             onScheduled(alarms, triggers)
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             Log.e(TAG, "onScheduled failed", e)
         }
+    }
+
+    /**
+     * Per alarm, the latest occurrence in `(now - OVERDUE_SNOOZE_WINDOW, now]` among the previous
+     * records and the missed entries; older ones are pruned. Latest, because the replay
+     * PendingIntent is one per alarm. An entry for an occurrence that did ring is harmless: its
+     * replay finds it in the FiredLedger and RingingSession finishes quietly.
+     */
+    private fun recentlyDue(old: Records, nowInstant: Instant): Map<String, Long> {
+        val earliest = nowInstant.minus(OVERDUE_SNOOZE_WINDOW).toEpochMilli()
+        val latest = nowInstant.toEpochMilli()
+        val recent = HashMap<String, Long>()
+        for ((id, atMs) in old.missed.entries + old.records.entries) {
+            if (atMs <= earliest || atMs > latest) continue
+            if ((recent[id] ?: Long.MIN_VALUE) < atMs) recent[id] = atMs
+        }
+        return recent
     }
 
     /**
@@ -176,25 +203,33 @@ class AlarmSchedulerImpl(
         }
     }
 
-    private class Records(val records: Map<String, Long>, val legacyIds: Set<String>)
+    private class Records(val records: Map<String, Long>, val legacyIds: Set<String>, val missed: Map<String, Long>)
 
     private fun readRecords(): Records = try {
-        val records = HashMap<String, Long>()
-        for (entry in prefs.getStringSet(KEY_RECORDS, emptySet()).orEmpty()) {
-            val sep = entry.indexOf('|')
-            val ms = if (sep > 0) entry.substring(0, sep).toLongOrNull() else null
-            if (ms != null) records[entry.substring(sep + 1)] = ms
-        }
+        val records = readTimes(KEY_RECORDS)
         // Older builds persisted only the ids; they have no time, so they can be cancelled but never replayed.
         val legacy = prefs.getStringSet(KEY_SCHEDULED_IDS, emptySet()).orEmpty().toSet() - records.keys
-        Records(records, legacy)
+        Records(records, legacy, readTimes(KEY_MISSED))
     } catch (e: Throwable) {
         Log.e(TAG, "reading scheduler records failed", e)
-        Records(emptyMap(), emptySet())
+        Records(emptyMap(), emptySet(), emptyMap())
     }
 
-    private fun writeRecords(records: Map<String, Long>, legacyIds: Set<String>, dropLegacy: Boolean = false) {
-        val edit = prefs.edit().putStringSet(KEY_RECORDS, records.map { (id, at) -> "$at|$id" }.toSet())
+    private fun readTimes(key: String): Map<String, Long> {
+        val times = HashMap<String, Long>()
+        for (entry in prefs.getStringSet(key, emptySet()).orEmpty()) {
+            val sep = entry.indexOf('|')
+            val ms = if (sep > 0) entry.substring(0, sep).toLongOrNull() else null
+            if (ms != null) times[entry.substring(sep + 1)] = ms
+        }
+        return times
+    }
+
+    /** One commit for the records and the missed entries, so neither is ever durable without the other. */
+    private fun writeRecords(records: Map<String, Long>, legacyIds: Set<String>, missed: Map<String, Long>, dropLegacy: Boolean = false) {
+        val edit = prefs.edit()
+            .putStringSet(KEY_RECORDS, records.map { (id, at) -> "$at|$id" }.toSet())
+            .putStringSet(KEY_MISSED, missed.map { (id, at) -> "$at|$id" }.toSet())
         if (dropLegacy) edit.remove(KEY_SCHEDULED_IDS) else edit.putStringSet(KEY_SCHEDULED_IDS, legacyIds + records.keys)
         edit.commit()
     }
@@ -243,5 +278,6 @@ class AlarmSchedulerImpl(
         const val PREFS = "alarm_scheduler"
         const val KEY_SCHEDULED_IDS = "scheduled_ids" // legacy: plain id set
         const val KEY_RECORDS = "scheduled_records" // "<triggerAtMs>|<alarmId>"
+        const val KEY_MISSED = "missed_records" // same format: came due within the window, not yet replayed
     }
 }
