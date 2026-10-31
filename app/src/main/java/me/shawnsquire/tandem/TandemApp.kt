@@ -101,7 +101,11 @@ class TandemApp : Application() {
         }
         refreshFcmToken(container.syncScope, container.fcmTokenStore)
         // T4: a RingState no live session owns is left from a killed process.
-        val clearStale = container.syncScope.launch { container.ringSlot.clearStale(me.shawnsquire.tandem.alarm.LiveRings::isLive) }
+        // No reschedule of its own: the startup reschedule right after covers it, and a second one
+        // would hold the ring-slot mutex longer and could push a concurrent ring's claim into its timeout.
+        val clearStale = container.syncScope.launch {
+            container.ringSlot.clearStale(me.shawnsquire.tandem.alarm.LiveRings::isLive, reschedule = false)
+        }
         // Applies writes deferred while locked (repository calls wait for the attach drain) and
         // refreshes the device-protected mirror on every start.
         val reschedule = container.syncScope.launch { container.alarmScheduler.rescheduleAll() }

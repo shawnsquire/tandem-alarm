@@ -12,11 +12,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.alarm.AlarmEngine
+import me.shawnsquire.tandem.alarm.LiveRings
 import me.shawnsquire.tandem.alarm.MirrorSnapshot
 import me.shawnsquire.tandem.alarm.MirroredAlarm
 import me.shawnsquire.tandem.alarm.SharedPrefsDeferredAlarmWrites
@@ -27,6 +29,7 @@ import me.shawnsquire.tandem.data.RingStateStoreImpl
 import me.shawnsquire.tandem.data.TandemDatabase
 import me.shawnsquire.tandem.data.ringStateDataStore
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.RingState
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -42,6 +45,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
 import java.time.Clock
+import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -200,6 +204,22 @@ class TandemAppLockedTest {
         assertEquals(1, app.fullStartupRuns)
         assertEquals(1, engine.scheduler.runs.get())
         assertSame(container, app.container)
+    }
+
+    @Test
+    fun startupClearsAStaleRingStateWithoutASecondReschedule() = runBlocking {
+        val store = RingStateStoreImpl(robolectricApp.ringStateDataStore)
+        // A ring no live session owns, not snoozed: left by a killed process.
+        store.set(RingState("a", "stale-ring", Instant.now().minusSeconds(60), null))
+        assertFalse(LiveRings.isLive("stale-ring"))
+        val (app, base) = startLockedApp()
+
+        base.locked = false
+        unlock(app)
+
+        withTimeout(10.seconds) { app.startupAlarmWork.joinAll() }
+        assertNull("stale ring state cleared", store.state.first())
+        assertEquals("one reschedule: the startup's own", 1, AlarmEngine.get(app).scheduler.runs.get())
     }
 
     @Test
