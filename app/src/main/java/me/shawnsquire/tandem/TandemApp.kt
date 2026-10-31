@@ -2,6 +2,7 @@ package me.shawnsquire.tandem
 
 import android.app.Application
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.functions
@@ -12,6 +13,8 @@ class TandemApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // No-op when FirebaseInitProvider already ran; needed under Robolectric, which skips providers.
+        FirebaseApp.initializeApp(this)
         // Must run before anything touches a Firebase instance.
         if (BuildConfig.USE_EMULATOR) connectToEmulators()
         container = AppContainer(this)

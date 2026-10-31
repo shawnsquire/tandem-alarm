@@ -43,6 +43,10 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Robolectric's SDK 36 sandbox reaches into JDK internals (FileDescriptor).
+        unitTests.all {
+            it.jvmArgs("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
+        }
     }
 }
 
