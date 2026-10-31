@@ -236,8 +236,18 @@ class AlarmEngineTest {
         assertFalse(ring.finished.isCompleted)
     }
 
+    private val alarmManager get() = shadowOf(app.getSystemService(AlarmManager::class.java))
+
+    /** A reboot: AlarmManager and every PendingIntent it held are gone. */
+    private fun reboot() {
+        for (alarm in alarmManager.scheduledAlarms) {
+            alarm.operation?.let { app.getSystemService(AlarmManager::class.java).cancel(it); it.cancel() }
+        }
+        assertTrue(alarmManager.scheduledAlarms.isEmpty())
+    }
+
     @Test
-    fun lockedRescheduleWithAnUnreadableMirrorCancelsNothing() = runBlocking {
+    fun lockedBootWithAnUnreadableMirrorRearmsFromTheRecords() = runBlocking {
         val time = Instant.now().atZone(zone).plusHours(3)
         val a = alarm("a", time.hour, time.minute, days = DayOfWeek.entries.toSet())
         val snoozeUntil = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MILLIS)
@@ -245,21 +255,25 @@ class AlarmEngineTest {
             seedMirror(a)
             val armed = lockedEngine()
             armed.scheduler.rescheduleAll()
-            assertNotNull(AlarmIntents.existingFirePendingIntent(app, "a"))
             val records = deviceProtectedPrefs(app, "alarm_scheduler").getStringSet("scheduled_records", null)
-            assertEquals(1, records?.size)
+            val recordedAt = records!!.single().substringBefore('|').toLong()
             SharedPrefsSnoozeLedger(app).put("ring-1", "a", snoozeUntil)
-            AlarmIntents.existingSnoozePendingIntent(app, "ring-1")?.cancel()
+            reboot()
 
             putRawMirror(raw)
             val engine = lockedEngine()
             rescheduleAsync(null, engine.scheduler, scope, rearmOverdueSnooze = true, ringSlot = engine.ringSlot).join()
 
-            assertNotNull(raw, AlarmIntents.existingFirePendingIntent(app, "a"))
+            val byOperation = alarmManager.scheduledAlarms.groupBy { shadowOf(it.operation!!).savedIntent.data.toString() }
+            val fire = byOperation.getValue("tandem://alarm/a").single()
+            assertEquals(raw, recordedAt, fire.triggerAtMs)
+            assertEquals(raw, recordedAt, shadowOf(fire.operation!!).savedIntent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
+            assertNotNull(raw, fire.showIntent)
             assertEquals(raw, records, deviceProtectedPrefs(app, "alarm_scheduler").getStringSet("scheduled_records", null))
             // Snoozes come from the ledger, not the mirror: still re-armed.
-            assertNotNull(raw, AlarmIntents.existingSnoozePendingIntent(app, "ring-1"))
+            assertEquals(raw, snoozeUntil.toEpochMilli(), byOperation.getValue("tandem://snooze/ring-1").single().triggerAtMs)
             assertEquals(raw, raw, mirrorPrefs.getString("snapshot", null))
+            SharedPrefsSnoozeLedger(app).remove("ring-1")
         }
     }
 

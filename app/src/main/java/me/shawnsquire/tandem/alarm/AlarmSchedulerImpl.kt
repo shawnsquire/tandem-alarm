@@ -98,8 +98,16 @@ class AlarmSchedulerImpl(
         }
 
         // A throw here (a locked, unreadable mirror) ends the run before any record is written or
-        // PendingIntent cancelled, so whatever is armed stays armed.
-        val alarms = alarmRepository.alarms.first()
+        // PendingIntent cancelled. A reboot has already cleared AlarmManager, so the records re-arm
+        // what the last readable run armed, and the throw still reaches the caller.
+        val alarms = try {
+            alarmRepository.alarms.first()
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "reading the alarms failed; re-arming from the scheduler records", e)
+            rearmFromRecords(nowInstant, rearmOverdueSnooze)
+            throw e
+        }
 
         // What the previous run armed (alarmId -> triggerAt), read before anything is replaced.
         val old = readRecords()
@@ -169,6 +177,31 @@ class AlarmSchedulerImpl(
     }
 
     /**
+     * The alarms can't be read: arms every future record again at its time, plus the replays a
+     * rearm run would arm, exactly as a normal run would. Records and missed entries stay as they
+     * are for the next run that can read the alarms, and nothing is cancelled or mirrored. Each
+     * record was enabled and unskipped when it was armed; that can't be re-checked now, and I1
+     * says ring when local state can't be read (a fire with an unreadable mirror rings with
+     * defaults). One bad record never stops the rest.
+     */
+    private fun rearmFromRecords(nowInstant: Instant, rearmOverdueSnooze: Boolean) {
+        val old = readRecords()
+        if (rearmOverdueSnooze) armReplays(recentlyDue(old, nowInstant), alarms = null, nowInstant)
+        for ((id, atMs) in old.records) {
+            try {
+                if (atMs <= nowInstant.toEpochMilli()) continue
+                alarmManager.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(atMs, AlarmIntents.showPendingIntent(context)),
+                    AlarmIntents.firePendingIntent(context, id, Instant.ofEpochMilli(atMs)),
+                )
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.e(TAG, "re-arming from the record failed for alarm $id", e)
+            }
+        }
+    }
+
+    /**
      * Per alarm, the latest occurrence in `(now - OVERDUE_SNOOZE_WINDOW, now]` among the previous
      * records and the missed entries; older ones are pruned. Latest, because the replay
      * PendingIntent is one per alarm. An entry for an occurrence that did ring is harmless: its
@@ -188,17 +221,19 @@ class AlarmSchedulerImpl(
     /**
      * Boot or time change: an occurrence that fell inside the last [OVERDUE_SNOOZE_WINDOW] while
      * nothing was running rings shortly, through AlarmReceiver like any other fire. One bad record
-     * never stops the rest.
+     * never stops the rest. Null [alarms] means they couldn't be read: every one is replayed (I1).
      */
-    private fun armReplays(previous: Map<String, Long>, alarms: List<Alarm>, nowInstant: Instant) {
-        val byId = alarms.associateBy { it.id }
+    private fun armReplays(previous: Map<String, Long>, alarms: List<Alarm>?, nowInstant: Instant) {
+        val byId = alarms?.associateBy { it.id }
         val earliest = nowInstant.minus(OVERDUE_SNOOZE_WINDOW).toEpochMilli()
         for ((id, atMs) in previous) {
             try {
                 if (atMs <= earliest || atMs > nowInstant.toEpochMilli()) continue
-                val alarm = byId[id] ?: continue
                 val at = Instant.ofEpochMilli(atMs)
-                if (!alarm.enabled || alarm.skippedOccurrenceAt == at) continue
+                if (byId != null) {
+                    val alarm = byId[id] ?: continue
+                    if (!alarm.enabled || alarm.skippedOccurrenceAt == at) continue
+                }
                 alarmManager.setAlarmClock(
                     AlarmManager.AlarmClockInfo(nowInstant.plus(OVERDUE_SNOOZE_DELAY).toEpochMilli(), AlarmIntents.showPendingIntent(context)),
                     AlarmIntents.replayPendingIntent(context, id, at),
