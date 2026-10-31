@@ -339,6 +339,25 @@ class AlarmEngineTest {
     }
 
     @Test
+    fun oneShotRingStartedLockedAndStoppedAfterAttachIsDisabledInRoom() = runBlocking {
+        seedMirror(alarm("once"))
+        val ring = LockedRing(lockedEngine(), scope)
+        ring.session.start("once", dueNow(), false, null)
+        awaitTrue("ring state") { ring.engine.ringStateStore.state.first()?.alarmId == "once" }
+        val ringId = ring.engine.ringStateStore.state.first()!!.ringId
+
+        // The user unlocks mid-ring.
+        val room = FakeAlarmRepository(listOf(alarm("once")))
+        ring.engine.attach(room, FakeSettingsRepository()) { error("unused") }
+        awaitTrue("drain") { (ring.engine.alarmRepository as SwitchableAlarmRepository).isAttached }
+        ring.engine.controller.dismiss(ringId)
+
+        withTimeout(5.seconds) { ring.finished.await() }
+        assertFalse(room.get("once")!!.enabled)
+        assertTrue(queued.isEmpty())
+    }
+
+    @Test
     fun attachIsIdempotent() = runBlocking {
         val engine = lockedEngine()
         val first = FakeAlarmRepository(listOf(alarm("first")))
