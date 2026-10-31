@@ -285,7 +285,7 @@ private fun dayLabel(day: DayOfWeek): String = stringResource(
 )
 
 @Composable
-private fun WallpaperThumbnail(path: String) {
+internal fun WallpaperThumbnail(path: String) {
     val bitmap by produceState<ImageBitmap?>(null, path) {
         value = withContext(Dispatchers.IO) { decodeThumbnail(path, 256) }
     }

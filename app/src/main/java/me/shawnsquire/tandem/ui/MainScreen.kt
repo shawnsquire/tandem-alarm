@@ -26,10 +26,12 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import me.shawnsquire.tandem.ui.alarms.AlarmsRoute
 import me.shawnsquire.tandem.ui.partner.PartnerRoute
-import me.shawnsquire.tandem.ui.settings.SettingsScreen
+import me.shawnsquire.tandem.ui.settings.SettingsRoute
+import me.shawnsquire.tandem.ui.settings.health.HealthRoute
 
 private const val DELETED_ALARM_KEY = "deletedAlarmId"
 private const val EDIT_ROUTE = "alarm/edit"
+private const val HEALTH_ROUTE = "settings/health"
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     Alarms("alarms", "Alarms", Icons.Default.Notifications),
@@ -100,7 +102,8 @@ fun MainScreen() {
                 )
             }
             composable(Tab.Partner.route) { PartnerRoute() }
-            composable(Tab.Settings.route) { SettingsScreen() }
+            composable(Tab.Settings.route) { SettingsRoute(onOpenHealth = { navController.navigate(HEALTH_ROUTE) }) }
+            composable(HEALTH_ROUTE) { HealthRoute(onBack = { navController.popBackStack() }) }
         }
     }
 }
