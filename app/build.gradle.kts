@@ -19,6 +19,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         val emulatorHost = providers.gradleProperty("tandem.emulatorHost").getOrElse("10.0.2.2")
         buildConfigField("boolean", "USE_EMULATOR", "false")
@@ -99,4 +100,10 @@ dependencies {
     testImplementation(libs.turbine)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.room.testing)
+
+    // Smoke tests against the Firebase emulators (connectedDebugAndroidTest).
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }
