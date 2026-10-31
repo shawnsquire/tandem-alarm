@@ -36,6 +36,10 @@ object FireWakeLock {
         }
     }
 
+    /** Tests only: the cached lock, so tests don't depend on which wake lock was created last. */
+    @Synchronized
+    internal fun lockForTest(): PowerManager.WakeLock? = lock
+
     /** Tests only: drop the cached lock, which belongs to a previous test's PowerManager. */
     @Synchronized
     internal fun resetForTest() {

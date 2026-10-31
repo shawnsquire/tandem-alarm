@@ -46,14 +46,14 @@ class AlarmReceiverTest {
     fun fireAndSnoozeFireAcquireTheFireWakeLock() {
         FireWakeLock.release()
         AlarmReceiver().onReceive(context, Intent(AlarmIntents.ACTION_FIRE).putExtra(AlarmIntents.EXTRA_ALARM_ID, "a1"))
-        val lock = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+        val lock = FireWakeLock.lockForTest()!!
         assertTrue(lock.isHeld)
         assertEquals(PowerManagerTag, shadowOf(lock).tag)
         FireWakeLock.release()
         assertFalse(lock.isHeld)
 
         AlarmReceiver().onReceive(context, Intent(AlarmIntents.ACTION_SNOOZE_FIRE).putExtra(AlarmIntents.EXTRA_ALARM_ID, "a1"))
-        assertTrue(org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock().isHeld)
+        assertTrue(FireWakeLock.lockForTest()!!.isHeld)
         FireWakeLock.release()
     }
 
