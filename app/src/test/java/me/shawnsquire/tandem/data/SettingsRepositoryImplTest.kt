@@ -1,6 +1,8 @@
 package me.shawnsquire.tandem.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import java.io.File
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
@@ -70,5 +72,21 @@ class SettingsRepositoryImplTest {
         assertEquals("content://media/1", r.defaultRingtoneUri.first())
         r.setDefaultRingtoneUri(null)
         assertNull(r.defaultRingtoneUri.first())
+    }
+
+    @Test
+    fun snoozeClampedOnRead() = runTest {
+        val ds = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { File(tmp.root, "test.preferences_pb") },
+        )
+        val r = SettingsRepositoryImpl(ds)
+        val key = intPreferencesKey("snoozeMinutes")
+        ds.edit { it[key] = 0 }
+        assertEquals(1, r.snoozeMinutes.first())
+        ds.edit { it[key] = 99 }
+        assertEquals(60, r.snoozeMinutes.first())
+        ds.edit { it[key] = -5 }
+        assertEquals(1, r.snoozeMinutes.first())
     }
 }
