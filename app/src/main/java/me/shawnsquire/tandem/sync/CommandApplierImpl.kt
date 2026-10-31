@@ -67,7 +67,17 @@ class CommandApplierImpl(
 
     /** Runs in [scope] so cancelling the caller's wait (pre-fire/FCM timeouts) never tears a half-applied command. */
     private suspend fun process(cmd: Command, hh: Household) {
-        scope.async { processLocked(cmd, hh) }.await()
+        scope.async {
+            try {
+                processLocked(cmd, hh)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The caller may have timed out and stopped awaiting; don't lose the failure.
+                Log.w(TAG, "processing ${cmd.id} failed", e)
+                throw e
+            }
+        }.await()
     }
 
     private suspend fun processLocked(cmd: Command, hh: Household) {

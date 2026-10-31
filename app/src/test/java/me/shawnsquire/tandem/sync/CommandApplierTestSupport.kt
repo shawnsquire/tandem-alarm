@@ -50,7 +50,8 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
         updatesFor(commandId)
     override suspend fun status(householdId: String, commandId: String): CommandStatus? {
         statusCalls++
-        return statusBlock?.invoke() ?: status
+        statusBlock?.let { return it() }
+        return status
     }
     override fun resolve(householdId: String, commandId: String, status: CommandStatus, reason: String?) {
         resolved += Resolved(householdId, commandId, status, reason)

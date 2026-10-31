@@ -6,7 +6,7 @@ import java.time.ZoneOffset
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
@@ -130,7 +130,8 @@ class FcmCommandHandlerTest {
     @Test
     fun householdNeverEmittingFallsBackAfterWait() = runTest {
         val applier = FakeCommandApplier()
-        handler(applier, emptyFlow()).handle(payload)
+        handler(applier, MutableSharedFlow()).handle(payload)
+        assertEquals(2_000, testScheduler.currentTime)
         assertTrue(applier.applied.isEmpty())
         assertEquals(1, fallbacks)
     }
