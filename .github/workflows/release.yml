@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Install Android SDK platform and build-tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0"
+
+      # Secrets reach steps only through env, never interpolated into the script text.
+      - name: Write signing key and Firebase config
+        env:
+          TANDEM_KEYSTORE_B64: ${{ secrets.TANDEM_KEYSTORE_B64 }}
+          TANDEM_KEYSTORE_PASSWORD: ${{ secrets.TANDEM_KEYSTORE_PASSWORD }}
+          TANDEM_KEY_ALIAS: ${{ secrets.TANDEM_KEY_ALIAS }}
+          TANDEM_KEY_PASSWORD: ${{ secrets.TANDEM_KEY_PASSWORD }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          for name in TANDEM_KEYSTORE_B64 TANDEM_KEYSTORE_PASSWORD TANDEM_KEY_ALIAS TANDEM_KEY_PASSWORD GOOGLE_SERVICES_JSON; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set; refusing to publish an unsigned release."
+              exit 1
+            fi
+          done
+          printf '%s' "$TANDEM_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/tandem.jks"
+          printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          echo "TANDEM_KEYSTORE_PATH=$RUNNER_TEMP/tandem.jks" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        env:
+          TANDEM_KEYSTORE_PASSWORD: ${{ secrets.TANDEM_KEYSTORE_PASSWORD }}
+          TANDEM_KEY_ALIAS: ${{ secrets.TANDEM_KEY_ALIAS }}
+          TANDEM_KEY_PASSWORD: ${{ secrets.TANDEM_KEY_PASSWORD }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          export TANDEM_VERSION_NAME="${GITHUB_REF_NAME#v}"
+          export TANDEM_VERSION_CODE="$RUN_NUMBER"
+          ./gradlew assembleRelease
+
+      - name: Verify signature and name the APK
+        run: |
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
+          cp app/build/outputs/apk/release/app-release.apk "tandem-${GITHUB_REF_NAME}.apk"
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: tandem-${{ github.ref_name }}.apk
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tandem.jks" app/google-services.json
