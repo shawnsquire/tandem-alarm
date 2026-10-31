@@ -25,6 +25,7 @@ import me.shawnsquire.tandem.alarm.MirroredAlarm
 import me.shawnsquire.tandem.alarm.SharedPrefsDeferredAlarmWrites
 import me.shawnsquire.tandem.alarm.SharedPrefsAlarmMirror
 import me.shawnsquire.tandem.alarm.SwitchableAlarmRepository
+import me.shawnsquire.tandem.alarm.SwitchablePreFireCheck
 import me.shawnsquire.tandem.data.AlarmRepositoryImpl
 import me.shawnsquire.tandem.data.RingStateStoreImpl
 import me.shawnsquire.tandem.data.TandemDatabase
@@ -313,28 +314,39 @@ class TandemAppLockedTest {
     @Test
     fun aFailedFullStartupIsRetriedByTheNextContainerAccess() = runBlocking {
         val (app, base) = startLockedApp()
+        val engine = AlarmEngine.get(app)
         base.locked = false
         userManager.setUserUnlocked(true)
-        // Test-only Firebase hook: with no default app, AppContainer's Firebase.auth throws.
+        // Test-only Firebase hook: with no default app, every Firebase instance throws. In debug
+        // (USE_EMULATOR) the first attempt fails in connectToEmulators, which runs once per
+        // process, so the second reaches AppContainer's Firebase.auth, past Room and the engine's
+        // objects; without the emulator both attempts fail there.
         FirebaseApp.clearInstancesForTest()
         try {
-            val error = assertThrows(IllegalStateException::class.java) { app.container }
-            assertEquals(
-                "AppContainer is only available after the user unlocks; alarm code must use AlarmEngine",
-                error.message,
-            )
-            assertEquals(1, app.fullStartupRuns)
+            repeat(2) {
+                val error = assertThrows(IllegalStateException::class.java) { app.container }
+                assertEquals(
+                    "AppContainer is only available after the user unlocks; alarm code must use AlarmEngine",
+                    error.message,
+                )
+            }
+            assertEquals(2, app.fullStartupRuns)
         } finally {
             FirebaseApp.initializeApp(app)
         }
+        // A failed construction never attaches: the engine isn't left on that attempt's Room.
+        assertFalse((engine.alarmRepository as SwitchableAlarmRepository).isAttached)
+        assertThrows(IllegalStateException::class.java) { runBlocking { engine.settings.setSnoozeMinutes(5) } }
 
         val container = app.container
 
-        assertEquals(2, app.fullStartupRuns)
+        assertEquals(3, app.fullStartupRuns)
         withTimeout(10.seconds) { app.startupAlarmWork.joinAll() }
-        awaitTrue("engine attached") { (AlarmEngine.get(app).alarmRepository as SwitchableAlarmRepository).isAttached }
+        awaitTrue("engine attached") { (engine.alarmRepository as SwitchableAlarmRepository).isAttached }
+        // Attached to the published container, so a fire's pre-fire pull reaches its check.
+        assertSame(container.preFireCheck, (engine.preFireCheck as SwitchablePreFireCheck).target())
         app.ensureStarted()
-        assertEquals(2, app.fullStartupRuns)
+        assertEquals(3, app.fullStartupRuns)
         assertSame(container, app.container)
     }
 

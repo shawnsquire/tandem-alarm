@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.alarm
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -234,6 +235,10 @@ class SwitchablePreFireCheck : PreFireCheck {
     fun attach(provider: () -> PreFireCheck) {
         this.provider.compareAndSet(null, provider)
     }
+
+    /** Tests only: the check calls forward to now, or null while locked. */
+    @VisibleForTesting
+    internal fun target(): PreFireCheck? = provider.get()?.invoke()
 
     override suspend fun pullAndApply(timeout: Duration): Boolean {
         val provide = provider.get() ?: return false

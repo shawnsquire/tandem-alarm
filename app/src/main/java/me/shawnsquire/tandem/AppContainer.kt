@@ -65,11 +65,10 @@ class AppContainer(private val context: Context) {
     private val roomSettings = SettingsRepositoryImpl(context.settingsDataStore)
 
     // U3: swap to real
-    // Lazy capture: preFireCheck is declared below; the provider only runs when a fire pulls, after construction.
+    // Attached at the end of construction (the init block below).
     private val alarmEngine = me.shawnsquire.tandem.alarm.AlarmEngine.get(context)
-        .also { it.attach(roomAlarmRepository, roomSettings) { preFireCheck } }
     // Waits for the attach drain, so no consumer (a command applied at unlock, the UI) can be
-    // overwritten by an older locked write replayed after it.
+    // overwritten by an older locked write replayed after it. No initializer below calls it.
     val alarmRepository: AlarmRepository = alarmEngine.alarmRepository
     // Its snooze and ringtone edits refresh the device-protected mirror.
     val settingsRepository: SettingsRepository = alarmEngine.settings
@@ -121,4 +120,11 @@ class AppContainer(private val context: Context) {
     val fcmCommandHandler = FcmCommandHandler(
         commandApplier, householdFlow, healthSignalsImpl::recordFcm, LiveZoneClock, { SyncWorker.runNow(context) },
     )
+
+    // Last, once every property above is built: a construction that throws never attaches, so the
+    // engine is never left on a failed attempt's Room (or a half-built preFireCheck) while the
+    // retry builds another. The provider runs when a fire pulls, not here.
+    init {
+        alarmEngine.attach(roomAlarmRepository, roomSettings) { preFireCheck }
+    }
 }
