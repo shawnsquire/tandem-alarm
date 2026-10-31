@@ -12,6 +12,7 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
     data class Resolved(val hid: String, val id: String, val status: CommandStatus, val reason: String?)
 
     val resolved = mutableListOf<Resolved>()
+    var statusCalls = 0
 
     override fun create(
         householdId: String, from: String, to: String, type: CommandType, alarmId: String,
@@ -19,7 +20,10 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
     ): String = error("unused")
 
     override fun observe(householdId: String, commandId: String): Flow<Pair<CommandStatus, String?>> = emptyFlow()
-    override suspend fun status(householdId: String, commandId: String): CommandStatus? = status
+    override suspend fun status(householdId: String, commandId: String): CommandStatus? {
+        statusCalls++
+        return status
+    }
     override fun resolve(householdId: String, commandId: String, status: CommandStatus, reason: String?) {
         resolved += Resolved(householdId, commandId, status, reason)
     }

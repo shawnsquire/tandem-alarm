@@ -72,6 +72,8 @@ class PairingRepositoryImpl(
             throw PairingException(NOT_SIGNED_IN, e)
         } catch (e: IOException) {
             throw PairingException(OFFLINE, e)
+        } catch (e: Exception) {
+            throw PairingException(NOT_SIGNED_IN, e)
         }
         try {
             return functions.getHttpsCallable(name).call(args).await().getData()

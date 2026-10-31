@@ -44,15 +44,13 @@ class CommandApplierImpl(
         process(cmd, hh, checkDocStatus = true)
     }
 
-    /** For callers that just read [cmd]'s doc as pending: skips the status read. */
-    internal suspend fun applyPending(householdId: String, cmd: Command) {
-        val hh = withTimeoutOrNull(2.seconds) { household.first() }?.takeIf { it.id == householdId }
-        process(cmd, hh, checkDocStatus = false, fallbackHid = householdId)
-    }
+    /** For callers that just read [cmd]'s doc as pending for [household]: skips the status read and the household wait. */
+    internal suspend fun applyPending(household: Household, cmd: Command) =
+        process(cmd, household, checkDocStatus = false)
 
-    private suspend fun process(cmd: Command, hh: Household?, checkDocStatus: Boolean, fallbackHid: String? = null) =
+    private suspend fun process(cmd: Command, hh: Household?, checkDocStatus: Boolean) =
         lock.withLock {
-            val hid = hh?.id ?: fallbackHid
+            val hid = hh?.id
             if (hh != null && cmd.to != hh.myUid) {
                 Log.w(TAG, "ignoring ${cmd.id}: addressed to someone else")
                 return@withLock

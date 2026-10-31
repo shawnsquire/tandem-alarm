@@ -197,8 +197,17 @@ class CommandApplierImplTest {
     @Test fun `applyPending skips the status read`() = runTest {
         val e = env()
         e.remote.status = CommandStatus.APPLIED
-        e.applier.applyPending("h1", cmd(CommandType.DISABLE))
+        e.applier.applyPending(hh, cmd(CommandType.DISABLE))
         assertFalse(e.alarms.get("a1")!!.enabled)
+        assertEquals(0, e.remote.statusCalls)
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+    }
+
+    @Test fun `applyPending ignores command for someone else`() = runTest {
+        val e = env()
+        e.applier.applyPending(hh, cmd(CommandType.DISABLE, to = "other"))
+        assertTrue(e.alarms.get("a1")!!.enabled)
+        assertTrue(e.remote.resolved.isEmpty())
     }
 
     @Test fun `command for someone else is ignored`() = runTest {
