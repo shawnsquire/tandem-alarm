@@ -1,1 +1,6 @@
-{ "projects": { "default": "demo-tandem" } }
+{
+  "projects": {
+    "default": "demo-tandem",
+    "prod": "tandem-alarm"
+  }
+}
