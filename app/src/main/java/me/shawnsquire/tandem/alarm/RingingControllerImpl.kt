@@ -7,6 +7,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.data.AlarmRepository
+import me.shawnsquire.tandem.data.DEFAULT_SNOOZE_MINUTES
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.RingState
@@ -214,7 +215,6 @@ class RingingControllerImpl(
 
     private companion object {
         val STALE_SNOOZE_WINDOW: Duration = Duration.ofMinutes(10)
-        const val DEFAULT_SNOOZE_MINUTES = 10
         const val TAG = "RingingController"
     }
 }

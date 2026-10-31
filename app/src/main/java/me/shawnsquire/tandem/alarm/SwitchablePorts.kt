@@ -14,14 +14,15 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
+import me.shawnsquire.tandem.data.DEFAULT_SNOOZE_MINUTES
+import me.shawnsquire.tandem.data.SNOOZE_RANGE
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.data.withoutExpiredSkip
 import me.shawnsquire.tandem.schedule.Alarm
-import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
-import kotlin.time.toJavaDuration
 
 // Ports the process-wide alarm objects use for non-alarm data. Before attach() they read the DE
 // mirror, so a ring works before the first unlock; after it they forward to the real CE-backed
@@ -183,10 +184,6 @@ class SwitchableAlarmRepository(
     private fun lockedEdit() = IllegalStateException("alarm edits need the user to unlock")
 
     private fun mirrorUnreadable() = IllegalStateException("alarm mirror unreadable")
-
-    /** Same expiry as AlarmRepositoryImpl: a skip at or before `now - FIRE_GRACE` reads as null. */
-    private fun Alarm.withoutExpiredSkip(now: Instant): Alarm =
-        if (skippedOccurrenceAt != null && !skippedOccurrenceAt.isAfter(now.minus(FIRE_GRACE.toJavaDuration()))) copy(skippedOccurrenceAt = null) else this
 }
 
 /** Locked, settings come from the mirror (wallpapers are CE files, so none); [attach] forwards. */
@@ -219,12 +216,6 @@ class SwitchableSettings(private val mirror: AlarmMirror) : SettingsRepository {
 
     private fun attached(): SettingsRepository =
         real.value ?: throw IllegalStateException("settings edits need the user to unlock")
-
-    private companion object {
-        // Same as SettingsRepositoryImpl.
-        const val DEFAULT_SNOOZE_MINUTES = 10
-        val SNOOZE_RANGE = 1..60
-    }
 }
 
 /** Locked, the pre-fire pull is skipped (no network, no CE access); [attach] forwards. */
