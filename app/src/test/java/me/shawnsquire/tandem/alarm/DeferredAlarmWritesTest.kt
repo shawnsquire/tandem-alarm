@@ -77,4 +77,15 @@ class DeferredAlarmWritesTest {
         queue.removeThrough(entries[0].seq)
         assertEquals(writes.drop(1), SharedPrefsDeferredAlarmWrites(context).all())
     }
+
+    @Test fun drainedLegacyQueueNeverReusesItsSeqs() {
+        val legacy = """[{"id":"a","op":"setEnabled","enabled":false},{"id":"a","op":"setEnabled","enabled":true}]"""
+        deviceProtectedPrefs(context, "alarm_deferred_writes").edit().putString("writes", legacy).commit()
+        val queue = SharedPrefsDeferredAlarmWrites(context)
+        val last = queue.entries().last().seq
+        queue.removeThrough(last)
+
+        queue.append(writes[0])
+        assertTrue(SharedPrefsDeferredAlarmWrites(context).entries().single().seq > last)
+    }
 }

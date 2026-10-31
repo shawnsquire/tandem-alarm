@@ -34,8 +34,7 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
 
     @Synchronized override fun append(w: DeferredWrite) {
         val queued = entries()
-        // Past the counter and every queued seq, so legacy positional seqs can't collide.
-        val seq = maxOf(prefs.getLong(KEY_NEXT_SEQ, 0), (queued.maxOfOrNull { it.seq } ?: -1) + 1)
+        val seq = nextSeq(queued)
         save(queued + QueuedWrite(seq, w), nextSeq = seq + 1)
     }
 
@@ -46,13 +45,19 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
         emptyList()
     }
 
-    @Synchronized override fun removeThrough(seq: Long) = save(entries().filter { it.seq > seq })
+    // The counter is saved here too: legacy entries never went through append().
+    @Synchronized override fun removeThrough(seq: Long) {
+        val queued = entries()
+        save(queued.filter { it.seq > seq }, nextSeq = nextSeq(queued))
+    }
 
-    private fun save(writes: List<QueuedWrite>, nextSeq: Long? = null) {
+    /** Past the counter and every queued seq, so legacy positional seqs can't collide. */
+    private fun nextSeq(queued: List<QueuedWrite>): Long =
+        maxOf(prefs.getLong(KEY_NEXT_SEQ, 0), (queued.maxOfOrNull { it.seq } ?: -1) + 1)
+
+    private fun save(writes: List<QueuedWrite>, nextSeq: Long) {
         val array = JSONArray().apply { writes.forEach { put(encode(it)) } }
-        val edit = prefs.edit().putString(KEY, array.toString())
-        nextSeq?.let { edit.putLong(KEY_NEXT_SEQ, it) }
-        check(edit.commit()) { "deferred alarm write failed" }
+        check(prefs.edit().putString(KEY, array.toString()).putLong(KEY_NEXT_SEQ, nextSeq).commit()) { "deferred alarm write failed" }
     }
 
     private fun encode(q: QueuedWrite): JSONObject = JSONObject().put("seq", q.seq).put("id", q.write.id).apply {
