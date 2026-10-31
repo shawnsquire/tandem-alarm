@@ -38,11 +38,16 @@ class SettingsRepositoryImplTest {
 
     @Test
     fun snoozeClampedOnWrite() = runTest {
-        val r = repo()
+        val ds = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { File(tmp.root, "test.preferences_pb") },
+        )
+        val r = SettingsRepositoryImpl(ds)
+        val key = intPreferencesKey("snoozeMinutes")
         r.setSnoozeMinutes(0)
-        assertEquals(1, r.snoozeMinutes.first())
+        assertEquals(1, ds.data.first()[key])
         r.setSnoozeMinutes(61)
-        assertEquals(60, r.snoozeMinutes.first())
+        assertEquals(60, ds.data.first()[key])
     }
 
     @Test
