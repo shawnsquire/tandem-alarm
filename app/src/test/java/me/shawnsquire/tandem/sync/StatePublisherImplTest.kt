@@ -56,7 +56,11 @@ class StatePublisherImplTest {
         val publisher: StatePublisherImpl,
     )
 
-    private fun TestScope.env(paired: Boolean = true, writer: RecordingWriter = RecordingWriter()): Env {
+    private fun TestScope.env(
+        paired: Boolean = true,
+        writer: RecordingWriter = RecordingWriter(),
+        fcmToken: kotlinx.coroutines.flow.Flow<String?> = MutableStateFlow("tok"),
+    ): Env {
         val clock = object : Clock() {
             override fun getZone(): ZoneId = ZoneOffset.UTC
             override fun withZone(zone: ZoneId): Clock = this
@@ -66,7 +70,7 @@ class StatePublisherImplTest {
         val ring = FakeRingStateStore()
         val household = MutableStateFlow(if (paired) hh else null)
         val publisher = StatePublisherImpl(
-            alarms, ring, household, MutableStateFlow("Pixel"), MutableStateFlow("tok"), writer, clock, backgroundScope,
+            alarms, ring, household, MutableStateFlow("Pixel"), fcmToken, writer, clock, backgroundScope,
         )
         return Env(alarms, ring, household, writer, publisher)
     }
@@ -175,6 +179,42 @@ class StatePublisherImplTest {
         e.alarms.setEnabled("a1", false)
         advance(2_000)
         assertEquals(2, e.writer.writes.size)
+    }
+
+    @Test
+    fun `unpairing within the debounce window cancels the pending write and repairing writes again`() = runTest {
+        val e = env()
+        e.publisher.start()
+        advance(2_000)
+        assertEquals(1, e.writer.writes.size)
+        e.alarms.setEnabled("a1", false)
+        advance(500)
+        e.household.value = null
+        advance(5_000)
+        assertEquals(1, e.writer.writes.size)
+        e.household.value = hh
+        advance(1_100)
+        assertEquals(2, e.writer.writes.size)
+        e.household.value = null
+        advance(2_000)
+        e.household.value = hh
+        advance(1_100)
+        assertEquals(3, e.writer.writes.size)
+    }
+
+    @Test
+    fun `an upstream failure is retried and later writes still happen`() = runTest {
+        var attempts = 0
+        val token = kotlinx.coroutines.flow.flow<String?> {
+            if (attempts++ == 0) throw java.io.IOException("datastore")
+            emit("tok")
+        }
+        val e = env(fcmToken = token)
+        e.publisher.start()
+        advance(500)
+        assertTrue(e.writer.writes.isEmpty())
+        advance(3_000)
+        assertEquals(1, e.writer.writes.size)
     }
 
     @Test

@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
@@ -58,7 +60,8 @@ class StatePublisherImpl(
         scope.launch {
             combine(alarms.alarms, ringState.state, household, displayName, fcmToken, ::Inputs)
                 .transformLatest { i ->
-                    val h = i.household ?: return@transformLatest
+                    // Unpaired emits null so it replaces (cancels) any write pending in the debounce.
+                    val h = i.household ?: return@transformLatest emit(null)
                     while (true) {
                         val now = clock.instant()
                         emit(Publish(h, deviceDocMap(i.displayName, i.fcmToken, i.alarms, i.ring, now, clock.zone)))
@@ -66,8 +69,20 @@ class StatePublisherImpl(
                         delay(Duration.between(now, boundary.plusSeconds(1)).toMillis().coerceAtLeast(0))
                     }
                 }
-                .distinctUntilChanged { a, b -> a.household == b.household && a.data - UPDATED_AT == b.data - UPDATED_AT }
+                .retryWhen { cause, _ ->
+                    if (cause is CancellationException) {
+                        false
+                    } else {
+                        Log.w(TAG, "publisher input failed, retrying", cause)
+                        delay(1.seconds)
+                        true
+                    }
+                }
+                .distinctUntilChanged { a, b ->
+                    a?.household == b?.household && a?.data?.minus(UPDATED_AT) == b?.data?.minus(UPDATED_AT)
+                }
                 .debounce(1.seconds)
+                .filterNotNull()
                 .collect { p ->
                     try {
                         writer.write(p.household, p.data)
