@@ -300,4 +300,81 @@ class CommandApplierImplTest {
         e.applier.apply(cmd(CommandType.DISABLE))
         assertEquals("Your partner", e.notifier.calls.single().partnerName)
     }
+
+    /** Starts a ring for the alarm right after the first write, like a receiver racing the applier. */
+    private class RingsAfterWrite(
+        private val inner: AlarmRepository,
+        private val ring: () -> FakeRingStateStore,
+        private val startedAt: Instant,
+    ) : AlarmRepository by inner {
+        override suspend fun setSkip(id: String, occurrence: Instant?) {
+            inner.setSkip(id, occurrence)
+            ring().set(RingState(id, "r1", startedAt, null))
+        }
+
+        override suspend fun setEnabled(id: String, enabled: Boolean) {
+            inner.setEnabled(id, enabled)
+            if (!enabled) ring().set(RingState(id, "r1", startedAt, null))
+        }
+    }
+
+    private fun TestScope.racingEnv(
+        alarm: Alarm,
+        startedAt: Instant,
+    ): Env {
+        lateinit var e: Env
+        e = env(alarms = listOf(alarm), wrapAlarms = { RingsAfterWrite(it, { e.ring }, startedAt) })
+        return e
+    }
+
+    private fun Env.assertRaceRejected(c: Command) {
+        assertEquals(
+            listOf(FakeCommandRemote.Resolved("h1", c.id, CommandStatus.REJECTED, "already ringing")),
+            remote.resolved,
+        )
+        assertTrue(notifier.calls.isEmpty())
+        assertEquals(1, scheduler.rescheduleCount)
+    }
+
+    @Test fun `skip that loses the race to a ring is undone`() = runTest {
+        val c = cmd(CommandType.SKIP_NEXT)
+        val e = racingEnv(weekly, c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertNull(e.alarms.get("a1")!!.skippedOccurrenceAt)
+        assertTrue(e.alarms.get("a1")!!.enabled)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `undoing a late skip restores a skip that was already there`() = runTest {
+        val old = now.minusSeconds(86_400)
+        val c = cmd(CommandType.SKIP_NEXT)
+        val e = racingEnv(weekly.copy(skippedOccurrenceAt = old), c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertEquals(old, e.alarms.get("a1")!!.skippedOccurrenceAt)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `disable that loses the race to a ring is re-enabled`() = runTest {
+        val c = cmd(CommandType.DISABLE)
+        val e = racingEnv(weekly, c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertTrue(e.alarms.get("a1")!!.enabled)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `one shot skip that loses the race to a ring is re-enabled`() = runTest {
+        val c = cmd(CommandType.SKIP_NEXT, oneShot)
+        val e = racingEnv(oneShot, c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertTrue(e.alarms.get("a2")!!.enabled)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `a ring that started before the occurrence does not undo the skip`() = runTest {
+        val c = cmd(CommandType.SKIP_NEXT)
+        val e = racingEnv(weekly, c.occurrenceAt!!.minusSeconds(86_400))
+        e.applier.apply(c)
+        assertEquals(c.occurrenceAt, e.alarms.get("a1")!!.skippedOccurrenceAt)
+        e.assertApplied(c)
+    }
 }

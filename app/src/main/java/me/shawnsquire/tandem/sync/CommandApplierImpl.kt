@@ -100,10 +100,16 @@ class CommandApplierImpl(
                 is CommandDecision.Reject -> Outcome.Rejected(decision.reason)
             }
             var turnedOff = false
+            var undone = false
             if (outcome == Outcome.Applied) {
                 try {
                     turnedOff = cmd.type == CommandType.SKIP_NEXT && alarm?.isOneShot() == true
                     applyLocally(cmd, turnedOff)
+                    if (ringStartedBeforeWrite(cmd)) {
+                        undoLocally(cmd, alarm, turnedOff)
+                        outcome = Outcome.Rejected("already ringing")
+                        undone = true
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -114,7 +120,7 @@ class CommandApplierImpl(
 
             processed.record(cmd.id, outcome, cmd.expiresAt)
 
-            if (outcome == Outcome.Applied) {
+            if (outcome == Outcome.Applied || undone) {
                 try {
                     scheduler.rescheduleAll()
                 } catch (e: CancellationException) {
@@ -146,6 +152,27 @@ class CommandApplierImpl(
             CommandType.DISABLE -> alarms.setEnabled(cmd.alarmId, false)
             CommandType.ENABLE -> alarms.setEnabled(cmd.alarmId, true)
             CommandType.STOP_RINGING -> ringing.dismiss(requireNotNull(cmd.ringId))
+        }
+    }
+
+    /**
+     * True when a skip or turn-off just written lost a race with a ring: the alarm is ringing and its
+     * ring started at or after the occurrence the command targeted. [RingState] carries only
+     * [RingState.startedAt], which for a ring of that occurrence is its fire time, so it is compared
+     * with `occurrenceAt` (a ring that started earlier belongs to a previous occurrence and is left alone).
+     */
+    private suspend fun ringStartedBeforeWrite(cmd: Command): Boolean {
+        if (cmd.type != CommandType.SKIP_NEXT && cmd.type != CommandType.DISABLE) return false
+        val ring = ringState.state.first()?.takeIf { it.alarmId == cmd.alarmId } ?: return false
+        val target = cmd.occurrenceAt ?: return true
+        return ring.startedAt >= target
+    }
+
+    /** Puts back what [applyLocally] changed, from [prior] (read before the write), so a pre-existing skip survives. */
+    private suspend fun undoLocally(cmd: Command, prior: Alarm?, turnedOff: Boolean) {
+        when {
+            turnedOff || cmd.type == CommandType.DISABLE -> alarms.setEnabled(cmd.alarmId, prior?.enabled ?: true)
+            else -> alarms.setSkip(cmd.alarmId, prior?.skippedOccurrenceAt)
         }
     }
 
