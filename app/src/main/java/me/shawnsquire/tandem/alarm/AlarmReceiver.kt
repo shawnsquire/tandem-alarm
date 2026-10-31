@@ -20,12 +20,15 @@ import me.shawnsquire.tandem.TandemApp
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            AlarmIntents.ACTION_FIRE, AlarmIntents.ACTION_SNOOZE_FIRE ->
+            AlarmIntents.ACTION_FIRE, AlarmIntents.ACTION_SNOOZE_FIRE -> {
+                // Held across the receiver-to-service gap; the service releases it once it has its own.
+                FireWakeLock.acquire(context)
                 context.startForegroundService(
                     Intent(context, RingingService::class.java)
                         .setAction(intent.action)
                         .putExtras(intent),
                 )
+            }
             AlarmIntents.ACTION_DISMISS -> {
                 val ringId = intent.getStringExtra(AlarmIntents.EXTRA_RING_ID) ?: return
                 val pending = goAsync()

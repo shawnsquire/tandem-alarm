@@ -20,7 +20,11 @@ import org.robolectric.Shadows.shadowOf
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class AlarmReceiverTest {
+    private val PowerManagerTag = "tandem:fire"
     private val context: Context = RuntimeEnvironment.getApplication()
+
+    @org.junit.Before
+    fun resetFireLock() = FireWakeLock.resetForTest()
 
     @Test
     fun fireStartsRingingServiceWithActionAndExtras() {
@@ -36,6 +40,27 @@ class AlarmReceiverTest {
         assertEquals(AlarmIntents.ACTION_FIRE, started.action)
         assertEquals("a1", started.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
         assertEquals(1234L, started.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1L))
+    }
+
+    @Test
+    fun fireAndSnoozeFireAcquireTheFireWakeLock() {
+        FireWakeLock.release()
+        AlarmReceiver().onReceive(context, Intent(AlarmIntents.ACTION_FIRE).putExtra(AlarmIntents.EXTRA_ALARM_ID, "a1"))
+        val lock = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+        assertTrue(lock.isHeld)
+        assertEquals(PowerManagerTag, shadowOf(lock).tag)
+        FireWakeLock.release()
+        assertFalse(lock.isHeld)
+
+        AlarmReceiver().onReceive(context, Intent(AlarmIntents.ACTION_SNOOZE_FIRE).putExtra(AlarmIntents.EXTRA_ALARM_ID, "a1"))
+        assertTrue(org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock().isHeld)
+        FireWakeLock.release()
+    }
+
+    @Test
+    fun releaseWithoutHoldingIsSafe() {
+        FireWakeLock.release()
+        FireWakeLock.release()
     }
 
     @Test
