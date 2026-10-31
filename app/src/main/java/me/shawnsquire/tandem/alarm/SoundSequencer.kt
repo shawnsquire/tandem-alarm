@@ -5,6 +5,9 @@ internal sealed interface SoundDecision {
     /** Create a player for [uri]; events for it must carry [generation]. */
     data class Try(val uri: String, val generation: Int) : SoundDecision
 
+    /** The source of the current attempt is open: call prepareAsync. */
+    data object Prepare : SoundDecision
+
     /** The current attempt is prepared: start playback. */
     data object Play : SoundDecision
 
@@ -29,6 +32,13 @@ internal class SoundSequencer(candidates: List<String>, bundledUri: String) {
     private var exhausted = false
 
     fun begin(): SoundDecision = advance()
+
+    /**
+     * The (possibly slow) source open finished. [Prepare] if still wanted; [Ignore] means the
+     * attempt was superseded, so the adapter must release that player.
+     */
+    fun onSourceOpened(generation: Int): SoundDecision =
+        if (!current(generation) || playing) SoundDecision.Ignore else SoundDecision.Prepare
 
     fun onPrepared(generation: Int): SoundDecision {
         if (!current(generation) || playing) return SoundDecision.Ignore

@@ -97,4 +97,35 @@ class SoundSequencerTest {
         assertEquals(SoundDecision.Ignore, s.onTimeout(a.gen()))
         assertTrue(s.begin() == SoundDecision.Ignore)
     }
+
+    @Test fun sourceOpenedPrepares() {
+        val s = SoundSequencer(listOf("a"), bundled)
+        val a = s.begin()
+        assertEquals(SoundDecision.Prepare, s.onSourceOpened(a.gen()))
+    }
+
+    @Test fun timeoutDuringSourceOpenAdvancesAndLateOpenIsStale() {
+        val s = SoundSequencer(listOf("hung", "b"), bundled)
+        val hung = s.begin()
+        val b = s.onTimeout(hung.gen()) // timeout fires while setDataSource is still blocked
+        assertEquals("b", b.tryUri())
+        // The hung worker finally returns: stale, so the adapter releases that player.
+        assertEquals(SoundDecision.Ignore, s.onSourceOpened(hung.gen()))
+        assertEquals(SoundDecision.Prepare, s.onSourceOpened(b.gen()))
+    }
+
+    @Test fun sourceOpenedAfterStopIsIgnored() {
+        val s = SoundSequencer(listOf("a"), bundled)
+        val a = s.begin()
+        s.stop()
+        assertEquals(SoundDecision.Ignore, s.onSourceOpened(a.gen()))
+    }
+
+    @Test fun hungChainStillReachesBundled() {
+        val s = SoundSequencer(listOf("h1", "h2"), bundled)
+        var d = s.begin()
+        val seen = mutableListOf<String>()
+        while (d is SoundDecision.Try) { seen += d.uri; d = s.onTimeout(d.generation) }
+        assertEquals(listOf("h1", "h2", bundled), seen)
+    }
 }

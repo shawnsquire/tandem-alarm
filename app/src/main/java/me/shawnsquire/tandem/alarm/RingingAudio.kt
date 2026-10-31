@@ -81,58 +81,110 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
                     releasePlayer()
                     Log.e(TAG, "no ringtone could be played")
                 }
-                SoundDecision.Ignore -> Unit
+                SoundDecision.Prepare, SoundDecision.Ignore -> Unit
             }
         }
 
+        /** One player's lifecycle. [sourceDone] and [released] are touched on the audio thread, [abandoned] from both. */
+        private class Attempt(val mp: MediaPlayer, val generation: Int) {
+            @Volatile var abandoned = false
+            var sourceDone = false
+        }
+
+        private var attempt: Attempt? = null
+
         private fun open(uri: String, generation: Int) {
             currentGeneration = generation
-            val mp = MediaPlayer()
-            player = mp
+            // Created here so its callbacks arrive on the audio looper.
+            val at = Attempt(MediaPlayer(), generation)
+            attempt = at
+            player = at.mp
+            // Hard bound on the whole attempt, source open included: posted before anything can hang.
+            val t = Runnable {
+                Log.w(TAG, "attempt timed out: $uri")
+                apply(sequencer.onTimeout(generation))
+            }
+            timeout = t
+            handler.postDelayed(t, PREPARE_TIMEOUT_MS)
             try {
-                mp.setAudioAttributes(
+                at.mp.setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_ALARM)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build(),
                 )
-                runCatching { mp.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK) }
-                mp.setDataSource(context, Uri.parse(uri))
-                mp.isLooping = true
-                mp.setOnPreparedListener { apply(sequencer.onPrepared(generation)) }
-                mp.setOnErrorListener { _, what, extra ->
+                runCatching { at.mp.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK) }
+                at.mp.isLooping = true
+            } catch (e: Exception) {
+                Log.w(TAG, "ringtone failed to configure: $uri", e)
+                apply(sequencer.onError(generation))
+                return
+            }
+            // setDataSource can block on a stuck content provider: never on the audio thread.
+            EXECUTOR.execute {
+                var error: Exception? = null
+                try {
+                    at.mp.setDataSource(context, Uri.parse(uri))
+                } catch (e: Exception) { // IOException, SecurityException, IllegalState/Argument
+                    error = e
+                }
+                if (at.abandoned) { // the chain moved on while we were stuck
+                    releaseQuietly(at.mp)
+                    return@execute
+                }
+                if (!handler.post { onSourceOpened(at, uri, error) }) releaseQuietly(at.mp)
+            }
+        }
+
+        private fun onSourceOpened(at: Attempt, uri: String, error: Exception?) {
+            at.sourceDone = true
+            if (at.abandoned || at !== attempt) { releaseQuietly(at.mp); return }
+            if (error != null) {
+                Log.w(TAG, "ringtone failed to open: $uri", error)
+                apply(sequencer.onError(at.generation))
+                return
+            }
+            val d = sequencer.onSourceOpened(at.generation)
+            if (d != SoundDecision.Prepare) { releaseQuietly(at.mp); return }
+            try {
+                at.mp.setOnPreparedListener { apply(sequencer.onPrepared(at.generation)) }
+                at.mp.setOnErrorListener { _, what, extra ->
                     Log.w(TAG, "playback error what=$what extra=$extra uri=$uri")
-                    apply(sequencer.onError(generation))
+                    apply(sequencer.onError(at.generation))
                     true
                 }
-                val t = Runnable {
-                    Log.w(TAG, "prepare timed out: $uri")
-                    apply(sequencer.onTimeout(generation))
-                }
-                timeout = t
-                handler.postDelayed(t, PREPARE_TIMEOUT_MS)
-                mp.prepareAsync()
-            } catch (e: Exception) { // IOException, SecurityException, IllegalState/Argument
-                Log.w(TAG, "ringtone failed to open: $uri", e)
-                apply(sequencer.onError(generation))
+                at.mp.prepareAsync()
+            } catch (e: Exception) {
+                Log.w(TAG, "ringtone failed to prepare: $uri", e)
+                apply(sequencer.onError(at.generation))
             }
+        }
+
+        private fun releaseQuietly(mp: MediaPlayer) {
+            try { mp.stop() } catch (e: Exception) { /* never started */ }
+            runCatching { mp.release() }
         }
 
         private fun releasePlayer() {
             timeout?.let { handler.removeCallbacks(it) }
             timeout = null
-            val mp = player ?: return
+            val at = attempt ?: return
+            attempt = null
             player = null
-            mp.setOnPreparedListener(null)
-            mp.setOnErrorListener(null)
-            try { mp.stop() } catch (e: IllegalStateException) { /* never started */ }
-            runCatching { mp.release() }
+            at.abandoned = true
+            if (!at.sourceDone) return // setDataSource still running; its worker releases the player
+            at.mp.setOnPreparedListener(null)
+            at.mp.setOnErrorListener(null)
+            releaseQuietly(at.mp)
         }
     }
 
     companion object {
         private const val TAG = "AlarmSound"
         const val PREPARE_TIMEOUT_MS = 2_000L
+        private val EXECUTOR = java.util.concurrent.Executors.newCachedThreadPool { r ->
+            Thread(r, "alarm-audio-open").apply { isDaemon = true }
+        }
 
         /** `android.resource://<pkg>/raw/alarm_fallback`: a synthesized beep that needs no storage or provider. */
         fun bundledToneUri(context: Context): String =
