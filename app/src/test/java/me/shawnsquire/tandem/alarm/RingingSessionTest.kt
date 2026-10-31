@@ -190,6 +190,64 @@ class RingingSessionTest {
         assertNotNull(h.rawStore.state.first())
     }
 
+    private fun TestScope.errorHarness(
+        scheduler: AlarmScheduler? = null,
+        notifier: RingingNotifier? = null,
+    ): Pair<Harness, RingingSession> {
+        val h = harness()
+        var finished = 0
+        val session = RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
+            scheduler ?: h.scheduler, h.controller, h.sound, h.vibration, notifier ?: h.notifier,
+            backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
+            onFinished = { h.finished++ },
+        )
+        return h to session
+    }
+
+    private suspend fun assertKeepsRingingThenAutoSilences(h: Harness, session: RingingSession, testScope: TestScope) {
+        session.start("a", occurrence, false, null)
+        testScope.runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        testScope.advanceTimeBy(9.minutes); testScope.runCurrent()
+        assertEquals(0, h.sound.stops)
+        assertEquals(0, h.finished)
+        testScope.advanceTimeBy(1.minutes + 1.seconds); testScope.runCurrent()
+        assertEquals(1, h.finished)
+        assertTrue(h.sound.stops >= 1)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun schedulerErrorStillRingsAndKeepsRinging() = runTest {
+        val bad = object : AlarmScheduler {
+            override suspend fun rescheduleAll() { throw NotImplementedError("U1") }
+        }
+        val (h, session) = errorHarness(scheduler = bad)
+        assertKeepsRingingThenAutoSilences(h, session, this)
+    }
+
+    @Test fun notifierErrorStillRingsAndKeepsRinging() = runTest {
+        val bad = object : RingingNotifier by RecordingNotifier() {
+            override fun showRinging(alarm: Alarm?, ringId: String) { throw NoClassDefFoundError("x") }
+        }
+        val (h, session) = errorHarness(notifier = bad)
+        assertKeepsRingingThenAutoSilences(h, session, this)
+    }
+
+    @Test fun skipArrivingInPreFirePullAfterOccurrenceSuppresses() = runTest {
+        // Doze: the alarm fires late, so now() is already past the occurrence extra.
+        lateinit var h: Harness
+        h = Harness(
+            this, listOf(alarm()), null,
+            LambdaPreFire { h.repo.setSkip("a", occurrence); true },
+            occurrence.plusSeconds(1),
+        )
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(1, h.finished)
+    }
+
     @Test fun skipAppliedBySuccessfulCheckSuppresses() = runTest {
         lateinit var h: Harness
         h = harness(preFire = LambdaPreFire { h.repo.setSkip("a", occurrence); true })
