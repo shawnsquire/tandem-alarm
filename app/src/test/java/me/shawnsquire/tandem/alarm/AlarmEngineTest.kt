@@ -332,6 +332,9 @@ class AlarmEngineTest {
         assertSame(engine.scheduler, container.alarmScheduler)
         assertSame(engine.controller, container.ringingController)
         assertSame(engine.ringSlot, container.ringSlot)
+        // Every container consumer goes through the attach drain, and there is one ring-state store.
+        assertSame(engine.alarmRepository, container.alarmRepository)
+        assertSame(engine.ringStateStore, container.ringStateStore)
     }
 
     @Test

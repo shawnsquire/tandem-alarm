@@ -12,11 +12,9 @@ import me.shawnsquire.tandem.alarm.RingingController
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.AlarmRepositoryImpl
 import me.shawnsquire.tandem.data.RingStateStore
-import me.shawnsquire.tandem.data.RingStateStoreImpl
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.data.SettingsRepositoryImpl
 import me.shawnsquire.tandem.data.TandemDatabase
-import me.shawnsquire.tandem.data.ringStateDataStore
 import me.shawnsquire.tandem.data.settingsDataStore
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingingController
@@ -61,14 +59,19 @@ import me.shawnsquire.tandem.sync.StatePublisher
 @Suppress("unused")
 class AppContainer(private val context: Context) {
     // U1: swap to real
-    val alarmRepository: AlarmRepository = AlarmRepositoryImpl(TandemDatabase.build(context).alarmDao(), Clock.systemDefaultZone())
-    val ringStateStore: RingStateStore = RingStateStoreImpl(context.ringStateDataStore)
+    // Only the engine sees Room directly: everyone else goes through alarmRepository below.
+    private val roomAlarmRepository = AlarmRepositoryImpl(TandemDatabase.build(context).alarmDao(), Clock.systemDefaultZone())
     val settingsRepository: SettingsRepository = SettingsRepositoryImpl(context.settingsDataStore)
 
     // U3: swap to real
     // Lazy capture: preFireCheck is declared below; the provider only runs when a fire pulls, after construction.
     private val alarmEngine = me.shawnsquire.tandem.alarm.AlarmEngine.get(context)
-        .also { it.attach(alarmRepository, settingsRepository) { preFireCheck } }
+        .also { it.attach(roomAlarmRepository, settingsRepository) { preFireCheck } }
+    // Waits for the attach drain, so no consumer (a command applied at unlock, the UI) can be
+    // overwritten by an older locked write replayed after it.
+    val alarmRepository: AlarmRepository = alarmEngine.alarmRepository
+    // One store per process: the engine's.
+    val ringStateStore: RingStateStore = alarmEngine.ringStateStore
     val alarmScheduler: AlarmScheduler = alarmEngine.scheduler
     val ringingController: RingingController = alarmEngine.controller
     val ringSlot: me.shawnsquire.tandem.alarm.RingSlot = alarmEngine.ringSlot

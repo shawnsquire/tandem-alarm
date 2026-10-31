@@ -13,10 +13,15 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.alarm.AlarmEngine
 import me.shawnsquire.tandem.alarm.MirrorSnapshot
+import me.shawnsquire.tandem.alarm.MirroredAlarm
+import me.shawnsquire.tandem.alarm.SharedPrefsDeferredAlarmWrites
 import me.shawnsquire.tandem.alarm.SharedPrefsAlarmMirror
 import me.shawnsquire.tandem.alarm.SwitchableAlarmRepository
+import me.shawnsquire.tandem.data.AlarmRepositoryImpl
 import me.shawnsquire.tandem.data.RingStateStoreImpl
+import me.shawnsquire.tandem.data.TandemDatabase
 import me.shawnsquire.tandem.data.ringStateDataStore
+import me.shawnsquire.tandem.schedule.Alarm
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,6 +35,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
+import java.time.Clock
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.Duration.Companion.seconds
 
@@ -141,6 +147,29 @@ class TandemAppLockedTest {
         app.ensureStarted()
         assertEquals(1, app.fullStartupRuns)
         assertSame(container, app.container)
+    }
+
+    @Test
+    fun containerWritesWaitForTheDrainOfLockedWrites() = runBlocking {
+        val alarm = Alarm("a", "a", 6, 30, emptySet(), true, null, null, null)
+        val db = TandemDatabase.build(robolectricApp)
+        AlarmRepositoryImpl(db.alarmDao(), Clock.systemDefaultZone()).upsert(alarm)
+        SharedPrefsAlarmMirror(robolectricApp).write(MirrorSnapshot(listOf(MirroredAlarm(alarm, null)), null, null))
+        val (app, base) = startLockedApp()
+        val engine = AlarmEngine.get(app)
+        // A Stop on a locked ring disabling it: queued for Room.
+        engine.alarmRepository.setEnabled("a", false)
+
+        base.locked = false
+        unlock(app)
+        // A partner command applied at unlock, before the drain is done: it must not be undone by
+        // the drain replaying the older locked write.
+        app.container.alarmRepository.setEnabled("a", true)
+
+        assertTrue(app.container.alarmRepository.get("a")!!.enabled)
+        assertTrue(AlarmRepositoryImpl(db.alarmDao(), Clock.systemDefaultZone()).get("a")!!.enabled)
+        assertTrue(SharedPrefsDeferredAlarmWrites(robolectricApp).all().isEmpty())
+        db.close()
     }
 
     @Test
