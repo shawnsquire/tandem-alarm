@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.content.Context
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.awaitTandemStartup
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
@@ -64,6 +65,8 @@ class AlarmSchedulerImplTest {
 
     @Before
     fun setUp() {
+        // TandemApp's startup reschedule shares the scheduler records and AlarmManager.
+        awaitTandemStartup()
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
     }
 

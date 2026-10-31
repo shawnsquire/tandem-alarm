@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import me.shawnsquire.tandem.TandemApp
 
 /**
  * Re-registers alarms after boot, clock change or timezone change. Never starts a service.
@@ -23,6 +24,14 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_TIME_CHANGED,
             Intent.ACTION_TIMEZONE_CHANGED -> {
+                // Backs up TandemApp's USER_UNLOCKED receiver. Never on LOCKED_BOOT_COMPLETED: still locked.
+                if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
+                    try {
+                        (context.applicationContext as? TandemApp)?.ensureStarted()
+                    } catch (e: Throwable) {
+                        Log.e("BootReceiver", "ensureStarted failed", e)
+                    }
+                }
                 val pending = goAsync()
                 val engine = AlarmEngine.get(context)
                 rescheduleAsync(

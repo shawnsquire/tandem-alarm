@@ -16,6 +16,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.TandemApp
+import me.shawnsquire.tandem.awaitTandemStartup
 import me.shawnsquire.tandem.data.RingStateStoreImpl
 import me.shawnsquire.tandem.data.ringStateDataStore
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
@@ -60,6 +61,8 @@ class AlarmEngineTest {
 
     @Before
     fun setUp() = runBlocking {
+        // TandemApp's startup reschedule rewrites the mirror; its stale-ring cleanup clears ring state.
+        awaitTandemStartup()
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         shadowOf(app.getSystemService(UserManager::class.java)).setUserUnlocked(false)
         // TandemApp attaches the process engine at startup; its drain reads the same DE queue, so

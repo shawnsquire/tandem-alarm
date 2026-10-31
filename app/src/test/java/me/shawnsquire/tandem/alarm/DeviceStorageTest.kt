@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.alarm
 
 import android.content.Context
+import me.shawnsquire.tandem.awaitTandemStartup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -20,6 +21,8 @@ class DeviceStorageTest {
     /** TandemApp's startup builds the AlarmEngine, which already migrated; start each test unmigrated. */
     @Before
     fun clearMigrationMarker() {
+        // TandemApp's startup reschedule also writes the device-protected scheduler records.
+        awaitTandemStartup()
         check(context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_storage", Context.MODE_PRIVATE).edit().clear().commit())
     }
 

@@ -1,9 +1,11 @@
 package me.shawnsquire.tandem.alarm
 
 import android.content.Context
+import me.shawnsquire.tandem.awaitTandemStartup
 import me.shawnsquire.tandem.schedule.Alarm
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -15,6 +17,13 @@ import java.time.Instant
 class AlarmMirrorTest {
     private val context: Context = RuntimeEnvironment.getApplication()
     private val locked = LockedContext(context)
+
+    /** TandemApp's startup reschedule writes the mirror; let it finish, then start each test empty. */
+    @Before
+    fun clearMirror() {
+        awaitTandemStartup()
+        check(deviceProtectedPrefs(context, "alarm_mirror").edit().clear().commit())
+    }
 
     private val full = MirroredAlarm(
         Alarm(
