@@ -1,90 +1,149 @@
 package me.shawnsquire.tandem.alarm
 
+import android.content.ContentResolver
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.util.Log
+import me.shawnsquire.tandem.R
 
 /**
- * Loops the first candidate that opens, then falls back to the system alarm, ringtone and
- * notification defaults. One instance per [RingingSession]; [stop] is idempotent.
+ * Loops the first candidate that prepares, then falls back to the system alarm, ringtone and
+ * notification defaults and finally the bundled tone. One instance per [RingingSession].
+ *
+ * Audio never blocks the ring: [start] returns at once and all player work runs on a dedicated
+ * "alarm-audio" thread. [stop] is idempotent and safe from any thread.
  */
 class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
-    private var player: MediaPlayer? = null
-    private var queue: List<String> = emptyList()
-    private var playingIndex = -1
+    private var run: Run? = null
 
     @Synchronized
     override fun start(candidates: List<String>) {
-        stopLocked()
-        val all = candidates + listOfNotNull(
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
-        ).map { it.toString() }
-        queue = all
-        val opened = openFirstFrom(all, 0) { open(it) }
-        player = opened?.second
-        playingIndex = opened?.first ?: -1
-        if (player == null) Log.e(TAG, "no ringtone could be opened")
+        run?.stop()
+        val bundled = bundledToneUri(context)
+        val all = candidates + listOf(
+            RingtoneManager.TYPE_ALARM,
+            RingtoneManager.TYPE_RINGTONE,
+            RingtoneManager.TYPE_NOTIFICATION,
+        ).mapNotNull { runCatching { RingtoneManager.getDefaultUri(it) }.getOrNull()?.toString() }
+        run = Run(context.applicationContext, SoundSequencer(all, bundled)).also { it.begin() }
     }
 
-    /** Playback died mid-ring: move on to the candidates after the one that failed. */
     @Synchronized
-    private fun onPlayerError(failed: MediaPlayer) {
-        if (failed !== player) return // stale callback from a released player
-        player = null
-        runCatching { failed.release() }
-        val opened = openFirstFrom(queue, playingIndex + 1) { open(it) }
-        player = opened?.second
-        playingIndex = opened?.first ?: -1
-        if (player == null) Log.e(TAG, "no fallback ringtone could be opened")
+    override fun stop() {
+        run?.stop()
+        run = null
     }
 
-    private fun open(uri: String): MediaPlayer? {
-        val mp = MediaPlayer()
-        try {
-            mp.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build(),
-            )
-            mp.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
-            mp.setDataSource(context, Uri.parse(uri))
-            mp.isLooping = true
-            mp.setOnErrorListener { failed, what, extra ->
-                Log.w(TAG, "playback error what=$what extra=$extra")
-                onPlayerError(failed)
-                true
+    /** Wires a [SoundSequencer] to MediaPlayer and a Handler. Sequencer and player live on the audio thread. */
+    private class Run(private val context: Context, private val sequencer: SoundSequencer) {
+        private val thread = HandlerThread("alarm-audio").also { it.start() }
+        private val handler = Handler(thread.looper)
+        private var player: MediaPlayer? = null
+        private var timeout: Runnable? = null
+        private var currentGeneration = -1
+
+        fun begin() {
+            handler.post { apply(sequencer.begin()) }
+        }
+
+        fun stop() {
+            // If the thread already quit, the post is dropped and there is nothing left to release.
+            handler.post {
+                sequencer.stop()
+                releasePlayer()
+                thread.quitSafely()
             }
-            mp.prepare()
-            mp.start()
-            return mp
-        } catch (e: Exception) { // IOException, SecurityException, IllegalState/Argument
-            Log.w(TAG, "ringtone failed to open: $uri", e)
-            mp.release()
-            return null
+        }
+
+        private fun apply(decision: SoundDecision) {
+            when (decision) {
+                is SoundDecision.Try -> {
+                    releasePlayer()
+                    open(decision.uri, decision.generation)
+                }
+                SoundDecision.Play -> try {
+                    player?.start()
+                    timeout?.let { handler.removeCallbacks(it) }
+                } catch (e: Exception) {
+                    Log.w(TAG, "start failed", e)
+                    apply(sequencer.onError(currentGeneration))
+                }
+                SoundDecision.Exhausted -> {
+                    releasePlayer()
+                    Log.e(TAG, "no ringtone could be played")
+                }
+                SoundDecision.Ignore -> Unit
+            }
+        }
+
+        private fun open(uri: String, generation: Int) {
+            currentGeneration = generation
+            val mp = MediaPlayer()
+            player = mp
+            try {
+                mp.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+                runCatching { mp.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK) }
+                mp.setDataSource(context, Uri.parse(uri))
+                mp.isLooping = true
+                mp.setOnPreparedListener { apply(sequencer.onPrepared(generation)) }
+                mp.setOnErrorListener { _, what, extra ->
+                    Log.w(TAG, "playback error what=$what extra=$extra uri=$uri")
+                    apply(sequencer.onError(generation))
+                    true
+                }
+                val t = Runnable {
+                    Log.w(TAG, "prepare timed out: $uri")
+                    apply(sequencer.onTimeout(generation))
+                }
+                timeout = t
+                handler.postDelayed(t, PREPARE_TIMEOUT_MS)
+                mp.prepareAsync()
+            } catch (e: Exception) { // IOException, SecurityException, IllegalState/Argument
+                Log.w(TAG, "ringtone failed to open: $uri", e)
+                apply(sequencer.onError(generation))
+            }
+        }
+
+        private fun releasePlayer() {
+            timeout?.let { handler.removeCallbacks(it) }
+            timeout = null
+            val mp = player ?: return
+            player = null
+            mp.setOnPreparedListener(null)
+            mp.setOnErrorListener(null)
+            try { mp.stop() } catch (e: IllegalStateException) { /* never started */ }
+            runCatching { mp.release() }
         }
     }
 
-    @Synchronized
-    override fun stop() = stopLocked()
+    companion object {
+        private const val TAG = "AlarmSound"
+        const val PREPARE_TIMEOUT_MS = 2_000L
 
-    private fun stopLocked() {
-        val mp = player ?: return
-        player = null
-        try { mp.stop() } catch (e: IllegalStateException) { /* never started */ }
-        mp.release()
+        /** `android.resource://<pkg>/raw/alarm_fallback`: a synthesized beep that needs no storage or provider. */
+        fun bundledToneUri(context: Context): String =
+            Uri.Builder()
+                .scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
+                .authority(context.packageName)
+                .appendPath("raw")
+                .appendPath(context.resources.getResourceEntryName(R.raw.alarm_fallback))
+                .build()
+                .toString()
     }
-
-    private companion object { const val TAG = "AlarmSound" }
 }
 
 /**
