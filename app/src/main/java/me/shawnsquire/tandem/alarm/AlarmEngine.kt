@@ -3,10 +3,12 @@ package me.shawnsquire.tandem.alarm
 import android.content.Context
 import android.os.UserManager
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.RingStateStoreImpl
@@ -23,7 +25,7 @@ import java.time.Instant
  *
  * [unlocked] only steers the one-time prefs migration; null means the unlock check failed.
  */
-class AlarmEngine(context: Context, unlocked: Boolean?, scope: CoroutineScope) {
+class AlarmEngine(context: Context, unlocked: Boolean?, private val scope: CoroutineScope) {
     init {
         // Before anything below opens the moved prefs.
         migrateAlarmPrefsToDeviceStorage(context, unlocked)
@@ -33,7 +35,7 @@ class AlarmEngine(context: Context, unlocked: Boolean?, scope: CoroutineScope) {
     private val deferred = SharedPrefsDeferredAlarmWrites(context)
 
     private val switchableAlarms = SwitchableAlarmRepository(mirror, deferred, scope, Instant::now)
-    private val switchableSettings = SwitchableSettings(mirror)
+    private val switchableSettings = SwitchableSettings(mirror, ::refreshMirror)
     private val switchablePreFireCheck = SwitchablePreFireCheck()
     val alarmRepository: AlarmRepository = switchableAlarms
     val settings: SettingsRepository = switchableSettings
@@ -52,6 +54,19 @@ class AlarmEngine(context: Context, unlocked: Boolean?, scope: CoroutineScope) {
         RingingControllerImpl(alarmRepository, ringStateStore, settings, scheduler, scheduler, notifier, snoozeLedger)
     val controller: RingingController = controllerImpl
     val ringSlot: RingSlot = controllerImpl
+
+    /** A settings edit: the reschedule's MirrorUpdater writes the new value to the mirror. Never throws. */
+    private fun refreshMirror() {
+        scope.launch {
+            try {
+                scheduler.rescheduleAll()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.e(TAG, "reschedule after a settings edit failed", e)
+            }
+        }
+    }
 
     /** Switches the ports to the real CE-backed implementations once readable. Idempotent: the first call wins. */
     fun attach(alarms: AlarmRepository, settings: SettingsRepository, preFireCheck: () -> PreFireCheck) {

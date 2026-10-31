@@ -326,6 +326,19 @@ class AlarmEngineTest {
     }
 
     @Test
+    fun settingsEditsAfterAttachRefreshTheMirror() = runBlocking {
+        seedMirror(alarm("a"), snoozeMinutes = 5, defaultRingtone = "content://tone/old")
+        val engine = lockedEngine()
+        engine.attach(FakeAlarmRepository(listOf(alarm("a"))), FakeSettingsRepository()) { error("unused") }
+
+        engine.settings.setSnoozeMinutes(12)
+        awaitTrue("snooze mirrored") { SharedPrefsAlarmMirror(app).read().snoozeMinutes == 12 }
+        engine.settings.setDefaultRingtoneUri("content://tone/new")
+        awaitTrue("ringtone mirrored") { SharedPrefsAlarmMirror(app).read().defaultRingtoneUri == "content://tone/new" }
+        assertEquals(12, SharedPrefsAlarmMirror(app).read().snoozeMinutes)
+    }
+
+    @Test
     fun attachIsIdempotent() = runBlocking {
         val engine = lockedEngine()
         val first = FakeAlarmRepository(listOf(alarm("first")))
@@ -350,6 +363,8 @@ class AlarmEngineTest {
         // Every container consumer goes through the attach drain, and there is one ring-state store.
         assertSame(engine.alarmRepository, container.alarmRepository)
         assertSame(engine.ringStateStore, container.ringStateStore)
+        // Settings edits go through the engine, which refreshes the mirror after them.
+        assertSame(engine.settings, container.settingsRepository)
     }
 
     @Test

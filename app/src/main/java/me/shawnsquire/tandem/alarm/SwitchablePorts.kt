@@ -181,8 +181,15 @@ class SwitchableAlarmRepository(
     private fun mirrorUnreadable() = IllegalStateException("alarm mirror unreadable")
 }
 
-/** Locked, settings come from the mirror (wallpapers are CE files, so none); [attach] forwards. */
-class SwitchableSettings(private val mirror: AlarmMirror) : SettingsRepository {
+/**
+ * Locked, settings come from the mirror (wallpapers are CE files, so none); [attach] forwards.
+ * Attached, a snooze or default-ringtone edit then calls [onChanged], so the mirror is refreshed
+ * with it; wallpapers aren't mirrored, so their edits don't.
+ */
+class SwitchableSettings(
+    private val mirror: AlarmMirror,
+    private val onChanged: () -> Unit = {},
+) : SettingsRepository {
     private val real = MutableStateFlow<SettingsRepository?>(null)
 
     /** Idempotent: the first repository wins. */
@@ -203,11 +210,17 @@ class SwitchableSettings(private val mirror: AlarmMirror) : SettingsRepository {
         it?.defaultRingtoneUri ?: flow { emit(mirror.read().defaultRingtoneUri) }
     }
 
-    override suspend fun setSnoozeMinutes(m: Int) = attached().setSnoozeMinutes(m)
+    override suspend fun setSnoozeMinutes(m: Int) {
+        attached().setSnoozeMinutes(m)
+        onChanged()
+    }
 
     override suspend fun setDefaultWallpaperPath(p: String?) = attached().setDefaultWallpaperPath(p)
 
-    override suspend fun setDefaultRingtoneUri(u: String?) = attached().setDefaultRingtoneUri(u)
+    override suspend fun setDefaultRingtoneUri(u: String?) {
+        attached().setDefaultRingtoneUri(u)
+        onChanged()
+    }
 
     private fun attached(): SettingsRepository =
         real.value ?: throw IllegalStateException("settings edits need the user to unlock")

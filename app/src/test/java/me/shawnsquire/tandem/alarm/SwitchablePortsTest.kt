@@ -379,6 +379,26 @@ class SwitchablePortsTest {
         assertEquals(20, settings.snoozeMinutes.first())
     }
 
+    @Test
+    fun attachedSnoozeAndRingtoneEditsReportAChange() = runTest {
+        var changes = 0
+        val settings = SwitchableSettings(mirrorOf(snooze = 7)) { changes++ }
+        assertIllegalState { settings.setSnoozeMinutes(5) }
+        assertEquals(0, changes)
+
+        val real = FakeSettingsRepository()
+        settings.attach(real)
+        settings.setSnoozeMinutes(5)
+        assertEquals(5, real.snoozeMinutes.first())
+        assertEquals(1, changes)
+        settings.setDefaultRingtoneUri("content://r")
+        assertEquals("content://r", real.defaultRingtoneUri.first())
+        assertEquals(2, changes)
+        // Wallpapers aren't mirrored.
+        settings.setDefaultWallpaperPath("/w.jpg")
+        assertEquals(2, changes)
+    }
+
     // --- SwitchablePreFireCheck ---
 
     @Test
