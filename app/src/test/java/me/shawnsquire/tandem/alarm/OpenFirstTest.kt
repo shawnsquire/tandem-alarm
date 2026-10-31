@@ -20,4 +20,10 @@ class OpenFirstTest {
         assertNull(openFirst<String>(listOf("a", "b")) { throw java.io.IOException() })
         assertNull(openFirst<String>(emptyList()) { it })
     }
+
+    @Test fun openFirstFromStartsAfterFailedIndexAndReportsIndex() {
+        val r = openFirstFrom(listOf("a", "b", "c", "d"), 2) { if (it == "c") error("bad") else it }
+        assertEquals(3 to "d", r)
+        assertNull(openFirstFrom(listOf("a", "b"), 2) { it })
+    }
 }

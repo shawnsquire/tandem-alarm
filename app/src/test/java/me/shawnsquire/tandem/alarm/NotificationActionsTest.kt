@@ -123,4 +123,12 @@ class NotificationActionsTest {
         assertTrue(shadow.isForegroundStopped)
         assertTrue(shadow.isStoppedBySelf)
     }
+
+    @Test
+    fun idleServiceStopsWithTheLatestStartId() {
+        val controller = Robolectric.buildService(RingingService::class.java).create()
+        controller.startCommand(0, 7)
+        // stopSelf() without an id would kill a start that is still in flight.
+        assertEquals(7, shadowOf(controller.get()).stopSelfResultId)
+    }
 }

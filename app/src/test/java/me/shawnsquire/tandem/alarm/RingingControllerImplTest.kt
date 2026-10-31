@@ -107,4 +107,31 @@ class RingingControllerImplTest {
         assertEquals(1, h.scheduler.rescheduleCount)
         assertEquals(1, h.notifier.cancelSnoozedCount)
     }
+
+    @Test fun snoozeRescheduleFailureRestoresRinging() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val bad = object : AlarmScheduler {
+            override suspend fun rescheduleAll() { throw IllegalStateException("alarm manager") }
+        }
+        val c = RingingControllerImpl(h.repo, h.store, h.settings, bad, h.notifier) { now }
+        var thrown = false
+        try { c.snooze() } catch (e: IllegalStateException) { thrown = true }
+        assertTrue(thrown)
+        assertEquals(ringing, h.store.state.first()) // snoozedUntil cleared again
+        assertTrue(h.notifier.snoozed.isEmpty())
+    }
+
+    @Test fun dismissRunsRemainingStepsWhenAlarmWriteFails() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val failingRepo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
+            override suspend fun setEnabled(id: String, enabled: Boolean) { throw IllegalStateException("db") }
+        }
+        val c = RingingControllerImpl(failingRepo, h.store, h.settings, h.scheduler, h.notifier) { now }
+        var thrown = false
+        try { c.dismiss("ring-1") } catch (e: IllegalStateException) { thrown = true }
+        assertTrue(thrown)
+        assertNull(h.store.state.first())
+        assertEquals(1, h.notifier.cancelSnoozedCount)
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
 }

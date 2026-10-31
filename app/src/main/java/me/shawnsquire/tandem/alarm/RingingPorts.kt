@@ -28,14 +28,18 @@ interface RingingNotifier {
  * Tries each candidate in order and returns the first non-null result of [open].
  * An exception from one candidate moves on to the next; all failing yields null.
  */
-internal fun <T> openFirst(candidates: List<String>, open: (String) -> T?): T? {
-    for (candidate in candidates) {
+internal fun <T> openFirst(candidates: List<String>, open: (String) -> T?): T? =
+    openFirstFrom(candidates, 0, open)?.second
+
+/** Like [openFirst] but starts at index [from] and also returns the index that opened. */
+internal fun <T> openFirstFrom(candidates: List<String>, from: Int, open: (String) -> T?): Pair<Int, T>? {
+    for (i in from until candidates.size) {
         val opened = try {
-            open(candidate)
+            open(candidates[i])
         } catch (e: Exception) {
             null
         }
-        if (opened != null) return opened
+        if (opened != null) return i to opened
     }
     return null
 }

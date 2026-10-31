@@ -1,6 +1,10 @@
 package me.shawnsquire.tandem.alarm
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -246,6 +250,70 @@ class RingingSessionTest {
         runCurrent()
         assertTrue(h.sound.starts.isEmpty())
         assertEquals(1, h.finished)
+    }
+
+    @Test fun i1_preFireInternalTimeoutStillRings() = runTest {
+        val h = harness(preFire = LambdaPreFire { withTimeout(2.seconds) { awaitCancellation() } })
+        h.fire(occ = occurrence)
+        advanceTimeBy(3.seconds); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun i1_preFireThrowsCancellationStillRings() = runTest {
+        val h = harness(preFire = LambdaPreFire { throw CancellationException("task cancelled") })
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun cancellingSessionScopeBeforeSoundNeverStartsSound() = runTest {
+        val h = harness()
+        val job = Job()
+        val session = RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { awaitCancellation() },
+            h.scheduler, h.controller, h.sound, h.vibration, h.notifier,
+            CoroutineScope(StandardTestDispatcher(testScheduler) + job),
+            StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = {},
+        )
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        job.cancel() // service onDestroy
+        advanceTimeBy(5.seconds); runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, h.vibration.starts)
+    }
+
+    @Test fun autoSilenceFinishesEvenWhenDismissThrowsCancellation() = runTest {
+        val h = harness()
+        val ctl = object : RingingController {
+            override suspend fun dismiss(ringId: String) { throw CancellationException("foreign") }
+            override suspend fun snooze() = Unit
+        }
+        val session = RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
+            h.scheduler, ctl, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = { h.finished++ },
+        )
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(1, h.finished)
+        assertTrue(h.sound.stops >= 1)
+    }
+
+    @Test fun fallbackRingAttemptsReschedule() = runTest {
+        val h = harness(storeWrap = { ThrowingReadStore(it) })
+        h.session.start("a", clockNow, true, null) // snoozeRingId null + read failure -> fallbackRing
+        runCurrent()
+        assertEquals(listOf(emptyList<String>()), h.sound.starts)
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun snoozeResumeCancelsSnoozedNotification() = runTest {
+        val h = harness(state = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow))
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertEquals(1, h.notifier.cancelSnoozedCount)
     }
 
     @Test fun skipAppliedBySuccessfulCheckSuppresses() = runTest {

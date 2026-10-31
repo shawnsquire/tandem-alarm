@@ -1,8 +1,10 @@
 package me.shawnsquire.tandem.alarm
 
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
@@ -29,11 +31,20 @@ class RingingControllerImpl(
         // I3: a stop pinned to another (or no) ring is rejected.
         if (state == null || state.ringId != ringId) return@withLock
         ringStateStore.set(null)
-        val alarm = alarmRepository.get(state.alarmId)
-        if (alarm != null && alarm.days.isEmpty()) alarmRepository.setEnabled(alarm.id, false)
-        runCatching { notifier.cancelSnoozed() }
+        // Once state is cleared every remaining step must still run; surface the first failure last.
+        var failure: Throwable? = null
+        suspend fun step(block: suspend () -> Unit) {
+            try { block() } catch (e: Throwable) { if (failure == null) failure = e }
+        }
+        step {
+            val alarm = alarmRepository.get(state.alarmId)
+            if (alarm != null && alarm.days.isEmpty()) alarmRepository.setEnabled(alarm.id, false)
+        }
+        step { notifier.cancelSnoozed() }
         // State is now null, so this also cancels any pending snooze alarm.
-        alarmScheduler.rescheduleAll()
+        step { alarmScheduler.rescheduleAll() }
+        failure?.let { throw it }
+        Unit
     }
 
     override suspend fun snooze() = mutex.withLock {
@@ -46,7 +57,13 @@ class RingingControllerImpl(
         }
         val until = now().plus(minutes.toLong(), ChronoUnit.MINUTES)
         ringStateStore.set(state.copy(snoozedUntil = until))
-        alarmScheduler.rescheduleAll()
+        try {
+            alarmScheduler.rescheduleAll()
+        } catch (e: Throwable) {
+            // No snooze alarm exists: keep the ring going rather than going silent.
+            withContext(NonCancellable) { runCatching { ringStateStore.set(state) } }
+            throw e
+        }
         runCatching { notifier.showSnoozed(state.ringId, until) }
         Unit
     }

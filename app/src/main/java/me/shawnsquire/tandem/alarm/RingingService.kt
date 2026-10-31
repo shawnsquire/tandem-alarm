@@ -17,7 +17,8 @@ import java.time.Instant
 class RingingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val sessions = mutableSetOf<RingingSession>()
-    private val adapters = mutableListOf<Pair<AlarmSound, AlarmVibration>>()
+    private val adapters = mutableMapOf<RingingSession, Pair<AlarmSound, AlarmVibration>>()
+    private var lastStartId = 0
     private var wakeLock: PowerManager.WakeLock? = null
     private val vibrationArbiter by lazy { VibrationArbiter.forContext(this) }
     private lateinit var notifier: AndroidRingingNotifier
@@ -30,6 +31,7 @@ class RingingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastStartId = startId
         // Must come first: a startForegroundService() start has a short deadline.
         startForeground(NOTIFICATION_ID, notifier.foregroundNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED)
         acquireWakeLock()
@@ -46,7 +48,6 @@ class RingingService : Service() {
         val container = (application as TandemApp).container
         val sound = MediaPlayerAlarmSound(this)
         val vibration = SystemAlarmVibration(vibrationArbiter)
-        adapters += sound to vibration
         lateinit var session: RingingSession
         session = RingingSession(
             alarmRepository = container.alarmRepository,
@@ -64,10 +65,12 @@ class RingingService : Service() {
             log = { msg, t -> Log.w(TAG, msg, t) },
             onFinished = {
                 sessions.remove(session)
+                adapters.remove(session)
                 stopIfIdle()
             },
         )
         sessions += session
+        adapters[session] = sound to vibration
         session.start(alarmId, occurrence, isSnooze, ringId)
         return START_NOT_STICKY
     }
@@ -76,7 +79,8 @@ class RingingService : Service() {
         if (sessions.isNotEmpty()) return
         notifier.clearRinging()
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        // Only stops if no newer start is queued; otherwise that start's session must survive.
+        stopSelfResult(lastStartId)
     }
 
     private fun acquireWakeLock() {
@@ -89,7 +93,7 @@ class RingingService : Service() {
     override fun onDestroy() {
         scope.cancel()
         notifier.clearRinging()
-        adapters.forEach { (sound, vibration) ->
+        adapters.values.forEach { (sound, vibration) ->
             runCatching { sound.stop() }
             runCatching { vibration.stop() }
         }

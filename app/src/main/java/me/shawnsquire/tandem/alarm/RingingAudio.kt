@@ -17,6 +17,8 @@ import android.util.Log
  */
 class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
     private var player: MediaPlayer? = null
+    private var queue: List<String> = emptyList()
+    private var playingIndex = -1
 
     @Synchronized
     override fun start(candidates: List<String>) {
@@ -26,8 +28,23 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
         ).map { it.toString() }
-        player = openFirst(all) { open(it) }
+        queue = all
+        val opened = openFirstFrom(all, 0) { open(it) }
+        player = opened?.second
+        playingIndex = opened?.first ?: -1
         if (player == null) Log.e(TAG, "no ringtone could be opened")
+    }
+
+    /** Playback died mid-ring: move on to the candidates after the one that failed. */
+    @Synchronized
+    private fun onPlayerError(failed: MediaPlayer) {
+        if (failed !== player) return // stale callback from a released player
+        player = null
+        runCatching { failed.release() }
+        val opened = openFirstFrom(queue, playingIndex + 1) { open(it) }
+        player = opened?.second
+        playingIndex = opened?.first ?: -1
+        if (player == null) Log.e(TAG, "no fallback ringtone could be opened")
     }
 
     private fun open(uri: String): MediaPlayer? {
@@ -42,6 +59,11 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
             mp.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
             mp.setDataSource(context, Uri.parse(uri))
             mp.isLooping = true
+            mp.setOnErrorListener { failed, what, extra ->
+                Log.w(TAG, "playback error what=$what extra=$extra")
+                onPlayerError(failed)
+                true
+            }
             mp.prepare()
             mp.start()
             return mp

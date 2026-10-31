@@ -1,10 +1,11 @@
 package me.shawnsquire.tandem.alarm
 
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -48,24 +49,31 @@ class RingingSession(
     private var ringStarted = false
     private var autoSilence: Job? = null
 
-    /** Runs a best-effort step; any Throwable (Errors included) is logged, only cancellation propagates. */
-    private inline fun <T> guarded(what: String, default: T, block: () -> T): T =
+    /**
+     * Runs a best-effort step; any Throwable is logged and swallowed. A CancellationException is
+     * propagated only when the session itself is cancelled: a foreign one (a check's own timeout,
+     * a cancelled Task) is an ordinary failure.
+     */
+    private suspend inline fun <T> guarded(what: String, default: T, block: () -> T): T =
         try {
             block()
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
             log("$what failed", e)
             default
         }
+
+    /** Same, for non-suspending cleanup that must run even while cancelled. */
+    private inline fun guardedNow(what: String, block: () -> Unit) {
+        try { block() } catch (e: Throwable) { log("$what failed", e) }
+    }
 
     fun start(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?) {
         jobs += scope.launch {
             try {
                 execute(alarmId, occurrence, isSnooze, snoozeRingId)
-            } catch (e: CancellationException) {
-                throw e
             } catch (e: Throwable) {
+                currentCoroutineContext().ensureActive() // only real session cancellation propagates
                 // I1: an unexpected error never silences a ring, started or not.
                 log("ringing session failed", e)
                 if (!ringStarted) fallbackRing() else ensureAutoSilence(null)
@@ -74,10 +82,12 @@ class RingingSession(
     }
 
     /** Best-effort ring when something unexpected failed before sound started. */
-    private fun fallbackRing() {
+    private suspend fun fallbackRing() {
+        currentCoroutineContext().ensureActive()
         ringStarted = true
         guarded("fallback sound", Unit) { sound.start(emptyList()) }
         guarded("fallback vibration", Unit) { vibration.start() }
+        guarded("fallback reschedule", Unit) { alarmScheduler.rescheduleAll() }
         ensureAutoSilence(null)
     }
 
@@ -100,9 +110,8 @@ class RingingSession(
         var readFailed = false
         val state = try {
             ringStateStore.state.first()
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
             log("state read failed; ringing with the snooze ringId", e)
             readFailed = true
             null
@@ -117,6 +126,7 @@ class RingingSession(
             return
         }
         val alarm = guarded("alarm read", null as Alarm?) { alarmRepository.get(alarmId) }
+        guarded("cancel snoozed notification", Unit) { notifier.cancelSnoozed() }
         val ringing = state.copy(snoozedUntil = null)
         val written = guarded("state write", false) { ringStateStore.set(ringing); true }
         ring(alarm, ringing.ringId, observe = written)
@@ -126,9 +136,8 @@ class RingingSession(
         var readFailed = false
         val alarm: Alarm? = try {
             alarmRepository.get(alarmId)
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
             log("alarm read failed; ringing with defaults", e)
             readFailed = true
             null
@@ -164,22 +173,22 @@ class RingingSession(
             val d = scope.async(ioDispatcher) {
                 try {
                     preFireCheck.pullAndApply(3.seconds)
-                } catch (e: CancellationException) {
-                    throw e
                 } catch (e: Throwable) {
+                    // Includes CancellationException: a check's own timeout or a cancelled Task is
+                    // just "no new info". Only our own d.cancel() cancels this, and the value is ignored.
                     false
                 }
             }
             withTimeoutOrNull(3.seconds) { d.await() } ?: d.cancel()
-        } catch (e: CancellationException) {
-            throw e
         } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
             log("pre-fire check failed", e)
         }
     }
 
     private suspend fun ring(alarm: Alarm?, ringId: String, observe: Boolean) {
         val default = guarded("settings read", null as String?) { settingsRepository.defaultRingtoneUri.first() }
+        currentCoroutineContext().ensureActive() // never start sound after the session was cancelled
         ringStarted = true
         guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
         guarded("vibration", Unit) { vibration.start() }
@@ -192,9 +201,8 @@ class RingingSession(
                 var ok = true
                 try {
                     ringStateStore.state.first { it == null || it.ringId != ringId || it.snoozedUntil != null }
-                } catch (e: CancellationException) {
-                    throw e
                 } catch (e: Throwable) {
+                    currentCoroutineContext().ensureActive()
                     log("ring state observation failed", e)
                     ok = false
                 }
@@ -206,8 +214,8 @@ class RingingSession(
     private fun finish() {
         if (finished) return
         finished = true
-        guarded("sound stop", Unit) { sound.stop() }
-        guarded("vibration stop", Unit) { vibration.stop() }
+        guardedNow("sound stop") { sound.stop() }
+        guardedNow("vibration stop") { vibration.stop() }
         jobs.forEach { it.cancel() }
         onFinished()
     }
