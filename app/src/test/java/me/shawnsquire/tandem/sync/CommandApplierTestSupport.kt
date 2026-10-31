@@ -2,7 +2,8 @@ package me.shawnsquire.tandem.sync
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onStart
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
@@ -52,8 +53,25 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
         resolved += Resolved(householdId, commandId, status, reason)
     }
 
-    override suspend fun fetchPendingFromServer(householdId: String, uid: String): List<Command> = emptyList()
-    override fun pendingUpdates(householdId: String, uid: String): Flow<List<Command>> = emptyFlow()
+    /** Result of [fetchPendingFromServer]; [fetchBlock] (if set) runs instead and may suspend or throw. */
+    var fetchResult: List<Command> = emptyList()
+    var fetchBlock: (suspend () -> List<Command>)? = null
+    var fetchCalls = 0
+
+    override suspend fun fetchPendingFromServer(householdId: String, uid: String): List<Command> {
+        fetchCalls++
+        return fetchBlock?.invoke() ?: fetchResult
+    }
+
+    /** Drives [pendingUpdates]; each collection counts as one subscription until it completes or is cancelled. */
+    val pending = MutableSharedFlow<List<Command>>(extraBufferCapacity = 16)
+    var pendingSubscriptions = 0
+    var activePendingSubscriptions = 0
+
+    override fun pendingUpdates(householdId: String, uid: String): Flow<List<Command>> =
+        pending
+            .onStart { pendingSubscriptions++; activePendingSubscriptions++ }
+            .onCompletion { activePendingSubscriptions-- }
 }
 
 class FakeCommandNotifier(var failure: Throwable? = null) : CommandNotifier {
