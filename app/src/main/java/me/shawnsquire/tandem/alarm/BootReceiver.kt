@@ -10,20 +10,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import me.shawnsquire.tandem.TandemApp
 
-/** Re-registers alarms after boot, clock change or timezone change. Never starts a service. */
+/**
+ * Re-registers alarms after boot, clock change or timezone change. Never starts a service.
+ * LOCKED_BOOT_COMPLETED arrives before the first unlock: the engine then schedules from the
+ * device-protected mirror, and BOOT_COMPLETED reschedules again once the user unlocks.
+ */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_TIME_CHANGED,
             Intent.ACTION_TIMEZONE_CHANGED -> {
                 val pending = goAsync()
-                val container = (context.applicationContext as TandemApp).container
+                val engine = AlarmEngine.get(context)
                 rescheduleAsync(
-                    pending, container.alarmScheduler, CoroutineScope(SupervisorJob() + Dispatchers.Default),
-                    rearmOverdueSnooze = true, ringSlot = container.ringSlot,
+                    pending, engine.scheduler, CoroutineScope(SupervisorJob() + Dispatchers.Default),
+                    rearmOverdueSnooze = true, ringSlot = engine.ringSlot,
                 )
             }
             else -> Unit

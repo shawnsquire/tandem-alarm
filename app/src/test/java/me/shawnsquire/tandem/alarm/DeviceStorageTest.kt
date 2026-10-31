@@ -4,6 +4,7 @@ import android.content.Context
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -15,6 +16,12 @@ class DeviceStorageTest {
     private val context: Context = RuntimeEnvironment.getApplication()
     private val t1 = Instant.parse("2026-03-02T07:10:00Z")
     private val t2 = Instant.parse("2026-03-02T07:20:00Z")
+
+    /** TandemApp's startup builds the AlarmEngine, which already migrated; start each test unmigrated. */
+    @Before
+    fun clearMigrationMarker() {
+        check(context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_storage", Context.MODE_PRIVATE).edit().clear().commit())
+    }
 
     private fun cePrefs(name: String) = context.getSharedPreferences(name, Context.MODE_PRIVATE)
 

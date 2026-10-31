@@ -66,17 +66,12 @@ class AppContainer(private val context: Context) {
     val settingsRepository: SettingsRepository = SettingsRepositoryImpl(context.settingsDataStore)
 
     // U3: swap to real
-    private val snoozeLedger: me.shawnsquire.tandem.alarm.SnoozeLedger =
-        me.shawnsquire.tandem.alarm.SharedPrefsSnoozeLedger(context)
-    private val alarmSchedulerImpl =
-        me.shawnsquire.tandem.alarm.AlarmSchedulerImpl(context, alarmRepository, ringStateStore, snoozeLedger)
-    val alarmScheduler: AlarmScheduler = alarmSchedulerImpl
-    private val ringingControllerImpl = me.shawnsquire.tandem.alarm.RingingControllerImpl(
-        alarmRepository, ringStateStore, settingsRepository, alarmScheduler, alarmSchedulerImpl,
-        me.shawnsquire.tandem.alarm.AndroidRingingNotifier(context), snoozeLedger,
-    )
-    val ringingController: RingingController = ringingControllerImpl
-    val ringSlot: me.shawnsquire.tandem.alarm.RingSlot = ringingControllerImpl
+    // Lazy capture: preFireCheck is declared below; the provider only runs when a fire pulls, after construction.
+    private val alarmEngine = me.shawnsquire.tandem.alarm.AlarmEngine.get(context)
+        .also { it.attach(alarmRepository, settingsRepository) { preFireCheck } }
+    val alarmScheduler: AlarmScheduler = alarmEngine.scheduler
+    val ringingController: RingingController = alarmEngine.controller
+    val ringSlot: me.shawnsquire.tandem.alarm.RingSlot = alarmEngine.ringSlot
 
     // U4: swap to real
     val syncScope = CoroutineScope(

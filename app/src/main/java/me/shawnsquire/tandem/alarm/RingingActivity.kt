@@ -51,7 +51,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.R
-import me.shawnsquire.tandem.TandemApp
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.ui.theme.TandemTheme
@@ -91,14 +90,15 @@ class RingingActivity : ComponentActivity() {
             override fun handleOnBackPressed() = Unit
         })
 
-        val container = (application as TandemApp).container
+        // Works before the first unlock: wallpapers are CE files, so a locked ring gets the plain screen.
+        val engine = AlarmEngine.get(this)
         val model = RingingScreenModel()
 
         val userStopped = CompletableDeferred<Unit>()
         lifecycleScope.launch {
             // A failure here must never crash the process: it hosts the service and the sound.
             guardedRingEnd(
-                { awaitRingEnd(container.ringStateStore.state, model, userStopped = userStopped, onRing = { ring = it }) },
+                { awaitRingEnd(engine.ringStateStore.state, model, userStopped = userStopped, onRing = { ring = it }) },
                 onFailure = { Log.e(TAG, "ring state observation failed; closing screen", it) },
             )
             finish()
@@ -110,7 +110,7 @@ class RingingActivity : ComponentActivity() {
                 val alarm by produceState<Alarm?>(null, current?.ringId) {
                     value = null
                     value = try {
-                        current?.let { container.alarmRepository.get(it.alarmId) }
+                        current?.let { engine.alarmRepository.get(it.alarmId) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -119,7 +119,7 @@ class RingingActivity : ComponentActivity() {
                 }
                 val defaultPath by produceState<String?>(null) {
                     try {
-                        container.settingsRepository.defaultWallpaperPath.collect { value = it }
+                        engine.settings.defaultWallpaperPath.collect { value = it }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -133,14 +133,14 @@ class RingingActivity : ComponentActivity() {
                     onStop = {
                         val id = current?.ringId ?: return@RingingScreen
                         lifecycleScope.launch {
-                            runLogged("dismiss") { container.ringingController.dismiss(id) }
+                            runLogged("dismiss") { engine.controller.dismiss(id) }
                         }
                         // Close at once; the controller's dismiss is NonCancellable.
                         userStopped.complete(Unit)
                     },
                     onSnooze = {
                         lifecycleScope.launch {
-                            runLogged("snooze") { container.ringingController.snooze() }
+                            runLogged("snooze") { engine.controller.snooze() }
                         }
                     },
                 )
