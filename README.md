@@ -95,7 +95,7 @@ These are one-time steps. Details for the backend are in [docs/deploy.md](docs/d
 
 1. Create a Firebase project. Enable Anonymous Auth, Firestore and Cloud Messaging.
 2. Switch the project to the Blaze plan. Cloud Functions need it. Usage at this scale stays in the free tier; set a $1 budget alert.
-3. Register the Android app `me.shawnsquire.tandem` and download `google-services.json` into `app/`. It is not a secret, but keep it out of the repo if the repo is public.
+3. Register the Android app `me.shawnsquire.tandem` and download its `google-services.json`, and store the contents only as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. Do not copy it into `app/`: the tracked `app/google-services.json` is the demo config that debug, partner and the emulators use. The release workflow writes the prod file at build time.
 4. Create a release keystore once, keep it and its passwords in a password manager, and add them as GitHub Actions secrets (below). Without a stable key, updates will not install over the previous build.
 5. Deploy the rules and functions: `firebase deploy --project prod --only firestore:rules,functions`, run from `firebase/`. The `prod` alias maps to `tandem-alarm` in `firebase/.firebaserc`.
 6. Create the GitHub repo, `shawnsquire/tandem-alarm`.
@@ -139,6 +139,6 @@ Run on both phones. Alarms are the point of the app, so do not skip the reboot a
 ## Known limitations
 
 - If you delete an alarm in the first moments after the app starts and then tap Undo, the restored alarm may use the default sound and wallpaper. The startup cleanup of unused ringtone and wallpaper files can already have removed that alarm's custom files. The cleanup spares files under one hour old, so this only affects older files.
-- Right after the first unlock, the app replays changes that were made while the phone was locked. An alarm that fires during that replay waits up to 2 seconds to register as ringing, then rings regardless. A partner skip or stop sent in that moment may not take effect.
+- Right after the first unlock, the app replays changes that were made while the phone was locked. An alarm that fires during that replay waits up to 2 seconds to claim the ring slot. If the claim times out, the alarm rings regardless, and a partner's skip or turn-off may show as applied while the alarm still rings. Stop from the partner won't reach that ring.
 - If the alarm list can't be read when alarms are re-armed (for example after a reboot), each alarm is re-armed for its recorded time from a small record. A repeating alarm armed this way rings that once, and its next occurrence isn't armed until a later run that can read the alarm list, normally the next app start after unlock.
 - Daylight saving: an alarm set for a time that does not exist (02:30 on the spring-forward night) rings at 03:30. An alarm set for a time that happens twice rings at the first one.

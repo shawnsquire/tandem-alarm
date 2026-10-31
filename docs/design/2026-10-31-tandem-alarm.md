@@ -121,7 +121,7 @@ Ringtone and wallpaper URIs stay on the device; only display data is mirrored.
 
 1. Create Firebase project; enable Anonymous Auth, Firestore, Cloud Messaging.
 2. Switch the project to the Blaze plan (Cloud Functions need it; usage at this scale is within the free tier — set a $1 budget alert).
-3. Register the Android app (`me.shawnsquire.tandem`), download `google-services.json` into `app/`. It is not a secret but stays out of the public repo if the repo is public.
+3. Register the Android app (`me.shawnsquire.tandem`), download its `google-services.json`, and store the contents only as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. Do not copy it into `app/`: the tracked file there is the demo config.
 4. Create a release keystore once and store it plus its passwords in Bitwarden "Machine Tokens" per `~/.dotfiles/secrets/README.md`; add them as GitHub Actions secrets. Without a stable key, updates won't install over the previous build.
 5. `firebase deploy --only firestore:rules,functions` (Claude prepares; Shawn confirms before deploy).
 6. Create GitHub repo (`shawnsquire/tandem-alarm`, private).
