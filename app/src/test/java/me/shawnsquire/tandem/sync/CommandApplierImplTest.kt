@@ -327,7 +327,8 @@ class CommandApplierImplTest {
         return e
     }
 
-    private fun Env.assertRaceRejected(c: Command) {
+    private suspend fun Env.assertRaceRejected(c: Command) {
+        assertEquals(Outcome.Rejected("already ringing"), processed.outcome(c.id))
         assertEquals(
             listOf(FakeCommandRemote.Resolved("h1", c.id, CommandStatus.REJECTED, "already ringing")),
             remote.resolved,
