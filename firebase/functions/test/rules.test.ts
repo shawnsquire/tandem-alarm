@@ -146,6 +146,28 @@ describe("households/{hid}", () => {
   });
 });
 
+describe("after the household is deleted", () => {
+  beforeEach(async () => {
+    await seedCommand("c1");
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await deleteDoc(doc(ctx.firestore(), `households/${HID}`));
+    });
+  });
+
+  it("denies a former member reading the household", async () => {
+    await assertFails(getDoc(doc(dbFor(ALICE), `households/${HID}`)));
+  });
+  it("denies a former member reading a device doc", async () => {
+    await assertFails(getDoc(doc(dbFor(ALICE), devicePath(BOB))));
+  });
+  it("denies a former member reading a command", async () => {
+    await assertFails(getDoc(doc(dbFor(BOB), cmdPath("c1"))));
+  });
+  it("denies a former member writing a command", async () => {
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c2")), command()));
+  });
+});
+
 describe("households/{hid}/devices/{uid}", () => {
   it("lets a member read their own device doc", async () => {
     await assertSucceeds(getDoc(doc(dbFor(ALICE), devicePath(ALICE))));
@@ -244,6 +266,38 @@ describe("households/{hid}/commands: create", () => {
   });
   it("denies an already-expired expiresAt", async () => {
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ expiresAt: inPast() })));
+  });
+  it("accepts occurrenceAt as a timestamp with no ringId", async () => {
+    await assertSucceeds(
+      setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ occurrenceAt: inFuture() })),
+    );
+  });
+  it("accepts ringId as a string with no occurrenceAt", async () => {
+    await assertSucceeds(
+      setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ type: "STOP_RINGING", ringId: "r1" })),
+    );
+  });
+  it("denies a missing createdAt", async () => {
+    const { createdAt: _omit, ...noCreated } = command();
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), noCreated));
+  });
+  it("denies a numeric createdAt", async () => {
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ createdAt: Date.now() })));
+  });
+  it("denies a missing alarmId", async () => {
+    const { alarmId: _omit, ...noAlarm } = command();
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), noAlarm));
+  });
+  it("denies a numeric alarmId", async () => {
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ alarmId: 42 })));
+  });
+  it("denies a numeric occurrenceAt", async () => {
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ occurrenceAt: Date.now() })));
+  });
+  it("denies a numeric ringId", async () => {
+    await assertFails(
+      setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ type: "STOP_RINGING", ringId: 7 })),
+    );
   });
   it("denies a missing expiresAt", async () => {
     const { expiresAt: _omit, ...noExpiry } = command();

@@ -10,6 +10,15 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/households/$(hid)).data.members;
     }
 
+    // Optional fields: absent, or the expected type.
+    function optionalTimestamp(data, field) {
+      return !(field in data) || data[field] is timestamp;
+    }
+
+    function optionalString(data, field) {
+      return !(field in data) || data[field] is string;
+    }
+
     function isMember(hid) {
       return isSignedIn() && request.auth.uid in householdMembers(hid);
     }
@@ -42,7 +51,12 @@ service cloud.firestore {
           && request.resource.data.status == 'pending'
           && request.resource.data.type in
                ['SKIP_NEXT', 'UNSKIP', 'DISABLE', 'ENABLE', 'STOP_RINGING']
-          && request.resource.data.expiresAt > request.time;
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.alarmId is string
+          && request.resource.data.expiresAt is timestamp
+          && request.resource.data.expiresAt > request.time
+          && optionalTimestamp(request.resource.data, 'occurrenceAt')
+          && optionalString(request.resource.data, 'ringId');
 
         // Only the recipient may resolve a pending command, touching nothing else.
         allow update: if isMember(hid)
