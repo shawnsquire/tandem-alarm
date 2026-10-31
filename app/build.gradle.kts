@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.google.services)
 }
 
 kotlin {
@@ -18,6 +19,16 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
+
+        val emulatorHost = providers.gradleProperty("tandem.emulatorHost").getOrElse("10.0.2.2")
+        buildConfigField("boolean", "USE_EMULATOR", "false")
+        buildConfigField("String", "EMULATOR_HOST", "\"$emulatorHost\"")
+    }
+
+    buildTypes {
+        debug {
+            buildConfigField("boolean", "USE_EMULATOR", "true")
+        }
     }
 
     compileOptions {
