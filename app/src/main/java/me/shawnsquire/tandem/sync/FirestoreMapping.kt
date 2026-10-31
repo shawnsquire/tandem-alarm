@@ -108,7 +108,8 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
 
 /**
  * Body of `households/{hid}/devices/{uid}`. Never includes ringtone or wallpaper data.
- * `fcmToken` is omitted when unknown; `updatedAt` is a server timestamp.
+ * `fcmToken` is omitted when unknown; `updatedAt` is a server timestamp. A skip that is not after
+ * [now] is written as null: it is meaningless to the partner, who would send an UNSKIP that is always rejected.
  */
 fun deviceDocMap(
     displayName: String,
@@ -132,7 +133,7 @@ fun deviceDocMap(
                 "days" to a.days.sorted().map { it.name },
                 "enabled" to a.enabled,
                 "nextOccurrenceAt" to nextOccurrence(a, now, zone)?.toTimestamp(),
-                "skippedOccurrenceAt" to a.skippedOccurrenceAt?.toTimestamp(),
+                "skippedOccurrenceAt" to a.skippedOccurrenceAt?.takeIf { it > now }?.toTimestamp(),
             )
         },
     )

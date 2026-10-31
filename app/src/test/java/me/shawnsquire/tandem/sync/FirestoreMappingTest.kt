@@ -132,6 +132,16 @@ class FirestoreMappingTest {
     }
 
     @Test
+    fun deviceDocOmitsPassedSkip() {
+        val past = alarm.copy(skippedOccurrenceAt = now.minusSeconds(60))
+        val atNow = alarm.copy(skippedOccurrenceAt = now)
+        val future = alarm.copy(skippedOccurrenceAt = now.plusSeconds(60))
+        val skips = deviceDocMap("P", null, listOf(past, atNow, future), null, now, zone)
+            .let { (it["alarms"] as List<*>).map { a -> (a as Map<*, *>)["skippedOccurrenceAt"] } }
+        assertEquals(listOf(null, null, now.plusSeconds(60).toTimestamp()), skips)
+    }
+
+    @Test
     fun deviceDocRoundTrip() {
         val skip = Instant.parse("2026-03-04T07:30:00Z")
         val a2 = alarm.copy(id = "a2", days = emptySet(), skippedOccurrenceAt = skip, enabled = false)
