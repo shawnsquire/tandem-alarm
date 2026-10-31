@@ -42,9 +42,17 @@ class RingingControllerImplTest {
         val settings = FakeSettingsRepository()
         val scheduler = FakeAlarmScheduler()
         val notifier = RecordingNotifier()
+        val events = mutableListOf<String>()
+        val armed = mutableListOf<Triple<String, String, Instant>>()
+        var armFailure: Throwable? = null
+        val armer = SnoozeArmer { a, r, at ->
+            events += "arm"
+            armFailure?.let { throw it }
+            armed += Triple(a, r, at)
+        }
     }
 
-    private fun H.controller() = RingingControllerImpl(repo, store, settings, scheduler, notifier) { now }
+    private fun H.controller() = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier) { now }
 
     private val ringing = RingState("a", "ring-1", Instant.parse("2026-03-02T09:59:00Z"), null)
 
@@ -113,17 +121,42 @@ class RingingControllerImplTest {
         assertEquals(1, h.notifier.cancelSnoozedCount)
     }
 
-    @Test fun snoozeRescheduleFailureRestoresRinging() = runTest {
+    @Test fun snoozeArmFailureLeavesRingingAndPropagates() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        h.armFailure = IllegalStateException("alarm manager")
+        var thrown = false
+        try { h.controller().snooze() } catch (e: IllegalStateException) { thrown = true }
+        assertTrue(thrown)
+        assertEquals(ringing, h.store.state.first())
+        assertTrue(h.notifier.snoozed.isEmpty())
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun snoozeArmsBeforeWritingState() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val recording = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) {
+                h.events += "set"
+                h.store.set(state)
+            }
+        }
+        val c = RingingControllerImpl(h.repo, recording, h.settings, h.scheduler, h.armer, h.notifier) { now }
+        h.settings.setSnoozeMinutes(7)
+        c.snooze()
+        val until = Instant.parse("2026-03-02T10:07:00Z")
+        assertEquals(listOf("arm", "set"), h.events)
+        assertEquals(listOf(Triple("a", "ring-1", until)), h.armed)
+    }
+
+    @Test fun snoozeRescheduleFailureAfterArmingStaysSnoozed() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         val bad = object : AlarmScheduler {
             override suspend fun rescheduleAll() { throw IllegalStateException("alarm manager") }
         }
-        val c = RingingControllerImpl(h.repo, h.store, h.settings, bad, h.notifier) { now }
-        var thrown = false
-        try { c.snooze() } catch (e: IllegalStateException) { thrown = true }
-        assertTrue(thrown)
-        assertEquals(ringing, h.store.state.first()) // snoozedUntil cleared again
-        assertTrue(h.notifier.snoozed.isEmpty())
+        val c = RingingControllerImpl(h.repo, h.store, h.settings, bad, h.armer, h.notifier) { now }
+        c.snooze()
+        assertTrue(h.store.state.first()!!.snoozedUntil != null)
+        assertEquals(1, h.notifier.snoozed.size)
     }
 
     @Test fun dismissRunsRemainingStepsWhenAlarmWriteFails() = runTest {
@@ -131,7 +164,7 @@ class RingingControllerImplTest {
         val failingRepo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
             override suspend fun setEnabled(id: String, enabled: Boolean) { throw IllegalStateException("db") }
         }
-        val c = RingingControllerImpl(failingRepo, h.store, h.settings, h.scheduler, h.notifier) { now }
+        val c = RingingControllerImpl(failingRepo, h.store, h.settings, h.scheduler, h.armer, h.notifier) { now }
         var thrown = false
         try { c.dismiss("ring-1") } catch (e: IllegalStateException) { thrown = true }
         assertTrue(thrown)
@@ -156,7 +189,7 @@ class RingingControllerImplTest {
                 h.store.set(state)
             }
         }
-        val c = RingingControllerImpl(h.repo, cancelling, h.settings, sched, h.notifier) { now }
+        val c = RingingControllerImpl(h.repo, cancelling, h.settings, sched, h.armer, h.notifier) { now }
         job = launch { c.snooze() }
         job.join()
         assertEquals(1, sched.completed)
@@ -180,7 +213,7 @@ class RingingControllerImplTest {
                 h.repo.setEnabled(id, enabled)
             }
         }
-        val c = RingingControllerImpl(yieldingRepo, cancelling, h.settings, sched, h.notifier) { now }
+        val c = RingingControllerImpl(yieldingRepo, cancelling, h.settings, sched, h.armer, h.notifier) { now }
         job = launch { c.dismiss("ring-1") }
         job.join()
         assertFalse(h.repo.get("a")!!.enabled)

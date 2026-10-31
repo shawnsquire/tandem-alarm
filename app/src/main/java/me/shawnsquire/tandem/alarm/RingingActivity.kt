@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.alarm
 
 import android.graphics.Bitmap
+import android.util.Log
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.text.format.DateFormat
@@ -59,6 +60,24 @@ import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
+private const val TAG = "RingingActivity"
+
+/**
+ * Runs [block], reporting any failure except cancellation to [onFailure] instead of throwing.
+ * Returns normally either way so the caller can finish the screen.
+ */
+internal suspend fun guardedRingEnd(block: suspend () -> Unit, onFailure: (Throwable) -> Unit) {
+    try {
+        block()
+    } catch (e: Throwable) {
+        if (e is CancellationException) throw e
+        onFailure(e)
+    }
+}
+
+private suspend fun runLogged(what: String, block: suspend () -> Unit) =
+    guardedRingEnd(block) { Log.e(TAG, "$what failed", it) }
+
 /** Full-screen ringing UI. Finishes when the ring ends (see [RingingScreenModel]). */
 class RingingActivity : ComponentActivity() {
     private var ring by mutableStateOf<RingState?>(null)
@@ -77,7 +96,11 @@ class RingingActivity : ComponentActivity() {
 
         val userStopped = CompletableDeferred<Unit>()
         lifecycleScope.launch {
-            awaitRingEnd(container.ringStateStore.state, model, userStopped = userStopped, onRing = { ring = it })
+            // A failure here must never crash the process: it hosts the service and the sound.
+            guardedRingEnd(
+                { awaitRingEnd(container.ringStateStore.state, model, userStopped = userStopped, onRing = { ring = it }) },
+                onFailure = { Log.e(TAG, "ring state observation failed; closing screen", it) },
+            )
             finish()
         }
 
@@ -109,12 +132,16 @@ class RingingActivity : ComponentActivity() {
                     canAct = current != null,
                     onStop = {
                         val id = current?.ringId ?: return@RingingScreen
-                        lifecycleScope.launch { container.ringingController.dismiss(id) }
+                        lifecycleScope.launch {
+                            runLogged("dismiss") { container.ringingController.dismiss(id) }
+                        }
                         // Close at once; the controller's dismiss is NonCancellable.
                         userStopped.complete(Unit)
                     },
                     onSnooze = {
-                        lifecycleScope.launch { container.ringingController.snooze() }
+                        lifecycleScope.launch {
+                            runLogged("snooze") { container.ringingController.snooze() }
+                        }
                     },
                 )
             }

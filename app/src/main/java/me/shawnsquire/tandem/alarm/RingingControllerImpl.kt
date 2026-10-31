@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import android.util.Log
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -22,6 +23,7 @@ class RingingControllerImpl(
     private val ringStateStore: RingStateStore,
     private val settingsRepository: SettingsRepository,
     private val alarmScheduler: AlarmScheduler,
+    private val snoozeArmer: SnoozeArmer,
     private val notifier: RingingNotifier,
     private val now: () -> Instant = Instant::now,
 ) : RingingController {
@@ -57,13 +59,15 @@ class RingingControllerImpl(
             DEFAULT_SNOOZE_MINUTES
         }
         val until = now().plus(minutes.toLong(), ChronoUnit.MINUTES)
+        // Arm first: if this throws nothing is written and the ring continues.
+        snoozeArmer.armSnooze(state.alarmId, state.ringId, until)
+        // If this write fails the armed snooze fires later and finishes quietly (state has no snooze).
         ringStateStore.set(state.copy(snoozedUntil = until))
         try {
             alarmScheduler.rescheduleAll()
         } catch (e: Throwable) {
-            // No snooze alarm exists: keep the ring going rather than going silent.
-            withContext(NonCancellable) { runCatching { ringStateStore.set(state) } }
-            throw e
+            // The snooze is already armed; the rest of the schedule is best effort.
+            runCatching { Log.e(TAG, "rescheduleAll failed after arming snooze", e) }
         }
         runCatching { notifier.showSnoozed(state.ringId, until) }
         Unit
@@ -71,5 +75,6 @@ class RingingControllerImpl(
 
     private companion object {
         const val DEFAULT_SNOOZE_MINUTES = 10
+        const val TAG = "RingingController"
     }
 }

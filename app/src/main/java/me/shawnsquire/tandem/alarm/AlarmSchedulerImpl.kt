@@ -36,7 +36,7 @@ class AlarmSchedulerImpl(
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
     private val io: CoroutineDispatcher = Dispatchers.IO,
-) : AlarmScheduler {
+) : AlarmScheduler, SnoozeArmer {
 
     private val alarmManager: AlarmManager = context.getSystemService(AlarmManager::class.java)
     private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
@@ -44,11 +44,23 @@ class AlarmSchedulerImpl(
     // rescheduleAll() can run concurrently (boot, time change, UI, ringing); serialize the read-modify-write.
     private val mutex = Mutex()
 
-    override suspend fun rescheduleAll() = mutex.withLock {
-        withContext(io) { rescheduleLocked() }
+    override suspend fun rescheduleAll() = rescheduleAll(rearmOverdueSnooze = false)
+
+    /**
+     * [rearmOverdueSnooze] is true only for boot and time changes: a snooze that came due while the
+     * phone was off is re-armed. Otherwise an overdue snooze is left untouched, so a ring that
+     * could not clear its own snooze state cannot re-arm itself in a loop.
+     */
+    suspend fun rescheduleAll(rearmOverdueSnooze: Boolean) = mutex.withLock {
+        withContext(io) { rescheduleLocked(rearmOverdueSnooze) }
     }
 
-    private suspend fun rescheduleLocked() {
+    /** Arms the snooze alarm directly; throws on failure so the caller can keep ringing. */
+    override fun armSnooze(alarmId: String, ringId: String, at: Instant) {
+        setSnoozeAlarm(alarmId, ringId, at)
+    }
+
+    private suspend fun rescheduleLocked(rearmOverdueSnooze: Boolean) {
         val nowInstant = now()
         val zoneId = zone()
         val alarms = alarmRepository.alarms.first()
@@ -56,7 +68,7 @@ class AlarmSchedulerImpl(
 
         // Snooze first: one bad alarm must never cost the user a pending snooze (I1).
         try {
-            armSnooze(ring, nowInstant)
+            armSnoozeFromState(ring, nowInstant, rearmOverdueSnooze)
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             Log.e(TAG, "snooze scheduling failed", e)
@@ -106,23 +118,29 @@ class AlarmSchedulerImpl(
         prefs.edit().putStringSet(KEY_SCHEDULED_IDS, scheduledNow).commit()
     }
 
-    private fun armSnooze(ring: RingState?, nowInstant: Instant) {
+    private fun armSnoozeFromState(ring: RingState?, nowInstant: Instant, rearmOverdue: Boolean) {
         val until = ring?.snoozedUntil
+        val overdue = until != null && !until.isAfter(nowInstant) && until.isAfter(nowInstant.minus(OVERDUE_SNOOZE_WINDOW))
+        if (overdue && !rearmOverdue) return // leave whatever is registered untouched
         val snoozeAt = when {
             until == null -> null
             until.isAfter(nowInstant) -> until
             // Came due while the phone was off: bring the ring back shortly rather than dropping it.
-            until.isAfter(nowInstant.minus(OVERDUE_SNOOZE_WINDOW)) -> nowInstant.plus(OVERDUE_SNOOZE_DELAY)
+            overdue -> nowInstant.plus(OVERDUE_SNOOZE_DELAY)
             else -> null
         }
         if (ring != null && snoozeAt != null) {
-            alarmManager.setAlarmClock(
-                AlarmManager.AlarmClockInfo(snoozeAt.toEpochMilli(), AlarmIntents.showPendingIntent(context)),
-                AlarmIntents.snoozePendingIntent(context, ring.alarmId, ring.ringId, snoozeAt),
-            )
+            setSnoozeAlarm(ring.alarmId, ring.ringId, snoozeAt)
         } else {
             cancel(AlarmIntents.existingSnoozePendingIntent(context))
         }
+    }
+
+    private fun setSnoozeAlarm(alarmId: String, ringId: String, at: Instant) {
+        alarmManager.setAlarmClock(
+            AlarmManager.AlarmClockInfo(at.toEpochMilli(), AlarmIntents.showPendingIntent(context)),
+            AlarmIntents.snoozePendingIntent(context, alarmId, ringId, at),
+        )
     }
 
     private fun cancel(pi: PendingIntent?) {

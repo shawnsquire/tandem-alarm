@@ -102,7 +102,7 @@ class RingingSessionTest {
         val sound = RecordingSound { scope.testScheduler.currentTime }
         val vibration = RecordingVibration()
         var finished = 0
-        val controller = RingingControllerImpl(repo, store, settings, scheduler, notifier) { now }
+        val controller = RingingControllerImpl(repo, store, settings, scheduler, { _, _, _ -> }, notifier) { now }
         private val dispatcher = ioDispatcher ?: StandardTestDispatcher(scope.testScheduler)
         val session = RingingSession(
             repo, store, settings, preFire, scheduler, controller, sound, vibration, notifier,
