@@ -25,6 +25,9 @@ interface RingingNotifier {
      */
     fun showFallbackRinging(ringId: String) {}
 
+    /** Removes [ringId]'s ringing notification (a stale ring cleared without a session to do it). */
+    fun cancelRinging(ringId: String) {}
+
     /** Non-foreground notification with a Dismiss action, one per ring so parked snoozes coexist. */
     fun showSnoozed(ringId: String, until: Instant)
     fun cancelSnoozed(ringId: String)

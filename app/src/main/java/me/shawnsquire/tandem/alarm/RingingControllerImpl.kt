@@ -139,7 +139,11 @@ class RingingControllerImpl(
             if (snoozedUntil != null && snoozedUntil.isAfter(now().minus(STALE_SNOOZE_WINDOW))) return@withLock
             // Not a dismiss: a one-shot stays enabled and the snooze ledger is left to the scheduler.
             ringStateStore.set(null)
-            if (snoozedUntil != null) bestEffort("cancel stale snoozed notification") { notifier.cancelSnoozed(state.ringId) }
+            if (snoozedUntil != null) {
+                bestEffort("cancel stale snoozed notification") { notifier.cancelSnoozed(state.ringId) }
+            } else {
+                bestEffort("cancel stale ringing notification") { notifier.cancelRinging(state.ringId) }
+            }
             if (reschedule) bestEffort("reschedule after clearing stale ring") { alarmScheduler.rescheduleAll() }
         }
     }

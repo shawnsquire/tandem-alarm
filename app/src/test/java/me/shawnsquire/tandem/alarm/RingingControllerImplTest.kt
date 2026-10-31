@@ -29,6 +29,8 @@ class RecordingNotifier : RingingNotifier {
     override fun showRinging(alarm: Alarm?, ringId: String) { ringing += ringId }
     val fallback = mutableListOf<String>()
     override fun showFallbackRinging(ringId: String) { fallback += ringId }
+    val cancelledRinging = mutableListOf<String>()
+    override fun cancelRinging(ringId: String) { cancelledRinging += ringId }
     override fun showSnoozed(ringId: String, until: Instant) { snoozed += ringId to until }
     override fun cancelSnoozed(ringId: String) { cancelledSnoozed += ringId }
 }
@@ -519,6 +521,15 @@ class RingingControllerImplTest {
         assertNull(h.store.state.first())
         assertTrue(h.repo.get("a")!!.enabled) // not a dismiss
         assertEquals(1, h.scheduler.rescheduleCount)
+        assertEquals(listOf("ring-1"), h.notifier.cancelledRinging) // its ringing notification goes too
+    }
+
+    @Test fun clearStaleOfOldSnoozeCancelsSnoozedNotNotRinging() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing.copy(snoozedUntil = now.minusSeconds(3600)))
+        h.controller().clearStale(notLive, reschedule = false)
+        assertNull(h.store.state.first())
+        assertEquals(listOf("ring-1"), h.notifier.cancelledSnoozed)
+        assertTrue(h.notifier.cancelledRinging.isEmpty())
     }
 
     @Test fun clearStaleCanSkipTheReschedule() = runTest {

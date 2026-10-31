@@ -53,7 +53,7 @@ class AndroidRingingNotifier(
 
     fun cancelPrep() = manager.cancel(PREP_NOTIFICATION_ID)
 
-    fun cancelRinging(ringId: String) = manager.cancel(ringingNotificationId(ringId))
+    override fun cancelRinging(ringId: String) = manager.cancel(ringingNotificationId(ringId))
 
     override fun showRinging(alarm: Alarm?, ringId: String) = post(alarm, ringId, withActions = true)
 

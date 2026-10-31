@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.alarm
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -75,6 +76,24 @@ private class ThrowingReadStore(inner: FakeRingStateStore) : RingStateStore by i
 private class YieldingRingStateStore(private val inner: FakeRingStateStore) : RingStateStore {
     override val state: Flow<RingState?> = inner.state.onStart { yield() }
     override suspend fun set(state: RingState?) { yield(); inner.set(state) }
+}
+
+/** Holds every claim at [gate] before handing it to [inner]; a gate never opened is a stuck lock. */
+private class GatedSlot(private val inner: RingSlot) : RingSlot {
+    val gate = CompletableDeferred<Unit>()
+    var events: MutableList<String>? = null
+    override suspend fun claimFire(newRing: RingState) { events?.add("claim"); gate.await(); inner.claimFire(newRing) }
+    override suspend fun claimSnoozeResume(ringId: String, alarmId: String): Boolean {
+        gate.await()
+        return inner.claimSnoozeResume(ringId, alarmId)
+    }
+    override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = inner.clearStale(isLive, reschedule)
+}
+
+/** A scheduler whose reschedule waits at [gate]: a dismiss calling it holds the controller lock. */
+private class GatedScheduler : AlarmScheduler {
+    val gate = CompletableDeferred<Unit>()
+    override suspend fun rescheduleAll() { gate.await() }
 }
 
 private class ThrowingSettings : SettingsRepository by FakeSettingsRepository() {
@@ -205,7 +224,9 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(1, h.sound.starts.size)
         assertEquals(1, h.vibration.starts)
-        assertEquals(listOf("ring-X"), h.notifier.ringing)
+        // The claim failed, so there is no RingState: inert notification, no Stop/Snooze.
+        assertEquals(listOf("ring-X"), h.notifier.fallback)
+        assertTrue(h.notifier.ringing.isEmpty())
         assertEquals(0, h.finished)
     }
 
@@ -518,6 +539,9 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(1, h.sound.starts.size)
         assertEquals(1, h.vibration.starts)
+        // Stop/Snooze would be ignored without a RingState: inert notification.
+        assertEquals(listOf("ring-1"), h.notifier.fallback)
+        assertTrue(h.notifier.ringing.isEmpty())
         advanceTimeBy(10.minutes + 1.seconds); runCurrent()
         assertEquals(1, h.finished) // auto-silence still ends it
     }
@@ -789,5 +813,159 @@ class RingingSessionTest {
         h.session.start("a", occurrence, true, null)
         runCurrent()
         assertNull(fired.lastRang("a"))
+    }
+
+    // ---- never wait on the ring slot before vibrating; bounded claims ----
+
+    private fun TestScope.slotSession(
+        h: Harness,
+        slot: RingSlot,
+        controller: RingingController = h.controller,
+        ringId: String = "ring-1",
+    ) = RingingSession(
+        h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+        controller, slot, h.sound, h.vibration, h.notifier, backgroundScope,
+        StandardTestDispatcher(testScheduler), { h.clock }, { ringId },
+        firedLedger = h.fired, liveRings = h.live, onFinished = { h.finished++ },
+    )
+
+    @Test fun stuckClaimFireVibratesAtOnceAndRingsWithinTwoSeconds() = runTest {
+        val h = harness()
+        val session = slotSession(h, GatedSlot(h.controller)) // gate never opens
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(1, h.vibration.starts) // before the claim, not after it
+        assertTrue(h.sound.starts.isEmpty())
+        advanceTimeBy(1_999); runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        advanceTimeBy(2); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(2_000L, h.sound.startTimes[0])
+        assertEquals(1, h.vibration.starts) // ring() did not start it again
+        assertEquals(listOf("ring-1"), h.notifier.fallback) // inert: no RingState behind it
+        assertTrue(h.notifier.ringing.isEmpty())
+        assertNull(h.rawStore.state.first())
+        advanceTimeBy(10.minutes); runCurrent()
+        assertEquals(1, h.finished) // auto-silence still ends it
+        assertTrue(h.sound.stops >= 1)
+    }
+
+    @Test fun vibrationStartsBeforeTheClaimAndOnlyOnce() = runTest {
+        val h = harness()
+        val events = mutableListOf<String>()
+        h.vibration.events = events
+        h.sound.events = events
+        val slot = GatedSlot(h.controller).also { it.events = events; it.gate.complete(Unit) }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(listOf("vibration", "claim", "sound"), events)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+    }
+
+    @Test fun lateClaimFireWriteAdoptsTheRingWithoutStoppingIt() = runTest {
+        // A dismiss of ring B holds the controller lock (its reschedule is stuck), so A's claim waits.
+        val ringB = RingState("b", "ring-B", clockNow, null)
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringB)
+        val stuck = GatedScheduler()
+        val ctl = RingingControllerImpl(h.repo, h.store, FakeSettingsRepository(), stuck, h.armer, h.notifier, h.ledger) { h.clock }
+        val holder = backgroundScope.launch { ctl.dismiss("ring-B") }
+        runCurrent()
+        assertNull(h.rawStore.state.first()) // B cleared; the dismiss is still inside the lock
+
+        slotSession(h, ctl, controller = ctl).start("a", occurrence, false, null)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size) // rang on timeout
+        assertEquals(listOf("ring-1"), h.notifier.fallback)
+        assertNull(h.rawStore.state.first())
+
+        stuck.gate.complete(Unit) // lock released: the claim completes late and writes A
+        runCurrent()
+        assertTrue(holder.isCompleted)
+        assertEquals(RingState("a", "ring-1", clockNow, null), h.rawStore.state.first())
+        assertEquals(0, h.sound.stops) // the late write did not break the ring
+        assertEquals(0, h.finished)
+        assertEquals(listOf("ring-1"), h.notifier.ringing) // now with Stop and Snooze
+
+        ctl.dismiss("ring-1") // Stop now works: the session observes the stored ring
+        runCurrent()
+        assertEquals(1, h.finished)
+        assertTrue(h.sound.stops >= 1)
+    }
+
+    @Test fun lateClaimAfterSessionFinishedIsIgnored() = runTest {
+        val h = harness()
+        val slot = GatedSlot(h.controller)
+        slotSession(h, slot).start("a", occurrence, false, null)
+        advanceTimeBy(2_001); runCurrent()
+        advanceTimeBy(10.minutes); runCurrent()
+        assertEquals(1, h.finished)
+        slot.gate.complete(Unit); runCurrent()
+        assertTrue(h.notifier.ringing.isEmpty()) // no actions posted for a finished session
+        assertEquals(1, h.finished)
+    }
+
+    @Test fun stuckSnoozeClaimRingsWithinTwoSecondsAsLive() = runTest {
+        val h = harness(state = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow))
+        val session = slotSession(h, GatedSlot(h.controller))
+        session.start("a", clockNow, true, "ring-X")
+        advanceTimeBy(1_999); runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        advanceTimeBy(2); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-X"), h.notifier.fallback)
+        assertTrue("ring-X" in h.notifier.cancelledSnoozed)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun autoSilenceStopsSoundEvenWhenDismissHangs() = runTest {
+        val h = harness()
+        val dismissed = mutableListOf<String>()
+        val hanging = object : RingingController {
+            override suspend fun dismiss(ringId: String) { dismissed += ringId; awaitCancellation() }
+            override suspend fun snooze() = Unit
+        }
+        slotSession(h, h.controller, controller = hanging).start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(1, h.finished)
+        assertTrue(h.sound.stops >= 1)
+        assertTrue(h.vibration.stops >= 1)
+        assertEquals(listOf("ring-1"), dismissed) // still asked, after the sound stopped
+    }
+
+    @Test fun replayFindsOccurrenceRungDuringPreFireAndIsQuiet() = runTest {
+        // The original fire rings (and marks the ledger) while this replay waits on the network check.
+        lateinit var h: Harness
+        h = Harness(this, listOf(alarm()), null, LambdaPreFire { h.fired.markRang("a", occurrence); true }, clockNow)
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, h.vibration.starts)
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun skippedOccurrenceIsMarkedSoItsReplayCannotRing() = runTest {
+        val h = harness(alarms = listOf(alarm(skip = occurrence)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        assertNull(h.repo.get("a")!!.skippedOccurrenceAt) // skip consumed
+
+        // Boot replay of the same occurrence, after the skip was cleared.
+        val replaySound = RecordingSound { currentTime }
+        var replayFinished = 0
+        RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.controller, replaySound, RecordingVibration(), h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-R" },
+            firedLedger = h.fired, liveRings = h.live, onFinished = { replayFinished++ },
+        ).start("a", occurrence, false, null)
+        runCurrent()
+        assertTrue(replaySound.starts.isEmpty())
+        assertEquals(1, replayFinished)
     }
 }

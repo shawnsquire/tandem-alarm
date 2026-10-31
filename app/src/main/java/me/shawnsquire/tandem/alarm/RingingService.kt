@@ -10,6 +10,7 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -98,16 +99,12 @@ open class RingingService : Service() {
         sessionsStarted++
         adapters[session] = sound to vibration
         if (isSnooze && ringId != null) snoozeRingIds[session] = ringId
-        scope.launch {
-            // A RingState left by a dead process would otherwise be "superseded" as if it were ringing.
-            try {
-                container.ringSlot.clearStale(LiveRings::isLive)
-            } catch (e: Throwable) {
-                if (e is CancellationException) throw e
-                Log.w(TAG, "clearing stale ring state failed", e)
-            }
-            session.start(alarmId, occurrence, isSnooze, ringId)
-        }
+        // A RingState left by a dead process would otherwise be "superseded" as if it were ringing.
+        // Not awaited: the session must never wait on the ring-slot lock before vibrating. The
+        // controller's Mutex is fair, so this clear still runs before the session's claim, which
+        // is queued only after the pre-fire check.
+        launchClearStale(scope, container.ringSlot, LiveRings::isLive) { msg, t -> Log.w(TAG, msg, t) }
+        session.start(alarmId, occurrence, isSnooze, ringId)
         return START_NOT_STICKY
     }
 
@@ -190,6 +187,8 @@ open class RingingService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        // Sessions cut off here never reach finish(): release their rings so a cleaner can clear them.
+        releaseRings(sessions.mapNotNull { it.ringId }, LiveRings) { runCatching { notifier.cancelRinging(it) } }
         ringingNotifications.keys.forEach { runCatching { notifier.cancelRinging(it) } }
         ringingNotifications.clear()
         adapters.values.forEach { (sound, vibration) ->
@@ -203,6 +202,32 @@ open class RingingService : Service() {
     companion object {
         private const val WAKE_LOCK_TIMEOUT_MS = 12 * 60 * 1000L
         private const val TAG = "RingingService"
+    }
+}
+
+/**
+ * Clears a stale RingState without a reschedule: the scheduler never reads RingState, and a
+ * reschedule would only hold the ring-slot lock longer (Room, binder).
+ */
+internal fun launchClearStale(
+    scope: CoroutineScope,
+    ringSlot: RingSlot,
+    isLive: (String) -> Boolean,
+    log: (String, Throwable?) -> Unit,
+): Job = scope.launch {
+    try {
+        ringSlot.clearStale(isLive, reschedule = false)
+    } catch (e: Throwable) {
+        if (e is CancellationException) throw e
+        log("clearing stale ring state failed", e)
+    }
+}
+
+/** Unregisters [ringIds] from [registry] and cancels each one's ringing notification. */
+internal fun releaseRings(ringIds: Collection<String>, registry: RingRegistry, cancelNotification: (String) -> Unit) {
+    for (id in ringIds) {
+        runCatching { registry.unregister(id) }
+        runCatching { cancelNotification(id) }
     }
 }
 

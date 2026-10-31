@@ -3,12 +3,14 @@ package me.shawnsquire.tandem.alarm
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
@@ -51,6 +53,7 @@ class RingingSession(
     private var finished = false
     private var ringStarted = false
     private var autoSilence: Job? = null
+    private var vibrationStarted = false
     private var registeredRingId: String? = null
 
     /** The ring this session registered, once it has one. */
@@ -99,7 +102,7 @@ class RingingSession(
         currentCoroutineContext().ensureActive()
         ringStarted = true
         // Vibration first: sound setup must never delay or prevent it.
-        guarded("fallback vibration", Unit) { vibration.start() }
+        startVibration("fallback vibration")
         guarded("fallback sound", Unit) { sound.start(emptyList()) }
         // The ring decision is made, so the full-screen intent is fine; no actions without a RingState.
         val notifyId = snoozeRingId ?: "fallback-" + UUID.randomUUID()
@@ -110,14 +113,78 @@ class RingingSession(
         ensureAutoSilence(null)
     }
 
-    /** Auto-silence counts as a dismiss; with no known ringId it just ends the session. */
+    /** Idempotent: the fire path vibrates before claiming the slot, and ring() must not start it again. */
+    private suspend fun startVibration(what: String) {
+        if (vibrationStarted) return
+        guarded(what, Unit) { vibration.start(); vibrationStarted = true }
+    }
+
+    /**
+     * Auto-silence counts as a dismiss; with no known ringId it just ends the session. Sound stops
+     * first: the dismiss waits on the ring-slot lock, and a stuck lock must never keep a ring going.
+     * The dismiss runs NonCancellable, so finish() cancelling the session's jobs cannot abort it.
+     */
     private fun ensureAutoSilence(ringId: String?) {
         if (autoSilence != null) return
         autoSilence = scope.launch {
             delay(10.minutes)
-            if (ringId != null) guarded("auto-silence dismiss", Unit) { controller.dismiss(ringId) }
-            finish()
+            finish() // cancels this job too; the dismiss below still runs to completion
+            if (ringId != null) {
+                withContext(NonCancellable) {
+                    try { controller.dismiss(ringId) } catch (e: Throwable) { log("auto-silence dismiss failed", e) }
+                }
+            }
         }.also { jobs += it }
+    }
+
+    private sealed interface Claim<out T> {
+        data class Done<T>(val value: T) : Claim<T>
+        data object Failed : Claim<Nothing>
+        data object TimedOut : Claim<Nothing>
+    }
+
+    /**
+     * I1: a ring-slot claim waits on the controller's lock, so it gets the same hard bound as the
+     * pre-fire check. On timeout the claim keeps running (the controller makes it NonCancellable);
+     * if it completes later while this session is alive, [onLate] gets its result.
+     */
+    private suspend fun <T> boundedClaim(what: String, onLate: suspend (T) -> Unit, block: suspend () -> T): Claim<T> {
+        val d = scope.async {
+            try { Result.success(block()) } catch (e: Throwable) { Result.failure(e) }
+        }
+        val result = try {
+            withTimeoutOrNull(CLAIM_TIMEOUT) { d.await() }
+        } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
+            log("$what failed", e)
+            return Claim.Failed
+        }
+        if (result == null) {
+            log("$what timed out; ringing without the ring slot", null)
+            // In jobs: once the session finishes, a late result is ignored.
+            jobs += scope.launch {
+                val late = try { d.await() } catch (e: Throwable) { currentCoroutineContext().ensureActive(); return@launch }
+                late.onSuccess { guarded("late $what", Unit) { onLate(it) } }
+                late.onFailure { log("late $what failed", it) }
+            }
+            return Claim.TimedOut
+        }
+        return result.fold({ Claim.Done(it) }, { log("$what failed", it); Claim.Failed })
+    }
+
+    /**
+     * A claim that timed out has now written this ring's state. The ring is already sounding with
+     * an inert notification; from here it behaves like a normal ring: observe the state (so Stop and
+     * Snooze from the ringing screen end it) and show the actions. It never stops the ring itself.
+     */
+    private suspend fun adoptLateClaim(alarm: Alarm?, ringId: String) {
+        if (finished || observing) return
+        if (!ringPosted) {
+            lateClaimed = true // ring() has not posted its notification yet; it will adopt the claim itself
+            return
+        }
+        observe(ringId)
+        guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
     }
 
     private suspend fun execute(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?) {
@@ -138,23 +205,24 @@ class RingingSession(
             return
         }
         register(snoozeRingId)
+        var alarm: Alarm? = null
         // Liveness check, ledger cleanup, supersede and the state write happen in one critical section.
-        var claimFailed = false
-        val live = try {
-            ringSlot.claimSnoozeResume(snoozeRingId, alarmId)
-        } catch (e: Throwable) {
-            currentCoroutineContext().ensureActive()
-            log("snooze claim failed; ringing with the snooze ringId", e)
-            claimFailed = true
-            true
-        }
-        if (!live) {
+        val claim = boundedClaim(
+            "snooze claim",
+            onLate = { live: Boolean ->
+                // A late "not live" (dismissed while snoozed) does not stop a ring that has started.
+                if (live) adoptLateClaim(alarm, snoozeRingId) else log("late snooze claim: snooze was dismissed", null)
+            },
+        ) { ringSlot.claimSnoozeResume(snoozeRingId, alarmId) }
+        if (claim is Claim.Done && !claim.value) {
             finish() // dismissed while snoozed
             return
         }
-        val alarm = guarded("alarm read", null as Alarm?) { alarmRepository.get(alarmId) }
-        if (claimFailed) guarded("cancel snoozed notification", Unit) { notifier.cancelSnoozed(snoozeRingId) }
-        ring(alarm, snoozeRingId, observe = !claimFailed)
+        // Failed or timed out: cannot tell, so it counts as live (I1).
+        val claimed = claim is Claim.Done
+        alarm = guarded("alarm read", null as Alarm?) { alarmRepository.get(alarmId) }
+        if (!claimed) guarded("cancel snoozed notification", Unit) { notifier.cancelSnoozed(snoozeRingId) }
+        ring(alarm, snoozeRingId, observe = claimed)
     }
 
     private suspend fun executeFire(alarmId: String, occurrence: Instant) {
@@ -174,20 +242,34 @@ class RingingSession(
         if (alarm != null) {
             val skipped = alarm.skippedOccurrenceAt == occurrence
             if (!alarm.enabled || skipped) {
-                if (skipped) guarded("clear skip", Unit) { alarmRepository.setSkip(alarm.id, null) }
+                if (skipped) {
+                    // Recorded as handled, so a replay of this skipped occurrence cannot ring once the skip is cleared.
+                    guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
+                    guarded("clear skip", Unit) { alarmRepository.setSkip(alarm.id, null) }
+                }
                 guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
                 finish()
                 return
             }
         }
 
+        // Re-checked after the pre-fire check: the original fire may have rung while a replay waited on it.
+        if (guarded("fired ledger read", null as Instant?) { firedLedger.lastRang(alarmId) } == occurrence) {
+            finish()
+            return
+        }
+
+        // The ring is decided. Vibrate now: nothing below (lock, disk, audio) may delay it.
+        currentCoroutineContext().ensureActive()
+        startVibration("vibration")
+
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
         register(ringId)
         // Newest alarm supersedes a sounding ring; a snoozed one is parked and keeps its snooze.
-        val written = guarded("ring slot claim", false) {
-            ringSlot.claimFire(RingState(alarmId, ringId, now(), null)); true
+        val claim = boundedClaim("ring slot claim", onLate = { _: Unit -> adoptLateClaim(alarm, ringId) }) {
+            ringSlot.claimFire(RingState(alarmId, ringId, now(), null))
         }
-        ring(alarm, ringId, observe = written, fire = alarmId to occurrence)
+        ring(alarm, ringId, observe = claim is Claim.Done, fire = alarmId to occurrence)
     }
 
     /** I1: hard 3 s bound that also holds when the check blocks a thread without cooperating. */
@@ -215,26 +297,43 @@ class RingingSession(
         currentCoroutineContext().ensureActive() // never start sound after the session was cancelled
         ringStarted = true
         // Vibration first: sound setup must never delay or prevent it.
-        guarded("vibration", Unit) { vibration.start() }
+        startVibration("vibration")
         guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
         // Marked after the ring has begun, so a process death before this point still gets a boot replay.
         if (fire != null) guarded("fired ledger write", Unit) { firedLedger.markRang(fire.first, fire.second) }
-        guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
-        guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
-
+        // Without a stored RingState, Stop and Snooze would be silently ignored: post no actions.
+        val claimed = observe || lateClaimed
+        if (claimed) {
+            guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
+        } else {
+            guarded("notifier", Unit) { notifier.showFallbackRinging(ringId) }
+        }
+        ringPosted = true
+        // Before the reschedule: a slow scheduler must never leave a started ring without its end.
         ensureAutoSilence(ringId)
-        if (observe) {
-            jobs += scope.launch {
-                var ok = true
-                try {
-                    ringStateStore.state.first { it == null || it.ringId != ringId || it.snoozedUntil != null }
-                } catch (e: Throwable) {
-                    currentCoroutineContext().ensureActive()
-                    log("ring state observation failed", e)
-                    ok = false
-                }
-                if (ok) finish()
+        if (claimed || lateClaimed) observe(ringId)
+        // NonCancellable: the ring may end (and cancel this job) while the reschedule is mid-write.
+        guarded("reschedule", Unit) { withContext(NonCancellable) { alarmScheduler.rescheduleAll() } }
+    }
+
+    private var observing = false
+    private var ringPosted = false
+    private var lateClaimed = false
+
+    /** Ends the session when the stored ring ends, is superseded or is snoozed. */
+    private fun observe(ringId: String) {
+        if (observing) return
+        observing = true
+        jobs += scope.launch {
+            var ok = true
+            try {
+                ringStateStore.state.first { it == null || it.ringId != ringId || it.snoozedUntil != null }
+            } catch (e: Throwable) {
+                currentCoroutineContext().ensureActive()
+                log("ring state observation failed", e)
+                ok = false
             }
+            if (ok) finish()
         }
     }
 
@@ -246,5 +345,9 @@ class RingingSession(
         jobs.forEach { it.cancel() }
         registeredRingId?.let { id -> guardedNow("live ring unregister") { liveRings.unregister(id) } }
         onFinished()
+    }
+
+    private companion object {
+        val CLAIM_TIMEOUT = 2.seconds
     }
 }
