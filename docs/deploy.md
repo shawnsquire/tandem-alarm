@@ -27,13 +27,13 @@ Log in (a person does this in a browser; do not script it):
 npx firebase-tools login
 ```
 
-Then deploy from the `firebase/` directory. The command is:
+Then deploy from the `firebase/` directory. The deploy command is:
 
 ```
 firebase deploy --project prod --only firestore:rules,functions
 ```
 
-`npx firebase-tools` runs the same CLI, so in practice:
+Here `firebase` means npm firebase-tools on Node 22.12 or newer, run through `npx firebase-tools`, not a system `/usr/bin/firebase`. Type this:
 
 ```
 cd firebase
