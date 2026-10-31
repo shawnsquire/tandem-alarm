@@ -11,7 +11,7 @@ import java.time.Instant
  * Single home for the intents, actions and extras shared by the alarm engine.
  *
  * PendingIntent identity ignores extras, so each intent gets a unique data URI
- * (`tandem://alarm/<id>` for fires, `tandem://snooze/<ringId>` for snoozes, one per ring).
+ * (`tandem://alarm/<id>` for fires, `tandem://alarm/<id>/replay` for missed-alarm replays, `tandem://snooze/<ringId>` for snoozes, one per ring).
  */
 object AlarmIntents {
     const val EXTRA_ALARM_ID = "me.shawnsquire.tandem.extra.ALARM_ID"
@@ -29,10 +29,14 @@ object AlarmIntents {
     private const val SNOOZE_ACTION_REQUEST_CODE = 0x53415A // "SAZ"
     private const val RINGING_REQUEST_CODE = 0x52494E // "RIN"
     private const val SNOOZE_REQUEST_CODE = 0x534E5A // "SNZ"
+    private const val REPLAY_REQUEST_CODE = 0x525059 // "RPY"
     private const val SHOW_REQUEST_CODE = 0x53484F // "SHO"
 
     private fun fireIntent(context: Context, alarmId: String) =
         Intent(ACTION_FIRE, Uri.parse("tandem://alarm/$alarmId"), context, AlarmReceiver::class.java)
+
+    private fun replayIntent(context: Context, alarmId: String) =
+        Intent(ACTION_FIRE, Uri.parse("tandem://alarm/$alarmId/replay"), context, AlarmReceiver::class.java)
 
     private fun snoozeIntent(context: Context, ringId: String) =
         Intent(ACTION_SNOOZE_FIRE, Uri.parse("tandem://snooze/${Uri.encode(ringId)}"), context, AlarmReceiver::class.java)
@@ -45,6 +49,25 @@ object AlarmIntents {
                 .putExtra(EXTRA_ALARM_ID, alarmId)
                 .putExtra(EXTRA_OCCURRENCE, occurrence.toEpochMilli()),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    /** One-off fire of a missed [occurrence]; its own identity so it never replaces the normal fire. */
+    fun replayPendingIntent(context: Context, alarmId: String, occurrence: Instant): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            REPLAY_REQUEST_CODE,
+            replayIntent(context, alarmId)
+                .putExtra(EXTRA_ALARM_ID, alarmId)
+                .putExtra(EXTRA_OCCURRENCE, occurrence.toEpochMilli()),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    fun existingReplayPendingIntent(context: Context, alarmId: String): PendingIntent? =
+        PendingIntent.getBroadcast(
+            context,
+            REPLAY_REQUEST_CODE,
+            replayIntent(context, alarmId),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
         )
 
     fun existingFirePendingIntent(context: Context, alarmId: String): PendingIntent? =

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -101,6 +102,8 @@ class RingingSessionTest {
         settings: SettingsRepository = FakeSettingsRepository(),
         storeWrap: ((FakeRingStateStore) -> RingStateStore)? = null,
         ids: Iterator<String> = listOf("ring-1", "ring-2", "ring-3").iterator(),
+        val fired: FiredLedger = InMemoryFiredLedger(),
+        val live: RingRegistry = SyncRingRegistry(),
     ) {
         val repo = FakeAlarmRepository(alarms)
         val rawStore = FakeRingStateStore(state)
@@ -118,9 +121,22 @@ class RingingSessionTest {
         val session = RingingSession(
             repo, store, settings, preFire, scheduler, controller, controller, sound, vibration, notifier,
             scope.backgroundScope, dispatcher, { clock }, { ids.next() },
+            firedLedger = fired, liveRings = live,
             onFinished = { finished++ },
         )
         fun fire(id: String = "a", occ: Instant) = session.start(id, occ, false, null)
+    }
+
+    private class RecordingRegistry(val events: MutableList<String>) : RingRegistry {
+        private val inner = SyncRingRegistry()
+        override fun register(ringId: String) { events += "register:$ringId"; inner.register(ringId) }
+        override fun unregister(ringId: String) { events += "unregister:$ringId"; inner.unregister(ringId) }
+        override fun isLive(ringId: String) = inner.isLive(ringId)
+    }
+
+    private class ThrowingFired : FiredLedger {
+        override fun lastRang(alarmId: String): Instant? = throw IllegalStateException("prefs")
+        override fun markRang(alarmId: String, occurrence: Instant) = throw IllegalStateException("prefs")
     }
 
     private fun TestScope.harness(
@@ -618,5 +634,81 @@ class RingingSessionTest {
         // The loser (a one-shot) was dismissed, not silently overwritten.
         val loserAlarm = if (winner == "ring-1") "b" else "a"
         assertFalse(h.repo.get(loserAlarm)!!.enabled)
+    }
+
+    // ---- D2: fired ledger and live registry ----
+
+    private fun TestScope.ledgerHarness(fired: FiredLedger, live: RingRegistry = SyncRingRegistry(), state: RingState? = null) =
+        Harness(this, listOf(alarm()), state, LambdaPreFire { true }, clockNow, fired = fired, live = live)
+
+    @Test fun duplicateOccurrenceFinishesQuietlyBeforePreFire() = runTest {
+        val fired = InMemoryFiredLedger().apply { markRang("a", occurrence) }
+        var preFireCalls = 0
+        val h = Harness(this, listOf(alarm()), null, LambdaPreFire { preFireCalls++; true }, clockNow, fired = fired)
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, preFireCalls)
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun differentOccurrenceStillRingsAndIsRecorded() = runTest {
+        val fired = InMemoryFiredLedger().apply { markRang("a", occurrence.minusSeconds(86400)) }
+        val h = ledgerHarness(fired)
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(occurrence, fired.lastRang("a"))
+    }
+
+    @Test fun secondFireOfSameOccurrenceIsSuppressed() = runTest {
+        val fired = InMemoryFiredLedger()
+        val h = ledgerHarness(fired)
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        val h2 = ledgerHarness(fired)
+        h2.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h2.sound.starts.isEmpty())
+        assertEquals(1, h2.finished)
+    }
+
+    @Test fun snoozeFireIsExemptFromFiredLedger() = runTest {
+        val fired = InMemoryFiredLedger().apply { markRang("a", occurrence) }
+        val h = ledgerHarness(fired, state = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow))
+        h.session.start("a", occurrence, true, "ring-X")
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun firedLedgerFailureStillRings() = runTest {
+        val h = ledgerHarness(ThrowingFired())
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals("ring-1", h.rawStore.state.first()?.ringId)
+    }
+
+    @Test fun ringIdIsRegisteredBeforeTheClaimAndRemovedOnFinish() = runTest {
+        val events = mutableListOf<String>()
+        val reg = RecordingRegistry(events)
+        val h = ledgerHarness(InMemoryFiredLedger(), live = reg)
+        val sawLiveAtClaim = mutableListOf<Boolean>()
+        val watcher = launch {
+            h.rawStore.state.first { it != null }
+            sawLiveAtClaim += reg.isLive("ring-1")
+        }
+        h.fire(occ = occurrence)
+        runCurrent()
+        watcher.join()
+        assertEquals(listOf("register:ring-1"), events)
+        assertEquals(listOf(true), sawLiveAtClaim)
+
+        h.rawStore.set(null) // ring ends
+        runCurrent()
+        assertEquals(listOf("register:ring-1", "unregister:ring-1"), events)
+        assertFalse(reg.isLive("ring-1"))
     }
 }

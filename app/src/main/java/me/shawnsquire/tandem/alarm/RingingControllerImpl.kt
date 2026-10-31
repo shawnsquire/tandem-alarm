@@ -11,6 +11,7 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isOneShot
+import java.time.Duration
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
@@ -39,9 +40,17 @@ class RingingControllerImpl(
         when {
             state != null && state.ringId == ringId -> dismissCurrentLocked(state)
             // A snooze parked behind a newer ring (Dismiss on its snoozed notification).
-            else -> ledger.get(ringId)?.let { dropParkedLocked(it) }
+            else -> {
+                val parked = ledger.get(ringId)
+                if (parked != null) {
+                    dropParkedLocked(parked)
+                } else {
+                    // I3: a stop pinned to another (or no) ring is ignored. It stops no ring, but a
+                    // snoozed notification whose ledger entry is gone would otherwise stay forever.
+                    bestEffort("cancel stuck snoozed notification") { notifier.cancelSnoozed(ringId) }
+                }
+            }
         }
-        // I3: anything else is a stop pinned to another (or no) ring and is ignored.
         Unit
     } }
 
@@ -99,7 +108,11 @@ class RingingControllerImpl(
             val current = ringStateStore.state.first()
             val sameRing = current != null && current.ringId == ringId
             val live = inLedger || (sameRing && current.snoozedUntil != null)
-            if (!live) return@withLock false // dismissed while snoozed
+            if (!live) {
+                // Dismissed while snoozed; make sure no snoozed notification outlives its entry.
+                bestEffort("cancel stale snoozed notification") { notifier.cancelSnoozed(ringId) }
+                return@withLock false
+            }
 
             bestEffort("ledger remove") { ledger.remove(ringId) }
             bestEffort("cancel fired snooze") { snoozeArmer.cancelSnooze(ringId) }
@@ -110,6 +123,26 @@ class RingingControllerImpl(
             ringStateStore.set(RingState(alarmId, ringId, startedAt, null))
             true
         } }
+
+    override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = withContext(NonCancellable) {
+        mutex.withLock {
+            val state = try {
+                ringStateStore.state.first()
+            } catch (e: Throwable) {
+                log("state read failed; leaving ring state alone", e)
+                return@withLock
+            } ?: return@withLock
+            // A failing registry means we cannot tell: treat the ring as live and leave it.
+            val live = try { isLive(state.ringId) } catch (e: Throwable) { log("isLive failed", e); true }
+            if (live) return@withLock
+            val snoozedUntil = state.snoozedUntil
+            if (snoozedUntil != null && snoozedUntil.isAfter(now().minus(STALE_SNOOZE_WINDOW))) return@withLock
+            // Not a dismiss: a one-shot stays enabled and the snooze ledger is left to the scheduler.
+            ringStateStore.set(null)
+            if (snoozedUntil != null) bestEffort("cancel stale snoozed notification") { notifier.cancelSnoozed(state.ringId) }
+            if (reschedule) bestEffort("reschedule after clearing stale ring") { alarmScheduler.rescheduleAll() }
+        }
+    }
 
     /** Dismisses [current] if it is a different ring that is actively sounding; parks a snoozed one. Never throws. */
     private suspend fun supersedeLocked(current: RingState?, newRingId: String) {
@@ -168,6 +201,7 @@ class RingingControllerImpl(
     }
 
     private companion object {
+        val STALE_SNOOZE_WINDOW: Duration = Duration.ofMinutes(10)
         const val DEFAULT_SNOOZE_MINUTES = 10
         const val TAG = "RingingController"
     }

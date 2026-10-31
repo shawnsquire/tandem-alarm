@@ -19,4 +19,13 @@ interface RingSlot {
      * the current ring, writes [ringId] as sounding (same ringId, I3) and returns true.
      */
     suspend fun claimSnoozeResume(ringId: String, alarmId: String): Boolean
+
+    /**
+     * Clears a RingState left behind by a dead process: non-null, [isLive] false for its ringId,
+     * and not a snooze that is still pending (`snoozedUntil` within the last 10 minutes or later).
+     * Not a dismiss: a one-shot stays enabled. Under the same lock as the other calls, so it
+     * must never be called from inside a reschedule. Reschedules afterwards when [reschedule]
+     * (the boot path passes false because its own reschedule follows and must see the old records).
+     */
+    suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean = true)
 }

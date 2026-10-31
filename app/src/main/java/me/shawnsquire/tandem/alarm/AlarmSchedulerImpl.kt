@@ -86,11 +86,15 @@ class AlarmSchedulerImpl(
             }
         }
 
-        val previous = prefs.getStringSet(KEY_SCHEDULED_IDS, emptySet()).orEmpty().toSet()
-        // Ids persisted before any PendingIntent is registered, so a process death in between
+        // What the previous run armed (alarmId -> triggerAt), read before anything is replaced.
+        val old = readRecords()
+        if (rearmOverdueSnooze) {
+            armReplays(old.records, alarms, nowInstant)
+        }
+        // Persisted before any PendingIntent is registered, so a process death in between
         // cannot orphan one.
-        val persisted = previous.toMutableSet()
-        val scheduledNow = mutableSetOf<String>()
+        val persisted = old.records.toMutableMap()
+        val scheduledNow = mutableMapOf<String, Long?>()
         for (alarm in alarms) {
             try {
                 val at = if (alarm.enabled) next(alarm, nowInstant, zoneId) else null
@@ -100,11 +104,12 @@ class AlarmSchedulerImpl(
                     Log.w(TAG, "ignoring non-future trigger for alarm ${alarm.id}: $at <= $nowInstant")
                     continue
                 }
-                if (persisted.add(alarm.id)) {
-                    prefs.edit().putStringSet(KEY_SCHEDULED_IDS, persisted.toSet()).commit()
+                if (persisted[alarm.id] != at.toEpochMilli()) {
+                    persisted[alarm.id] = at.toEpochMilli()
+                    writeRecords(persisted, old.legacyIds)
                 }
                 // Added before arming: if setAlarmClock throws, the existing PendingIntent survives cleanup.
-                scheduledNow += alarm.id
+                scheduledNow[alarm.id] = at.toEpochMilli()
                 val operation = AlarmIntents.firePendingIntent(context, alarm.id, at)
                 alarmManager.setAlarmClock(
                     AlarmManager.AlarmClockInfo(at.toEpochMilli(), AlarmIntents.showPendingIntent(context)),
@@ -114,11 +119,11 @@ class AlarmSchedulerImpl(
                 if (e is CancellationException) throw e
                 Log.e(TAG, "scheduling failed for alarm ${alarm.id}", e)
                 // Keep whatever is already registered for it.
-                scheduledNow += alarm.id
+                scheduledNow[alarm.id] = persisted[alarm.id]
             }
         }
 
-        for (id in previous - scheduledNow) {
+        for (id in (old.records.keys + old.legacyIds) - scheduledNow.keys) {
             try {
                 cancel(AlarmIntents.existingFirePendingIntent(context, id))
             } catch (e: Throwable) {
@@ -126,8 +131,56 @@ class AlarmSchedulerImpl(
                 Log.e(TAG, "cancel failed for alarm $id", e)
             }
         }
-        // commit(): the persisted set must be durable before we return (receivers may kill the process).
-        prefs.edit().putStringSet(KEY_SCHEDULED_IDS, scheduledNow).commit()
+        // commit(): the records must be durable before we return (receivers may kill the process).
+        writeRecords(scheduledNow.mapNotNull { (id, at) -> at?.let { id to it } }.toMap(), emptySet(), dropLegacy = true)
+    }
+
+    /**
+     * Boot or time change: an occurrence that fell inside the last [OVERDUE_SNOOZE_WINDOW] while
+     * nothing was running rings shortly, through AlarmReceiver like any other fire. One bad record
+     * never stops the rest.
+     */
+    private fun armReplays(previous: Map<String, Long>, alarms: List<Alarm>, nowInstant: Instant) {
+        val byId = alarms.associateBy { it.id }
+        val earliest = nowInstant.minus(OVERDUE_SNOOZE_WINDOW).toEpochMilli()
+        for ((id, atMs) in previous) {
+            try {
+                if (atMs <= earliest || atMs > nowInstant.toEpochMilli()) continue
+                val alarm = byId[id] ?: continue
+                val at = Instant.ofEpochMilli(atMs)
+                if (!alarm.enabled || alarm.skippedOccurrenceAt == at) continue
+                alarmManager.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(nowInstant.plus(OVERDUE_SNOOZE_DELAY).toEpochMilli(), AlarmIntents.showPendingIntent(context)),
+                    AlarmIntents.replayPendingIntent(context, id, at),
+                )
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.e(TAG, "replay arming failed for alarm $id", e)
+            }
+        }
+    }
+
+    private class Records(val records: Map<String, Long>, val legacyIds: Set<String>)
+
+    private fun readRecords(): Records = try {
+        val records = HashMap<String, Long>()
+        for (entry in prefs.getStringSet(KEY_RECORDS, emptySet()).orEmpty()) {
+            val sep = entry.indexOf('|')
+            val ms = if (sep > 0) entry.substring(0, sep).toLongOrNull() else null
+            if (ms != null) records[entry.substring(sep + 1)] = ms
+        }
+        // Older builds persisted only the ids; they have no time, so they can be cancelled but never replayed.
+        val legacy = prefs.getStringSet(KEY_SCHEDULED_IDS, emptySet()).orEmpty().toSet() - records.keys
+        Records(records, legacy)
+    } catch (e: Throwable) {
+        Log.e(TAG, "reading scheduler records failed", e)
+        Records(emptyMap(), emptySet())
+    }
+
+    private fun writeRecords(records: Map<String, Long>, legacyIds: Set<String>, dropLegacy: Boolean = false) {
+        val edit = prefs.edit().putStringSet(KEY_RECORDS, records.map { (id, at) -> "$at|$id" }.toSet())
+        if (dropLegacy) edit.remove(KEY_SCHEDULED_IDS) else edit.putStringSet(KEY_SCHEDULED_IDS, legacyIds + records.keys)
+        edit.commit()
     }
 
     /**
@@ -172,6 +225,7 @@ class AlarmSchedulerImpl(
     private companion object {
         const val TAG = "AlarmScheduler"
         const val PREFS = "alarm_scheduler"
-        const val KEY_SCHEDULED_IDS = "scheduled_ids"
+        const val KEY_SCHEDULED_IDS = "scheduled_ids" // legacy: plain id set
+        const val KEY_RECORDS = "scheduled_records" // "<triggerAtMs>|<alarmId>"
     }
 }

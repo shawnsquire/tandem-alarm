@@ -6,10 +6,12 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.TandemApp
 import java.time.Instant
 
@@ -72,6 +74,8 @@ class RingingService : Service() {
             ioDispatcher = Dispatchers.IO,
             now = Instant::now,
             log = { msg, t -> Log.w(TAG, msg, t) },
+            firedLedger = SharedPrefsFiredLedger(applicationContext),
+            liveRings = LiveRings,
             onFinished = {
                 sessions.remove(session)
                 adapters.remove(session)
@@ -82,7 +86,16 @@ class RingingService : Service() {
         sessions += session
         adapters[session] = sound to vibration
         if (isSnooze && ringId != null) snoozeRingIds[session] = ringId
-        session.start(alarmId, occurrence, isSnooze, ringId)
+        scope.launch {
+            // A RingState left by a dead process would otherwise be "superseded" as if it were ringing.
+            try {
+                container.ringSlot.clearStale(LiveRings::isLive)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.w(TAG, "clearing stale ring state failed", e)
+            }
+            session.start(alarmId, occurrence, isSnooze, ringId)
+        }
         return START_NOT_STICKY
     }
 

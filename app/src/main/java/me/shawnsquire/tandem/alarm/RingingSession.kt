@@ -43,12 +43,20 @@ class RingingSession(
     private val now: () -> Instant,
     private val newRingId: () -> String = { UUID.randomUUID().toString() },
     private val log: (String, Throwable?) -> Unit = { _, _ -> },
+    private val firedLedger: FiredLedger = InMemoryFiredLedger(),
+    private val liveRings: RingRegistry = SyncRingRegistry(),
     private val onFinished: () -> Unit,
 ) {
     private val jobs = mutableListOf<Job>()
     private var finished = false
     private var ringStarted = false
     private var autoSilence: Job? = null
+    private var registeredRingId: String? = null
+
+    /** Registered before any claim writes state, so a cleaner never sees this ring as stale. */
+    private fun register(ringId: String) {
+        guardedNow("live ring register") { liveRings.register(ringId); registeredRingId = ringId }
+    }
 
     /**
      * Runs a best-effort step; any Throwable is logged and swallowed. A CancellationException is
@@ -103,6 +111,11 @@ class RingingSession(
     }
 
     private suspend fun execute(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?) {
+        // Same occurrence already rang (a replay racing AlarmManager's own fire): quiet, before the network check.
+        if (!isSnooze && guarded("fired ledger read", null as Instant?) { firedLedger.lastRang(alarmId) } == occurrence) {
+            finish()
+            return
+        }
         preFire()
         if (isSnooze) executeSnooze(alarmId, snoozeRingId) else executeFire(alarmId, occurrence)
     }
@@ -114,6 +127,7 @@ class RingingSession(
             if (readOk) finish() else fallbackRing()
             return
         }
+        register(snoozeRingId)
         // Liveness check, ledger cleanup, supersede and the state write happen in one critical section.
         var claimFailed = false
         val live = try {
@@ -158,6 +172,9 @@ class RingingSession(
         }
 
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
+        register(ringId)
+        // The session has decided to ring: remember this occurrence so a duplicate fire stays quiet.
+        guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
         // Newest alarm supersedes a sounding ring; a snoozed one is parked and keeps its snooze.
         val written = guarded("ring slot claim", false) {
             ringSlot.claimFire(RingState(alarmId, ringId, now(), null)); true
@@ -215,6 +232,7 @@ class RingingSession(
         guardedNow("sound stop") { sound.stop() }
         guardedNow("vibration stop") { vibration.stop() }
         jobs.forEach { it.cancel() }
+        registeredRingId?.let { id -> guardedNow("live ring unregister") { liveRings.unregister(id) } }
         onFinished()
     }
 }

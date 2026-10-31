@@ -10,6 +10,7 @@ import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -280,13 +281,16 @@ class AlarmSchedulerImplTest {
         val prefs = context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
         var idsWhenComputingB: Set<String>? = null
         val probe: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
-            if (alarm.id == "b") idsWhenComputingB = prefs.getStringSet("scheduled_ids", null)
+            if (alarm.id == "b") idsWhenComputingB = prefs.getStringSet("scheduled_records", null)?.map { it.substringAfter('|') }?.toSet()
             nextOccurrence(alarm, n, z)
         }
         scheduler(repo, next = probe).rescheduleAll()
         // Mid-run (before the final write) the registered id is already durable.
         assertEquals(setOf("a"), idsWhenComputingB)
-        assertEquals(setOf("a", "b"), prefs.getStringSet("scheduled_ids", null))
+        assertEquals(
+            setOf("${at(2, 6, 30).toEpochMilli()}|a", "${at(2, 7, 0).toEpochMilli()}|b"),
+            prefs.getStringSet("scheduled_records", null),
+        )
     }
 
     @Test
@@ -381,5 +385,94 @@ class AlarmSchedulerImplTest {
         scheduler(FakeAlarmRepository(emptyList()), ledger = racing).rescheduleAll()
         assertNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
         assertTrue(scheduled.isEmpty())
+    }
+
+    // ---- missed-alarm replay ----
+
+    private val replays get() = scheduled.filter { shadowOf(it.operation!!).savedIntent.data.toString().endsWith("/replay") }
+
+    /** Arms alarm [a] for 05:00 at 04:55, then moves the clock to [later]. */
+    private suspend fun armedThenLater(repo: FakeAlarmRepository, later: Instant): AlarmSchedulerImpl {
+        clock = at(2, 4, 55)
+        val s = scheduler(repo)
+        s.rescheduleAll()
+        clock = later
+        return s
+    }
+
+    @Test
+    fun bootArmsReplayForRecentlyMissedAlarm() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+
+        val replay = replays.single()
+        assertEquals(clock.plusSeconds(5).toEpochMilli(), replay.triggerAtMs)
+        val intent = shadowOf(replay.operation!!).savedIntent
+        assertEquals(AlarmIntents.ACTION_FIRE, intent.action)
+        assertEquals("a", intent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
+        assertEquals(at(2, 5, 0).toEpochMilli(), intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
+        assertEquals("tandem://alarm/a/replay", intent.data.toString())
+    }
+
+    @Test
+    fun replayAndNormalNextFireCoexist() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+
+        assertEquals(2, scheduled.size)
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+        assertNotNull(AlarmIntents.existingReplayPendingIntent(context, "a"))
+        val normal = scheduled.single { it !in replays }
+        assertEquals(at(3, 5, 0).toEpochMilli(), normal.triggerAtMs)
+    }
+
+    @Test
+    fun plainRescheduleNeverArmsReplay() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
+        s.rescheduleAll()
+        assertTrue(replays.isEmpty())
+    }
+
+    @Test
+    fun noReplayForSkippedOccurrence() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
+        repo.setSkip("a", at(2, 5, 0))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+    }
+
+    @Test
+    fun noReplayForDisabledOrDeletedAlarm() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0), alarm("b", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
+        repo.setEnabled("a", false)
+        repo.delete("b")
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+    }
+
+    @Test
+    fun noReplayWhenRecordIsOlderThanTenMinutes() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 11))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+    }
+
+    @Test
+    fun legacyIdSetIsMigratedWithoutReplayAndStillCancelled() = runTest {
+        context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE).edit()
+            .putStringSet("scheduled_ids", setOf("gone")).commit()
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        scheduler(repo).rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+        assertEquals(1, scheduled.size)
+        val prefs = context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+        assertFalse(prefs.contains("scheduled_ids"))
+        assertTrue(prefs.contains("scheduled_records"))
     }
 }

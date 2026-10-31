@@ -490,4 +490,74 @@ class RingingControllerImplTest {
         assertEquals(ringB, h.store.state.first()) // the dismiss's clear did not wipe B
         assertFalse(h.repo.get("a")!!.enabled)
     }
+
+    // ---- stuck snoozed notification ----
+
+    @Test fun ignoredDismissCancelsThatRingsSnoozedNotification() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        h.controller().dismiss("ring-gone")
+        assertEquals(listOf("ring-gone"), h.notifier.cancelledSnoozed)
+        assertEquals(ringing, h.store.state.first()) // stops no ring
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun notLiveSnoozeResumeCancelsItsSnoozedNotification() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        assertFalse(h.controller().claimSnoozeResume("ring-gone", "a"))
+        assertEquals(listOf("ring-gone"), h.notifier.cancelledSnoozed)
+    }
+
+    // ---- clearStale ----
+
+    private val notLive: (String) -> Boolean = { false }
+
+    @Test fun clearStaleClearsSoundingStateWithNoLiveSession() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        h.controller().clearStale(notLive)
+        assertNull(h.store.state.first())
+        assertTrue(h.repo.get("a")!!.enabled) // not a dismiss
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun clearStaleCanSkipTheReschedule() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        h.controller().clearStale(notLive, reschedule = false)
+        assertNull(h.store.state.first())
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun clearStaleKeepsLiveRing() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        h.controller().clearStale(isLive = { it == "ring-1" })
+        assertEquals(ringing, h.store.state.first())
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun clearStaleKeepsFutureSnooze() = runTest {
+        val snoozed = ringing.copy(snoozedUntil = now.plusSeconds(300))
+        val h = H(listOf(alarm("a", emptySet())), snoozed)
+        h.controller().clearStale(notLive)
+        assertEquals(snoozed, h.store.state.first())
+    }
+
+    @Test fun clearStaleKeepsSnoozeThatCameDueWithinTenMinutes() = runTest {
+        val snoozed = ringing.copy(snoozedUntil = now.minusSeconds(300))
+        val h = H(listOf(alarm("a", emptySet())), snoozed)
+        h.controller().clearStale(notLive)
+        assertEquals(snoozed, h.store.state.first())
+    }
+
+    @Test fun clearStaleClearsSnoozeMoreThanTenMinutesPast() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing.copy(snoozedUntil = now.minusSeconds(601)))
+        h.controller().clearStale(notLive)
+        assertNull(h.store.state.first())
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun clearStaleWithNoStateIsNoOp() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        h.controller().clearStale(notLive)
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
 }

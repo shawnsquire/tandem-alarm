@@ -76,4 +76,45 @@ class BootReceiverTest {
 
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
     }
+
+    private class OrderedSlot(val events: MutableList<String>, val fail: Boolean = false) : RingSlot {
+        var reschedule: Boolean? = null
+        override suspend fun claimFire(newRing: me.shawnsquire.tandem.schedule.RingState) = Unit
+        override suspend fun claimSnoozeResume(ringId: String, alarmId: String) = false
+        override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) {
+            events += "clearStale"
+            this.reschedule = reschedule
+            if (fail) error("boom")
+        }
+    }
+
+    @Test
+    fun rescheduleAsyncClearsStaleRingStateBeforeRescheduling() = runTest {
+        val events = mutableListOf<String>()
+        val scheduler = object : AlarmScheduler {
+            override suspend fun rescheduleAll() { events += "reschedule" }
+        }
+        val slot = OrderedSlot(events)
+        val scope = TestScope(testScheduler)
+
+        rescheduleAsync(null, scheduler, scope, ringSlot = slot)
+        scope.advanceUntilIdle()
+
+        assertEquals(listOf("clearStale", "reschedule"), events)
+        assertEquals(false, slot.reschedule) // the boot reschedule follows and needs the old records
+    }
+
+    @Test
+    fun rescheduleAsyncStillReschedulesWhenClearStaleFails() = runTest {
+        val events = mutableListOf<String>()
+        val scheduler = object : AlarmScheduler {
+            override suspend fun rescheduleAll() { events += "reschedule" }
+        }
+        val scope = TestScope(testScheduler)
+
+        rescheduleAsync(null, scheduler, scope, ringSlot = OrderedSlot(events, fail = true))
+        scope.advanceUntilIdle()
+
+        assertEquals(listOf("clearStale", "reschedule"), events)
+    }
 }

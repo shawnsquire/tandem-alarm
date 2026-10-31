@@ -20,8 +20,11 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_TIME_CHANGED,
             Intent.ACTION_TIMEZONE_CHANGED -> {
                 val pending = goAsync()
-                val scheduler = (context.applicationContext as TandemApp).container.alarmScheduler
-                rescheduleAsync(pending, scheduler, CoroutineScope(SupervisorJob() + Dispatchers.Default), rearmOverdueSnooze = true)
+                val container = (context.applicationContext as TandemApp).container
+                rescheduleAsync(
+                    pending, container.alarmScheduler, CoroutineScope(SupervisorJob() + Dispatchers.Default),
+                    rearmOverdueSnooze = true, ringSlot = container.ringSlot,
+                )
             }
             else -> Unit
         }
@@ -33,8 +36,20 @@ internal fun rescheduleAsync(
     scheduler: AlarmScheduler,
     scope: CoroutineScope,
     rearmOverdueSnooze: Boolean = false,
+    ringSlot: RingSlot? = null,
+    isLive: (String) -> Boolean = LiveRings::isLive,
 ): Job = scope.launch {
     try {
+        if (ringSlot != null) {
+            // A fresh boot has no live session; clear a leftover RingState first. No reschedule of its
+            // own: the one below must still see the previous records to replay missed alarms.
+            try {
+                ringSlot.clearStale(isLive, reschedule = false)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                Log.e("BootReceiver", "clearStale failed", e)
+            }
+        }
         if (rearmOverdueSnooze && scheduler is AlarmSchedulerImpl) {
             scheduler.rescheduleAll(rearmOverdueSnooze = true)
         } else {
