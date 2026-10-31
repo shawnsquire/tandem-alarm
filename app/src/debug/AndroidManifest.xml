@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Debug only: apps targeting API 37 need it to reach the emulator host (a private address). -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
     <application android:networkSecurityConfig="@xml/network_security_config" />
 
 </manifest>
