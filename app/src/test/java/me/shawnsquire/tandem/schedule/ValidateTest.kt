@@ -115,10 +115,30 @@ class ValidateTest {
     }
 
     @Test
-    fun skipNextTargetingAlreadySkippedOccurrenceRejects() {
+    fun skipNextTargetingAlreadySkippedOccurrenceRejectsAsAlreadySkipped() {
         val a = alarm(skippedOccurrenceAt = todayRing)
         val c = cmd(CommandType.SKIP_NEXT, todayRing)
-        assertEquals(reject("already rang or changed"), check(c, a))
+        assertEquals(reject("already skipped"), check(c, a))
+    }
+
+    @Test
+    fun skipNextOnOccurrenceAfterActiveSkipRejects() {
+        // Mon skipped; partner sees Tue as next and taps Skip again. Must not replace the skip.
+        val a = alarm(skippedOccurrenceAt = todayRing)
+        val c = cmd(CommandType.SKIP_NEXT, tomorrowRing)
+        assertEquals(reject("already skipped"), check(c, a))
+    }
+
+    @Test
+    fun skipNextWithExpiredSkipApplies() {
+        val a = alarm(skippedOccurrenceAt = yesterdayRing)
+        assertEquals(apply, check(cmd(CommandType.SKIP_NEXT, todayRing), a))
+    }
+
+    @Test
+    fun skipNextWithSkipExactlyNowApplies() {
+        val a = alarm(skippedOccurrenceAt = now)
+        assertEquals(apply, check(cmd(CommandType.SKIP_NEXT, todayRing), a))
     }
 
     @Test

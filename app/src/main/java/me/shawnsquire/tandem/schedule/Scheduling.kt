@@ -46,12 +46,15 @@ fun validate(
     if (alarm == null) return CommandDecision.Reject("alarm not found")
     val stale = CommandDecision.Reject("already rang or changed")
     return when (cmd.type) {
-        CommandType.SKIP_NEXT ->
-            if (cmd.occurrenceAt != null && cmd.occurrenceAt == nextOccurrence(alarm, now, zone)) {
-                CommandDecision.Apply
-            } else {
-                stale
+        CommandType.SKIP_NEXT -> {
+            val skipped = alarm.skippedOccurrenceAt
+            when {
+                skipped != null && skipped > now -> CommandDecision.Reject("already skipped")
+                cmd.occurrenceAt != null && cmd.occurrenceAt == nextOccurrence(alarm, now, zone) ->
+                    CommandDecision.Apply
+                else -> stale
             }
+        }
         CommandType.UNSKIP -> {
             val skipped = alarm.skippedOccurrenceAt
             if (skipped != null && skipped > now && skipped == cmd.occurrenceAt) {
