@@ -13,6 +13,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-java@v6
         with:
@@ -45,6 +47,10 @@ jobs:
           done
           printf '%s' "$TANDEM_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/tandem.jks"
           printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          if grep -q demo-tandem app/google-services.json; then
+            echo "::error::GOOGLE_SERVICES_JSON is the demo config; refusing to publish."
+            exit 1
+          fi
           echo "TANDEM_KEYSTORE_PATH=$RUNNER_TEMP/tandem.jks" >> "$GITHUB_ENV"
 
       - name: Build signed release APK
