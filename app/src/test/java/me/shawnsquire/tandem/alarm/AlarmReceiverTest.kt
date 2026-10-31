@@ -2,7 +2,12 @@ package me.shawnsquire.tandem.alarm
 
 import android.content.Context
 import android.content.Intent
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -12,6 +17,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class AlarmReceiverTest {
     private val context: Context = RuntimeEnvironment.getApplication()
@@ -50,6 +56,19 @@ class AlarmReceiverTest {
         assertEquals("r1", started.getStringExtra(AlarmIntents.EXTRA_RING_ID))
         assertTrue(started.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false))
         assertEquals(99L, started.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1L))
+    }
+
+    @Test
+    fun controlAsyncSwallowsErrorsAndRunsAction() = runTest {
+        val scope = TestScope(testScheduler)
+        var ran = 0
+        val job = controlAsync(null, scope) {
+            ran++
+            throw NoClassDefFoundError("boom")
+        }
+        scope.advanceUntilIdle()
+        assertEquals(1, ran)
+        assertFalse(job.isCancelled)
     }
 
     @Test

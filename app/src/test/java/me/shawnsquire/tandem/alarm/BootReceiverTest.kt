@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -46,6 +47,24 @@ class BootReceiverTest {
         scope.advanceUntilIdle()
 
         assertEquals(1, failing.calls)
+    }
+
+    @Test
+    fun rescheduleAsyncSwallowsErrors() = runTest {
+        val failing = object : AlarmScheduler {
+            var calls = 0
+            override suspend fun rescheduleAll() {
+                calls++
+                throw NoClassDefFoundError("boom")
+            }
+        }
+        val scope = TestScope(testScheduler)
+
+        val job = rescheduleAsync(null, failing, scope)
+        scope.advanceUntilIdle()
+
+        assertEquals(1, failing.calls)
+        assertFalse(job.isCancelled)
     }
 
     @Test

@@ -2,11 +2,13 @@ package me.shawnsquire.tandem.alarm
 
 import android.app.AlarmManager
 import android.content.Context
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.nextOccurrence
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -47,8 +49,8 @@ class AlarmSchedulerImplTest {
     private fun scheduler(
         repo: FakeAlarmRepository,
         ring: FakeRingStateStore = FakeRingStateStore(),
-        next: (Alarm, Instant, ZoneId) -> Instant? = ::testNext,
-    ) = AlarmSchedulerImpl(context, repo, ring, now = { clock }, zone = { zone }, next = next)
+        next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
+    ) = AlarmSchedulerImpl(context, repo, ring, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher())
 
     private val scheduled get() = shadowOf(alarmManager).scheduledAlarms
 
@@ -157,10 +159,88 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
-    fun pastSnoozeIsNotScheduled() = runTest {
+    fun snoozeDueWhilePhoneWasOffIsRearmedShortlyAfterNow() = runTest {
+        // snoozedUntil 5 minutes ago: inside the 10 minute window.
+        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 50), at(2, 4, 55)))
+        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll()
+        val snooze = scheduled.single()
+        assertEquals(now.plusSeconds(5).toEpochMilli(), snooze.triggerAtMs)
+        val intent = shadowOf(snooze.operation!!).savedIntent
+        assertEquals("ring-1", intent.getStringExtra(AlarmIntents.EXTRA_RING_ID))
+        assertTrue(intent.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false))
+    }
+
+    @Test
+    fun snoozeWellPastIsNotScheduled() = runTest {
         val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 0), at(2, 4, 10)))
         scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll()
         assertTrue(scheduled.isEmpty())
+        assertNull(AlarmIntents.existingSnoozePendingIntent(context))
+    }
+
+    @Test
+    fun failingAlarmDoesNotBlockOthersOrSnooze() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
+        val ring = FakeRingStateStore(RingState("z", "ring-1", at(2, 4, 59), at(2, 5, 10)))
+        val throwingForA: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
+            if (alarm.id == "a") error("bad alarm") else nextOccurrence(alarm, n, z)
+        }
+        scheduler(repo, ring, throwingForA).rescheduleAll()
+
+        assertEquals(
+            setOf(at(2, 7, 0).toEpochMilli(), at(2, 5, 10).toEpochMilli()),
+            scheduled.map { it.triggerAtMs }.toSet(),
+        )
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "b"))
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context))
+    }
+
+    @Test
+    fun failingAlarmKeepsItsPreviousPendingIntent() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
+        scheduler(repo).rescheduleAll()
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+
+        val throwingForA: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
+            if (alarm.id == "a") throw IllegalStateException("bad") else nextOccurrence(alarm, n, z)
+        }
+        scheduler(repo, next = throwingForA).rescheduleAll()
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "b"))
+        assertEquals(2, scheduled.size)
+    }
+
+    @Test
+    fun pastOrNowTriggerIsSkipped() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
+        val badA: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
+            if (alarm.id == "a") n else nextOccurrence(alarm, n, z)
+        }
+        scheduler(repo, next = badA).rescheduleAll()
+        assertEquals(listOf(at(2, 7, 0).toEpochMilli()), scheduled.map { it.triggerAtMs })
+        assertNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+    }
+
+    @Test
+    fun oneShotWithSkipHasNoNextOccurrence() = runTest {
+        val skipped = alarm("a", 6, 30).copy(skippedOccurrenceAt = at(2, 6, 30))
+        scheduler(FakeAlarmRepository(listOf(skipped))).rescheduleAll()
+        assertTrue(scheduled.isEmpty())
+    }
+
+    @Test
+    fun idsArePersistedBeforeFinalCommit() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
+        val prefs = context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+        var idsWhenComputingB: Set<String>? = null
+        val probe: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
+            if (alarm.id == "b") idsWhenComputingB = prefs.getStringSet("scheduled_ids", null)
+            nextOccurrence(alarm, n, z)
+        }
+        scheduler(repo, next = probe).rescheduleAll()
+        // Mid-run (before the final write) the registered id is already durable.
+        assertEquals(setOf("a"), idsWhenComputingB)
+        assertEquals(setOf("a", "b"), prefs.getStringSet("scheduled_ids", null))
     }
 
     @Test
@@ -177,20 +257,4 @@ class AlarmSchedulerImplTest {
         assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
         assertNotNull(AlarmIntents.existingSnoozePendingIntent(context))
     }
-}
-
-/** Local stand-in for U1's nextOccurrence: first hour:minute strictly after now matching days. */
-private fun testNext(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
-    if (!alarm.enabled) return null
-    val start = ZonedDateTime.ofInstant(now, zone)
-    for (offset in 0L..14L) {
-        val candidate = start.toLocalDate().plusDays(offset)
-            .atTime(alarm.hour, alarm.minute).atZone(zone).toInstant()
-        if (!candidate.isAfter(now)) continue
-        val day = candidate.atZone(zone).dayOfWeek
-        if (alarm.days.isNotEmpty() && day !in alarm.days) continue
-        if (candidate == alarm.skippedOccurrenceAt) continue
-        return candidate
-    }
-    return null
 }

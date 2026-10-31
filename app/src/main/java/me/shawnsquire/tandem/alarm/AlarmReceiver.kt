@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,7 +49,8 @@ internal fun controlAsync(
 ): Job = scope.launch {
     try {
         action()
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
+        if (e is CancellationException) throw e
         Log.e("AlarmReceiver", "notification action failed", e)
     } finally {
         pending?.finish()
