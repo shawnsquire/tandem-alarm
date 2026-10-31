@@ -28,7 +28,6 @@ service cloud.firestore {
       match /devices/{uid} {
         allow read: if isMember(hid);
         allow create, update: if isSignedIn() && request.auth.uid == uid && isMember(hid);
-        allow delete: if false;
       }
 
       match /commands/{cid} {

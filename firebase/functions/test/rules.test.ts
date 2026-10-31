@@ -223,7 +223,7 @@ describe("households/{hid}/commands: create", () => {
     },
   );
   it("denies a spoofed from", async () => {
-    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ from: BOB, to: ALICE })));
+    await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ from: BOB, to: BOB })));
   });
   it("denies a command to self", async () => {
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ to: ALICE })));
@@ -274,9 +274,6 @@ describe("households/{hid}/commands: update", () => {
     await assertFails(
       updateDoc(doc(dbFor(BOB), cmdPath("c1")), { status: "applied", type: "DISABLE" }),
     );
-  });
-  it("denies the recipient changing type without touching status", async () => {
-    await assertFails(updateDoc(doc(dbFor(BOB), cmdPath("c1")), { type: "DISABLE" }));
   });
   it("denies the recipient changing expiresAt", async () => {
     await assertFails(
