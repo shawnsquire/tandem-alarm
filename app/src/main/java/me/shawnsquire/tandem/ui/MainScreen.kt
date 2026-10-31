@@ -16,13 +16,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
+import androidx.navigation.navArgument
+import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditRoute
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import me.shawnsquire.tandem.ui.alarms.AlarmsRoute
 import me.shawnsquire.tandem.ui.partner.PartnerScreen
 import me.shawnsquire.tandem.ui.settings.SettingsScreen
+
+private const val DELETED_ALARM_KEY = "deletedAlarmId"
+private const val EDIT_ROUTE = "alarm/edit"
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     Alarms("alarms", "Alarms", Icons.Default.Notifications),
@@ -38,7 +45,7 @@ fun MainScreen() {
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            if (Tab.entries.any { tab -> destination?.hierarchy?.any { it.route == tab.route } == true }) NavigationBar {
                 Tab.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = destination?.hierarchy?.any { it.route == tab.route } == true,
@@ -63,7 +70,35 @@ fun MainScreen() {
             startDestination = Tab.Alarms.route,
             modifier = Modifier.padding(innerPadding),
         ) {
-            composable(Tab.Alarms.route) { AlarmsRoute(onAddAlarm = {}, onEditAlarm = {}) }
+            composable(Tab.Alarms.route) { entry ->
+                val deletedId by entry.savedStateHandle
+                    .getStateFlow<String?>(DELETED_ALARM_KEY, null)
+                    .collectAsStateWithLifecycle()
+                AlarmsRoute(
+                    onAddAlarm = { navController.navigate(EDIT_ROUTE) },
+                    onEditAlarm = { id -> navController.navigate("alarm/edit?id=$id") },
+                    deletedAlarmId = deletedId,
+                    onDeletedConsumed = { entry.savedStateHandle[DELETED_ALARM_KEY] = null },
+                )
+            }
+            composable(
+                route = "alarm/edit?id={$ALARM_ID_ARG}",
+                arguments = listOf(
+                    navArgument(ALARM_ID_ARG) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
+            ) {
+                AlarmEditRoute(
+                    onClose = { navController.popBackStack() },
+                    onDelete = { id ->
+                        navController.previousBackStackEntry?.savedStateHandle?.set(DELETED_ALARM_KEY, id)
+                        navController.popBackStack()
+                    },
+                )
+            }
             composable(Tab.Partner.route) { PartnerScreen() }
             composable(Tab.Settings.route) { SettingsScreen() }
         }

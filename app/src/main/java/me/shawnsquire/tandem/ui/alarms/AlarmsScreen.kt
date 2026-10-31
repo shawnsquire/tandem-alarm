@@ -63,12 +63,22 @@ fun AlarmsRoute(
     onAddAlarm: () -> Unit,
     onEditAlarm: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /** Set by the editor's Delete button; consumed once, then [onDeletedConsumed] clears it. */
+    deletedAlarmId: String? = null,
+    onDeletedConsumed: () -> Unit = {},
     viewModel: AlarmsViewModel = viewModel(factory = alarmsViewModelFactory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val message = stringResource(R.string.alarm_deleted)
     val undo = stringResource(R.string.alarm_deleted_undo)
+
+    LaunchedEffect(deletedAlarmId) {
+        if (deletedAlarmId != null) {
+            viewModel.delete(deletedAlarmId)
+            onDeletedConsumed()
+        }
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collectLatest { event ->
