@@ -18,7 +18,8 @@ import java.time.Instant
 
 enum class HealthItem { EXACT_ALARMS, FULL_SCREEN_INTENT, NOTIFICATIONS, BATTERY, FCM_TOKEN, LAST_FCM, PARTNER_SEEN }
 
-enum class HealthStatus { OK, PROBLEM, INFO }
+/** WARNING is calm (not an error): something worth knowing that the user cannot fix, like a sleeping partner phone. */
+enum class HealthStatus { OK, PROBLEM, INFO, WARNING }
 
 enum class HealthFix { EXACT_ALARMS, FULL_SCREEN_INTENT, NOTIFICATIONS, BATTERY }
 
@@ -91,7 +92,7 @@ class HealthViewModel(
         val age = Duration.between(lastSeen, now)
         return HealthRow(
             HealthItem.PARTNER_SEEN,
-            if (age > ASLEEP_AFTER) HealthStatus.PROBLEM else HealthStatus.OK,
+            if (age > ASLEEP_AFTER) HealthStatus.WARNING else HealthStatus.OK,
             detail = formatLastSeen(age),
         )
     }

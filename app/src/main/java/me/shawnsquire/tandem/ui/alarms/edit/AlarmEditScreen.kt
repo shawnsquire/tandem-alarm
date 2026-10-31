@@ -12,14 +12,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,7 +41,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +65,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.R
+import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
 import me.shawnsquire.tandem.ui.alarmEditViewModelFactory
@@ -173,7 +176,12 @@ fun AlarmEditScreen(
             return@Scaffold
         }
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // Created only after load so it starts at the alarm's time.
@@ -334,5 +342,19 @@ private fun AlarmEditNewPreview() {
 private fun AlarmEditExistingPreview() {
     TandemTheme {
         AlarmEditScreen(previewExisting, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {})
+    }
+}
+
+/** Sample data from the fakes. */
+@Preview(showBackground = true)
+@Composable
+private fun AlarmEditFromFakesPreview() {
+    val alarm = SAMPLE_ALARMS.first()
+    val state = AlarmEditUiState(
+        loaded = true, isNew = false, hour = alarm.hour, minute = alarm.minute, days = alarm.days,
+        label = alarm.label, ringtoneTitle = "Default alarm sound",
+    )
+    TandemTheme {
+        AlarmEditScreen(state, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {})
     }
 }

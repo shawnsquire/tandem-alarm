@@ -14,17 +14,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
-import androidx.navigation.navArgument
-import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditRoute
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import me.shawnsquire.tandem.ui.alarms.AlarmsRoute
+import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditRoute
 import me.shawnsquire.tandem.ui.partner.PartnerRoute
 import me.shawnsquire.tandem.ui.settings.SettingsRoute
 import me.shawnsquire.tandem.ui.settings.health.HealthRoute
@@ -44,10 +44,11 @@ fun MainScreen() {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val destination = backStackEntry?.destination
+    val isTabRoute = Tab.entries.any { tab -> destination?.hierarchy?.any { it.route == tab.route } == true }
 
     Scaffold(
         bottomBar = {
-            if (Tab.entries.any { tab -> destination?.hierarchy?.any { it.route == tab.route } == true }) NavigationBar {
+            if (isTabRoute) NavigationBar {
                 Tab.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = destination?.hierarchy?.any { it.route == tab.route } == true,
@@ -70,7 +71,9 @@ fun MainScreen() {
         NavHost(
             navController = navController,
             startDestination = Tab.Alarms.route,
-            modifier = Modifier.padding(innerPadding),
+            // Tabs have no top bar of their own, so they take the system-bar and bottom-bar padding.
+            // The full-screen routes (editor, health) own a Scaffold and apply their insets themselves.
+            modifier = if (isTabRoute) Modifier.padding(innerPadding) else Modifier,
         ) {
             composable(Tab.Alarms.route) { entry ->
                 val deletedId by entry.savedStateHandle

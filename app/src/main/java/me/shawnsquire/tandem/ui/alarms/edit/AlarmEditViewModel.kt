@@ -201,6 +201,11 @@ class AlarmEditViewModel(
         _state.update { it.copy(closed = true) }
     }
 
+    /** The editor can be destroyed without Save or Cancel (e.g. a tab switch); drop unsaved imports then. */
+    public override fun onCleared() {
+        discardSession()
+    }
+
     /** Drops files imported this session without saving; the caller handles navigation. */
     fun discardSession() {
         if (finished) return

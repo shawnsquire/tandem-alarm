@@ -204,4 +204,34 @@ class AlarmEditViewModelTest {
         assertFalse(e.vm.state.value.busy)
         assertTrue(e.deletedRingtones.isEmpty() && e.deletedWallpapers.isEmpty())
     }
+
+    @Test fun clearedWithoutSaveDeletesSessionImports() = runTest {
+        val e = edit()
+        e.vm.onRingtoneFilePicked("content://doc/1")
+        e.vm.onWallpaperPicked("content://img/1")
+        e.vm.onCleared()
+        assertEquals(listOf("file:///imported-1"), e.deletedRingtones)
+        assertEquals(listOf("/wall-1"), e.deletedWallpapers)
+    }
+
+    @Test fun clearedAfterSaveKeepsSavedFiles() = runTest {
+        val e = edit()
+        e.vm.onRingtoneFilePicked("content://doc/1")
+        e.vm.onWallpaperPicked("content://img/1")
+        e.vm.save()
+        val deletedAtSave = e.deletedRingtones.toList() to e.deletedWallpapers.toList()
+        e.vm.onCleared()
+        assertEquals(deletedAtSave, e.deletedRingtones.toList() to e.deletedWallpapers.toList())
+        assertFalse("file:///imported-1" in e.deletedRingtones)
+        assertFalse("/wall-1" in e.deletedWallpapers)
+        assertEquals("file:///imported-1", e.repo.get("a1")!!.ringtoneUri)
+    }
+
+    @Test fun clearedAfterCancelDoesNotDeleteTwice() = runTest {
+        val e = edit()
+        e.vm.onRingtoneFilePicked("content://doc/1")
+        e.vm.cancel()
+        e.vm.onCleared()
+        assertEquals(listOf("file:///imported-1"), e.deletedRingtones)
+    }
 }

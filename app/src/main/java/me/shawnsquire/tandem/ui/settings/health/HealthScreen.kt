@@ -2,7 +2,7 @@ package me.shawnsquire.tandem.ui.settings.health
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -85,10 +85,9 @@ fun HealthScreen(
     onFix: (HealthFix) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // The outer Scaffold already applies system-bar insets to the NavHost.
+    // Full-screen route: MainScreen applies no padding, so this Scaffold handles the system-bar insets.
     Scaffold(
         modifier = modifier,
-        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.settings_health)) },
@@ -97,11 +96,10 @@ fun HealthScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                     }
                 },
-                windowInsets = WindowInsets(0),
             )
         },
     ) { padding ->
-        androidx.compose.foundation.layout.Column(
+        Column(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()),
         ) {
             state.rows.forEach { HealthRowItem(it, onFix) }
@@ -117,6 +115,7 @@ private fun HealthRowItem(row: HealthRow, onFix: (HealthFix) -> Unit) {
             HealthStatus.OK -> R.string.health_status_ok
             HealthStatus.PROBLEM -> R.string.health_status_problem
             HealthStatus.INFO -> R.string.health_status_info
+            HealthStatus.WARNING -> R.string.health_status_warning
         },
     )
     ListItem(
@@ -125,6 +124,7 @@ private fun HealthRowItem(row: HealthRow, onFix: (HealthFix) -> Unit) {
                 HealthStatus.OK -> Icon(Icons.Default.CheckCircle, statusLabel, tint = okColor())
                 HealthStatus.PROBLEM -> Icon(Icons.Default.Warning, statusLabel, tint = MaterialTheme.colorScheme.error)
                 HealthStatus.INFO -> Icon(Icons.Default.Info, statusLabel, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                HealthStatus.WARNING -> Icon(Icons.Default.Info, statusLabel, tint = MaterialTheme.colorScheme.tertiary)
             }
         },
         headlineContent = { Text(title(row.item)) },
@@ -190,7 +190,7 @@ private fun sampleRows(allOk: Boolean) = listOf(
     HealthRow(HealthItem.FCM_TOKEN, HealthStatus.OK),
     HealthRow(HealthItem.LAST_FCM, HealthStatus.INFO, detail = "3 min ago"),
     if (allOk) HealthRow(HealthItem.PARTNER_SEEN, HealthStatus.OK, detail = "5 min ago")
-    else HealthRow(HealthItem.PARTNER_SEEN, HealthStatus.PROBLEM, detail = "3 h ago"),
+    else HealthRow(HealthItem.PARTNER_SEEN, HealthStatus.WARNING, detail = "3 h ago"),
 )
 
 @Preview(showBackground = true)

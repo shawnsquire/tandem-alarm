@@ -16,13 +16,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.lifecycle.compose.LifecycleResumeEffect
-import me.shawnsquire.tandem.ui.healthBannerViewModelFactory
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -34,31 +31,35 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.flow.collectLatest
 import me.shawnsquire.tandem.R
+import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
 import me.shawnsquire.tandem.ui.alarmsViewModelFactory
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
 import me.shawnsquire.tandem.ui.formatWeekdayTime
+import me.shawnsquire.tandem.ui.healthBannerViewModelFactory
 import me.shawnsquire.tandem.ui.theme.TandemTheme
 import java.time.Instant
 import java.time.ZoneId
@@ -157,36 +158,36 @@ fun AlarmsScreen(
             )
         },
     ) { padding ->
-      Column(Modifier.fillMaxSize().padding(padding)) {
-        if (showSetupBanner) SetupBanner(onSetupBannerClick, onSetupBannerDismiss)
-        if (state.loaded && state.rows.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                Text(
-                    stringResource(R.string.alarms_empty),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                // Leave room so the FAB never covers the last row's switch.
-                contentPadding = PaddingValues(bottom = 96.dp),
-            ) {
-                items(state.rows, key = { it.id }) { row ->
-                    AlarmRow(
-                        row = row,
-                        zone = state.zone,
-                        is24Hour = is24Hour,
-                        onClick = { onEditAlarm(row.id) },
-                        onToggleEnabled = { onToggleEnabled(row.id, it) },
-                        onSkipNext = { onSkipNext(row.id) },
-                        onUnskip = { onUnskip(row.id) },
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (showSetupBanner) SetupBanner(onSetupBannerClick, onSetupBannerDismiss)
+            if (state.loaded && state.rows.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        stringResource(R.string.alarms_empty),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    // Leave room so the FAB never covers the last row's switch.
+                    contentPadding = PaddingValues(bottom = 96.dp),
+                ) {
+                    items(state.rows, key = { it.id }) { row ->
+                        AlarmRow(
+                            row = row,
+                            zone = state.zone,
+                            is24Hour = is24Hour,
+                            onClick = { onEditAlarm(row.id) },
+                            onToggleEnabled = { onToggleEnabled(row.id, it) },
+                            onSkipNext = { onSkipNext(row.id) },
+                            onUnskip = { onUnskip(row.id) },
+                        )
+                    }
                 }
             }
         }
-      }
     }
 }
 
@@ -343,5 +344,15 @@ private fun AlarmsScreenBannerPreview() {
             previewState, remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
             showSetupBanner = true,
         )
+    }
+}
+
+/** Sample data from the fakes, mapped with the same function the ViewModel uses. */
+@Preview(showBackground = true)
+@Composable
+private fun AlarmsScreenFromFakesPreview() {
+    val state = buildAlarmsState(SAMPLE_ALARMS, Instant.now(), ZoneId.systemDefault())
+    TandemTheme {
+        AlarmsScreen(state, remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {})
     }
 }

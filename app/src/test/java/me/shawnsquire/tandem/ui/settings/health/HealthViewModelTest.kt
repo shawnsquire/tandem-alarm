@@ -124,7 +124,7 @@ class HealthViewModelTest {
         assertEquals(HealthStatus.OK, fresh.status)
         assertEquals("10 min ago", fresh.detail)
         val stale = partnerRow(NOW.minusSeconds(61 * 60)).rows().getValue(HealthItem.PARTNER_SEEN)
-        assertEquals(HealthStatus.PROBLEM, stale.status)
+        assertEquals(HealthStatus.WARNING, stale.status)
         val exactly = partnerRow(NOW.minusSeconds(60 * 60)).rows().getValue(HealthItem.PARTNER_SEEN)
         assertEquals(HealthStatus.OK, exactly.status)
         assertEquals(HealthStatus.INFO, partnerRow(null).rows().getValue(HealthItem.PARTNER_SEEN).status)

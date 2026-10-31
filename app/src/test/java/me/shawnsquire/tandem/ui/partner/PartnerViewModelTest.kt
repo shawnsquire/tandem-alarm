@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.ui.partner
 
+import app.cash.turbine.test
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -263,5 +264,31 @@ class PartnerViewModelTest {
         val e = env(partner(alarm("late", hour = 9), alarm("early", hour = 5)))
         val state = e.collect(backgroundScope)
         assertEquals(listOf("early", "late"), state().alarms.map { it.id })
+    }
+
+    @Test fun startsLoadingUntilFirstRealEmission() = runTest {
+        val pairing = FakePairing()
+        val late = MutableSharedFlow<PairingStatus>()
+        val slowPairing = object : PairingRepository by pairing {
+            override val status: Flow<PairingStatus> = late
+        }
+        val vm = PartnerViewModel(slowPairing, FakePartnerRepo(partner(alarm("a"))), RecordingSender(), clock, MutableStateFlow(Unit))
+        vm.state.test {
+            val first = awaitItem()
+            assertTrue(first.loading)
+            assertFalse(first.paired)
+            late.emit(PairingStatus.Paired("h", "Alex"))
+            val loaded = expectMostRecentItem()
+            assertFalse(loaded.loading)
+            assertTrue(loaded.paired)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test fun unpairedIsNotLoadingOnceKnown() = runTest {
+        val e = env(paired = false)
+        val state = e.collect(backgroundScope)
+        assertFalse(state().loading)
+        assertFalse(state().paired)
     }
 }

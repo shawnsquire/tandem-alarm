@@ -61,6 +61,8 @@ data class RingingBanner(
 )
 
 data class PartnerUiState(
+    /** True until the first real emission, so a paired user never sees the unpaired UI for a frame. */
+    val loading: Boolean = true,
     val paired: Boolean = false,
     // Unpaired.
     val code: String? = null,
@@ -92,6 +94,29 @@ fun formatLastSeen(age: Duration): String {
         minutes < 24 * 60 -> "${minutes / 60} h ago"
         else -> "${minutes / (24 * 60)} d ago"
     }
+}
+
+internal fun partnerAlarmRow(a: PartnerAlarm, now: Instant, status: CommandUiStatus?): PartnerAlarmRow {
+    val skipped = a.enabled && a.skippedOccurrenceAt?.let { it > now } == true
+    val chip = when {
+        !a.enabled -> AlarmChip.OFF
+        skipped -> AlarmChip.SKIPPED_NEXT
+        else -> AlarmChip.ON
+    }
+    val actions = when {
+        !a.enabled -> listOf(PartnerAction.TURN_ON)
+        // Pinned commands need the occurrence the partner saw; without one, offer nothing.
+        skipped -> listOfNotNull(
+            PartnerAction.UNSKIP,
+            PartnerAction.TURN_OFF.takeIf { a.nextOccurrenceAt != null },
+        )
+        a.nextOccurrenceAt != null -> listOf(PartnerAction.SKIP_NEXT, PartnerAction.TURN_OFF)
+        else -> emptyList()
+    }
+    return PartnerAlarmRow(
+        id = a.id, label = a.label, hour = a.hour, minute = a.minute, daysText = formatDays(a.days),
+        chip = chip, actions = actions, commandStatus = status,
+    )
 }
 
 private data class UnpairedLocal(
@@ -149,7 +174,7 @@ class PartnerViewModel(
     ): PartnerUiState {
         if (status !is PairingStatus.Paired) {
             return PartnerUiState(
-                code = local.code, codeLoading = local.codeLoading, joinInput = local.joinInput,
+                loading = false, code = local.code, codeLoading = local.codeLoading, joinInput = local.joinInput,
                 joining = local.joining, error = local.error,
             )
         }
@@ -169,35 +194,12 @@ class PartnerViewModel(
         }
         val rows = partner?.alarms.orEmpty()
             .sortedWith(compareBy<PartnerAlarm>({ it.hour }, { it.minute }, { it.label.lowercase() }, { it.id }))
-            .map { a -> row(a, now, alarmStatuses[a.id]) }
+            .map { a -> partnerAlarmRow(a, now, alarmStatuses[a.id]) }
         return PartnerUiState(
-            paired = true, partnerName = name, partnerLoaded = partner != null,
+            loading = false, paired = true, partnerName = name, partnerLoaded = partner != null,
             lastSeenText = age?.let { formatLastSeen(it) },
             asleepWarning = age != null && age > ASLEEP_AFTER,
             ringing = ringing, alarms = rows,
-        )
-    }
-
-    private fun row(a: PartnerAlarm, now: Instant, status: CommandUiStatus?): PartnerAlarmRow {
-        val skipped = a.enabled && a.skippedOccurrenceAt?.let { it > now } == true
-        val chip = when {
-            !a.enabled -> AlarmChip.OFF
-            skipped -> AlarmChip.SKIPPED_NEXT
-            else -> AlarmChip.ON
-        }
-        val actions = when {
-            !a.enabled -> listOf(PartnerAction.TURN_ON)
-            // Pinned commands need the occurrence the partner saw; without one, offer nothing.
-            skipped -> listOfNotNull(
-                PartnerAction.UNSKIP,
-                PartnerAction.TURN_OFF.takeIf { a.nextOccurrenceAt != null },
-            )
-            a.nextOccurrenceAt != null -> listOf(PartnerAction.SKIP_NEXT, PartnerAction.TURN_OFF)
-            else -> emptyList()
-        }
-        return PartnerAlarmRow(
-            id = a.id, label = a.label, hour = a.hour, minute = a.minute, daysText = formatDays(a.days),
-            chip = chip, actions = actions, commandStatus = status,
         )
     }
 

@@ -42,6 +42,24 @@ data class AlarmsUiState(
     val zone: ZoneId = ZoneId.systemDefault(),
 )
 
+/** Maps stored alarms to rows. Shared by the ViewModel and the previews. */
+internal fun buildAlarmsState(alarms: List<Alarm>, now: Instant, zone: ZoneId): AlarmsUiState {
+    val rows = alarms
+        .sortedWith(compareBy<Alarm>({ it.hour }, { it.minute }, { it.label.lowercase() }, { it.id }))
+        .map { a ->
+            val next = nextOccurrence(a, now, zone)
+            val skipped = a.enabled && a.skippedOccurrenceAt?.let { it > now } == true
+            AlarmRowState(
+                id = a.id, hour = a.hour, minute = a.minute, label = a.label,
+                daysText = formatDays(a.days), enabled = a.enabled,
+                nextRing = next,
+                ringsInText = next?.let { formatRingsIn(Duration.between(now, it)) },
+                skipped = skipped, oneShot = a.isOneShot(),
+            )
+        }
+    return AlarmsUiState(loaded = true, rows = rows, zone = zone)
+}
+
 /** One-off events for the screen. */
 sealed interface AlarmsEvent {
     /** Show "Alarm deleted · Undo"; report the outcome via [AlarmsViewModel.undoDelete] or [AlarmsViewModel.onDeleteSnackbarDismissed]. */
@@ -58,7 +76,7 @@ class AlarmsViewModel(
 ) : ViewModel() {
 
     val state: StateFlow<AlarmsUiState> =
-        combine(repository.alarms, ticker) { alarms, _ -> buildState(alarms) }
+        combine(repository.alarms, ticker) { alarms, _ -> buildAlarmsState(alarms, clock.instant(), clock.zone) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlarmsUiState(zone = clock.zone))
 
     private val eventChannel = Channel<AlarmsEvent>(Channel.BUFFERED)
@@ -66,25 +84,6 @@ class AlarmsViewModel(
 
     /** The deleted alarm whose snackbar is showing; its media is purged only if undo never happens. */
     private var pendingDelete: Alarm? = null
-
-    private fun buildState(alarms: List<Alarm>): AlarmsUiState {
-        val now = clock.instant()
-        val zone = clock.zone
-        val rows = alarms
-            .sortedWith(compareBy<Alarm>({ it.hour }, { it.minute }, { it.label.lowercase() }, { it.id }))
-            .map { a ->
-                val next = nextOccurrence(a, now, zone)
-                val skipped = a.enabled && a.skippedOccurrenceAt?.let { it > now } == true
-                AlarmRowState(
-                    id = a.id, hour = a.hour, minute = a.minute, label = a.label,
-                    daysText = formatDays(a.days), enabled = a.enabled,
-                    nextRing = next,
-                    ringsInText = next?.let { formatRingsIn(Duration.between(now, it)) },
-                    skipped = skipped, oneShot = a.isOneShot(),
-                )
-            }
-        return AlarmsUiState(loaded = true, rows = rows, zone = zone)
-    }
 
     fun setEnabled(id: String, enabled: Boolean) {
         viewModelScope.launch { edits.setEnabled(id, enabled) }

@@ -2,6 +2,7 @@ package me.shawnsquire.tandem.ui.partner
 
 import android.text.format.DateFormat
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -26,7 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,10 +48,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
+import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
 import me.shawnsquire.tandem.ui.partnerViewModelFactory
 import me.shawnsquire.tandem.ui.theme.TandemTheme
+import java.time.Instant
 
 class PartnerCallbacks(
     val onShowCode: () -> Unit = {},
@@ -84,7 +88,12 @@ fun PartnerRoute(
 
 @Composable
 fun PartnerScreen(state: PartnerUiState, callbacks: PartnerCallbacks, modifier: Modifier = Modifier) {
-    if (state.paired) PairedContent(state, callbacks, modifier) else UnpairedContent(state, callbacks, modifier)
+    when {
+        // Neutral until the first real emission, so a paired user never flashes the unpaired UI.
+        state.loading -> Box(modifier.fillMaxSize())
+        state.paired -> PairedContent(state, callbacks, modifier)
+        else -> UnpairedContent(state, callbacks, modifier)
+    }
 }
 
 @Composable
@@ -268,6 +277,29 @@ private fun RingingCard(banner: RingingBanner, is24Hour: Boolean, onStop: () -> 
     }
 }
 
+/** A read-only status pill: deliberately not a chip, so it does not look tappable. */
+@Composable
+private fun StateChip(chip: AlarmChip) {
+    val (container, content) = when (chip) {
+        AlarmChip.ON -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
+        AlarmChip.OFF -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+        AlarmChip.SKIPPED_NEXT -> MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
+    }
+    Surface(shape = CircleShape, color = container, contentColor = content) {
+        Text(
+            stringResource(
+                when (chip) {
+                    AlarmChip.ON -> R.string.partner_chip_on
+                    AlarmChip.OFF -> R.string.partner_chip_off
+                    AlarmChip.SKIPPED_NEXT -> R.string.partner_chip_skipped
+                },
+            ),
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
+}
+
 @Composable
 private fun AlarmCard(
     row: PartnerAlarmRow,
@@ -303,20 +335,7 @@ private fun AlarmCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                SuggestionChip(
-                    onClick = {},
-                    label = {
-                        Text(
-                            stringResource(
-                                when (row.chip) {
-                                    AlarmChip.ON -> R.string.partner_chip_on
-                                    AlarmChip.OFF -> R.string.partner_chip_off
-                                    AlarmChip.SKIPPED_NEXT -> R.string.partner_chip_skipped
-                                },
-                            ),
-                        )
-                    },
-                )
+                StateChip(row.chip)
             }
             if (row.actions.isNotEmpty()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -379,19 +398,20 @@ private val sampleAlarms = listOf(
 )
 
 private val pairedPreview = PartnerUiState(
-    paired = true, partnerName = "Alex", partnerLoaded = true, lastSeenText = "3 min ago", alarms = sampleAlarms,
+    loading = false, paired = true, partnerName = "Alex", partnerLoaded = true, lastSeenText = "3 min ago",
+    alarms = sampleAlarms,
 )
 
 @Preview(showBackground = true)
 @Composable
 private fun UnpairedPreview() {
-    TandemTheme { PartnerScreen(PartnerUiState(joinInput = "AB1"), PartnerCallbacks()) }
+    TandemTheme { PartnerScreen(PartnerUiState(loading = false, joinInput = "AB1"), PartnerCallbacks()) }
 }
 
 @Preview(showBackground = true)
 @Composable
 private fun UnpairedCodePreview() {
-    TandemTheme { PartnerScreen(PartnerUiState(code = "K7M2QX", error = "That code is invalid or has expired."), PartnerCallbacks()) }
+    TandemTheme { PartnerScreen(PartnerUiState(loading = false, code = "K7M2QX", error = "That code is invalid or has expired."), PartnerCallbacks()) }
 }
 
 @Preview(showBackground = true)
@@ -421,6 +441,23 @@ private fun SnoozedPreview() {
     TandemTheme {
         PartnerScreen(
             pairedPreview.copy(ringing = RingingBanner("Alex", "1", "r1", 6, 40, null)),
+            PartnerCallbacks(),
+        )
+    }
+}
+
+/** Sample data from the fakes, mapped with the same row mapping the ViewModel uses. */
+@Preview(showBackground = true)
+@Composable
+private fun PairedFromFakesPreview() {
+    val partner = FakePartnerRepository.sampleState()
+    val now = Instant.now()
+    TandemTheme {
+        PartnerScreen(
+            PartnerUiState(
+                loading = false, paired = true, partnerName = partner.displayName, partnerLoaded = true,
+                lastSeenText = "5 min ago", alarms = partner.alarms.map { partnerAlarmRow(it, now, null) },
+            ),
             PartnerCallbacks(),
         )
     }

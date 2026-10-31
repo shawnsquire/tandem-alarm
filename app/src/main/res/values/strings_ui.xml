@@ -94,6 +94,7 @@
     <string name="health_status_ok">OK</string>
     <string name="health_status_problem">Needs attention</string>
     <string name="health_status_info">Information</string>
+    <string name="health_status_warning">Worth knowing</string>
     <string name="health_exact_title">Exact alarms</string>
     <string name="health_exact_ok">Alarms can ring at the exact time.</string>
     <string name="health_exact_bad">Without this, alarms can ring late.</string>
