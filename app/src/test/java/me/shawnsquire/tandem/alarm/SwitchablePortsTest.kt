@@ -5,6 +5,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -25,18 +27,24 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
-/** Records every write; [gate] holds each one until it completes, setSkip throws its first [skipFailures] calls. */
+/**
+ * Records every write; [gate] holds each one until it completes, setSkip throws its first
+ * [skipFailures] calls, and setEnabled call number [holdFrom] onwards never returns.
+ */
 private class RecordingRepository(
     initial: List<Alarm>,
     private val gate: CompletableDeferred<Unit>? = null,
     private var skipFailures: Int = 0,
+    private val holdFrom: Int = Int.MAX_VALUE,
     private val delegate: FakeAlarmRepository = FakeAlarmRepository(initial),
 ) : AlarmRepository by delegate {
     val ops = mutableListOf<DeferredWrite>()
     var skipCalls = 0
+    private var enabledCalls = 0
 
     override suspend fun setEnabled(id: String, enabled: Boolean) {
         gate?.await()
+        if (++enabledCalls >= holdFrom) awaitCancellation()
         ops += DeferredWrite.SetEnabled(id, enabled)
         delegate.setEnabled(id, enabled)
     }
@@ -55,6 +63,20 @@ private class RecordingRepository(
 
 private class FailingAppendQueue : DeferredAlarmWrites by InMemoryDeferredAlarmWrites() {
     override fun append(w: DeferredWrite) = throw IllegalStateException("commit failed")
+}
+
+/** Its first [failures] trims throw without removing anything. */
+private class FailingTrimQueue(
+    private var failures: Int,
+    private val delegate: DeferredAlarmWrites = InMemoryDeferredAlarmWrites(),
+) : DeferredAlarmWrites by delegate {
+    var trims = 0
+
+    override fun removeThrough(seq: Long) {
+        trims++
+        if (failures-- > 0) throw IllegalStateException("commit failed")
+        delegate.removeThrough(seq)
+    }
 }
 
 class SwitchablePortsTest {
@@ -246,6 +268,47 @@ class SwitchablePortsTest {
             real.ops,
         )
         assertTrue(queue.all().isEmpty())
+    }
+
+    @Test
+    fun drainCutShortNeverReappliesOpsItAlreadyApplied() = runTest {
+        val dying = CoroutineScope(backgroundScope.coroutineContext + Job())
+        val repo = repo(mirrorOf(alarm("a"), alarm("b")), scope = dying)
+        repo.setEnabled("a", false)
+        repo.setEnabled("b", false)
+        repo.setEnabled("a", true)
+        // The process dies while the drain applies the third op: its drain never resumes, and
+        // no finally runs (a cancellation would run one).
+        val first = RecordingRepository(listOf(alarm("a"), alarm("b")), holdFrom = 3)
+        repo.attach(first)
+        runCurrent()
+        assertEquals(listOf(DeferredWrite.SetEnabled("a", false), DeferredWrite.SetEnabled("b", false)), first.ops)
+
+        // The next process: Room has moved on since; ops 1 and 2 must not be replayed over it.
+        val next = RecordingRepository(listOf(alarm("a"), alarm("b")))
+        repo(mirrorOf(alarm("a"), alarm("b"))).attach(next)
+        runCurrent()
+
+        assertEquals(listOf(DeferredWrite.SetEnabled("a", true)), next.ops)
+        assertTrue(queue.all().isEmpty())
+        dying.cancel()
+    }
+
+    @Test
+    fun failedTrimIsCoveredByTheNextOne() = runTest {
+        val failOnce = FailingTrimQueue(failures = 1)
+        val repo = repo(mirrorOf(alarm("a"), alarm("b")), deferred = failOnce)
+        repo.setEnabled("a", false)
+        repo.setEnabled("b", false)
+        val real = RecordingRepository(listOf(alarm("a"), alarm("b")))
+
+        repo.attach(real)
+        runCurrent()
+
+        assertEquals(listOf(DeferredWrite.SetEnabled("a", false), DeferredWrite.SetEnabled("b", false)), real.ops)
+        assertEquals(2, failOnce.trims)
+        assertTrue(failOnce.all().isEmpty())
+        assertTrue(repo.isAttached)
     }
 
     @Test

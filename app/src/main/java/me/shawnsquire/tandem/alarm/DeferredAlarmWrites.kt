@@ -14,36 +14,49 @@ sealed interface DeferredWrite {
     data class SetSkip(override val id: String, val occurrence: Instant?) : DeferredWrite
 }
 
+/** A queued [write] and its [seq]: unique and increasing, never reused even once the queue empties. */
+data class QueuedWrite(val seq: Long, val write: DeferredWrite)
+
 /** FIFO of [DeferredWrite]s in device-protected storage. */
 interface DeferredAlarmWrites {
     /** Throws when the write could not be committed. */
     fun append(w: DeferredWrite)
-    fun all(): List<DeferredWrite>
-    fun removeFirst(n: Int)
+    fun entries(): List<QueuedWrite>
+    fun all(): List<DeferredWrite> = entries().map { it.write }
+
+    /** Removes every entry with a seq up to [seq]: by id, so a trim never removes an op it hasn't seen. */
+    fun removeThrough(seq: Long)
 }
 
-/** The queue is one JSON array under one key, written with commit(). */
+/** The queue is one JSON array under one key, written with commit(), with the next seq beside it. */
 class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
     private val prefs by lazy { deviceProtectedPrefs(context, PREFS) }
 
-    @Synchronized override fun append(w: DeferredWrite) = save(all() + w)
+    @Synchronized override fun append(w: DeferredWrite) {
+        val queued = entries()
+        // Past the counter and every queued seq, so legacy positional seqs can't collide.
+        val seq = maxOf(prefs.getLong(KEY_NEXT_SEQ, 0), (queued.maxOfOrNull { it.seq } ?: -1) + 1)
+        save(queued + QueuedWrite(seq, w), nextSeq = seq + 1)
+    }
 
-    @Synchronized override fun all(): List<DeferredWrite> = try {
+    @Synchronized override fun entries(): List<QueuedWrite> = try {
         prefs.getString(KEY, null)?.let(::decode).orEmpty()
     } catch (e: Exception) {
         Log.w(TAG, "unreadable deferred alarm writes", e)
         emptyList()
     }
 
-    @Synchronized override fun removeFirst(n: Int) = save(all().drop(n))
+    @Synchronized override fun removeThrough(seq: Long) = save(entries().filter { it.seq > seq })
 
-    private fun save(writes: List<DeferredWrite>) {
+    private fun save(writes: List<QueuedWrite>, nextSeq: Long? = null) {
         val array = JSONArray().apply { writes.forEach { put(encode(it)) } }
-        check(prefs.edit().putString(KEY, array.toString()).commit()) { "deferred alarm write failed" }
+        val edit = prefs.edit().putString(KEY, array.toString())
+        nextSeq?.let { edit.putLong(KEY_NEXT_SEQ, it) }
+        check(edit.commit()) { "deferred alarm write failed" }
     }
 
-    private fun encode(w: DeferredWrite): JSONObject = JSONObject().put("id", w.id).apply {
-        when (w) {
+    private fun encode(q: QueuedWrite): JSONObject = JSONObject().put("seq", q.seq).put("id", q.write.id).apply {
+        when (val w = q.write) {
             is DeferredWrite.SetEnabled -> put("op", OP_ENABLED).put("enabled", w.enabled)
             is DeferredWrite.SetSkip -> {
                 put("op", OP_SKIP)
@@ -52,16 +65,18 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
         }
     }
 
-    private fun decode(json: String): List<DeferredWrite> {
+    private fun decode(json: String): List<QueuedWrite> {
         val array = JSONArray(json)
         return (0 until array.length()).map { i ->
             val o = array.getJSONObject(i)
             val id = o.getString("id")
-            when (val op = o.getString("op")) {
+            val write = when (val op = o.getString("op")) {
                 OP_ENABLED -> DeferredWrite.SetEnabled(id, o.getBoolean("enabled"))
                 OP_SKIP -> DeferredWrite.SetSkip(id, if (o.isNull("occurrence")) null else Instant.ofEpochMilli(o.getLong("occurrence")))
                 else -> throw IllegalArgumentException("unknown op $op")
             }
+            // Written before seqs existed: by position, which keeps their order.
+            QueuedWrite(if (o.has("seq")) o.getLong("seq") else i.toLong(), write)
         }
     }
 
@@ -69,6 +84,7 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
         const val TAG = "DeferredAlarmWrites"
         const val PREFS = "alarm_deferred_writes"
         const val KEY = "writes"
+        const val KEY_NEXT_SEQ = "next_seq"
         const val OP_ENABLED = "setEnabled"
         const val OP_SKIP = "setSkip"
     }
@@ -76,11 +92,12 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
 
 /** In-memory queue for tests. */
 class InMemoryDeferredAlarmWrites : DeferredAlarmWrites {
-    private val writes = ArrayList<DeferredWrite>()
+    private val writes = ArrayList<QueuedWrite>()
+    private var nextSeq = 0L
 
-    @Synchronized override fun append(w: DeferredWrite) { writes += w }
+    @Synchronized override fun append(w: DeferredWrite) { writes += QueuedWrite(nextSeq++, w) }
 
-    @Synchronized override fun all(): List<DeferredWrite> = writes.toList()
+    @Synchronized override fun entries(): List<QueuedWrite> = writes.toList()
 
-    @Synchronized override fun removeFirst(n: Int) = repeat(minOf(n, writes.size)) { writes.removeAt(0) }
+    @Synchronized override fun removeThrough(seq: Long) { writes.removeAll { it.seq <= seq } }
 }

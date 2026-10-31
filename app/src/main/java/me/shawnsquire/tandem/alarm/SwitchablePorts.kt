@@ -104,7 +104,7 @@ class SwitchableAlarmRepository(
     /**
      * Non-suspending and idempotent. Calls made from now on wait for the drain. A queued op that
      * fails is retried once, then logged and dropped, and the drain goes on with the rest, so the
-     * queue ends empty. Kept, a failed op would replay at the next process's attach over writes made
+     * queue ends empty; each op leaves the queue as soon as it is handled. Kept, a failed op would replay at the next process's attach over writes made
      * since; once unlocked, Room is the single source of truth (MirrorUpdater rewrites the mirror
      * from it, so the dropped op leaves the mirror too). Forwarding starts regardless, even if
      * [scope] is already dead, so no caller waits forever.
@@ -119,34 +119,29 @@ class SwitchableAlarmRepository(
 
     private suspend fun drain(real: AlarmRepository) {
         // Complete: once attachment is set, no locked write can append.
-        val writes = deferred.all()
-        // Applied or dropped. Only a cancelled drain leaves any untried, for the next process.
-        var handled = 0
-        try {
-            for (w in writes) {
+        val writes = deferred.entries()
+        for ((seq, w) in writes) {
+            try {
+                replay(real, w)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                log("replaying deferred alarm write $w failed; retrying once", e)
                 try {
                     replay(real, w)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
-                    log("replaying deferred alarm write $w failed; retrying once", e)
-                    try {
-                        replay(real, w)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Throwable) {
-                        logError("replaying deferred alarm write $w failed twice; dropped", e)
-                    }
+                    logError("replaying deferred alarm write $w failed twice; dropped", e)
                 }
-                handled++
             }
-        } finally {
-            if (handled > 0) {
-                try {
-                    deferred.removeFirst(handled)
-                } catch (e: Throwable) {
-                    logError("removing $handled replayed alarm writes failed", e)
-                }
+            // Trimmed as soon as it is applied or dropped (no suspension in between), so a drain
+            // cut short leaves only untried ops for the next process, never ones already in Room.
+            // By seq, so a trim that fails here is covered by the next one.
+            try {
+                deferred.removeThrough(seq)
+            } catch (e: Throwable) {
+                logError("removing replayed alarm writes through $seq failed", e)
             }
         }
     }

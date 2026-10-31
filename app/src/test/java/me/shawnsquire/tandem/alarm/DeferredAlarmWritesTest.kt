@@ -25,9 +25,22 @@ class DeferredAlarmWritesTest {
         assertTrue(fresh().all().isEmpty())
         writes.forEach(queue::append)
         assertEquals(writes, fresh().all())
-        queue.removeFirst(3)
+        val seqs = fresh().entries().map { it.seq }
+        assertEquals("unique and increasing", seqs.sorted().distinct(), seqs)
+        queue.removeThrough(seqs[2])
         assertEquals(writes.drop(3), fresh().all())
-        queue.removeFirst(5) // more than queued
+        queue.removeThrough(seqs[1]) // already trimmed: changes nothing
+        assertEquals(writes.drop(3), fresh().all())
+        queue.removeThrough(seqs.last() + 5) // past every queued seq
+        assertTrue(fresh().all().isEmpty())
+
+        // Never reused once the queue empties, so a stale trim can't remove a newer op.
+        queue.append(writes[0])
+        val next = fresh().entries().single().seq
+        assertTrue("seq $next reused after emptying (last ${seqs.last()})", next > seqs.last())
+        queue.removeThrough(seqs.last())
+        assertEquals(listOf(writes[0]), fresh().all())
+        queue.removeThrough(next)
         assertTrue(fresh().all().isEmpty())
     }
 
@@ -47,5 +60,21 @@ class DeferredAlarmWritesTest {
         assertTrue(queue.all().isEmpty())
         queue.append(writes[0])
         assertEquals(listOf(writes[0]), SharedPrefsDeferredAlarmWrites(context).all())
+    }
+
+    @Test fun legacyEntriesWithoutSeqDecodeInOrderAndTrimBySeq() {
+        val legacy = """[{"id":"a","op":"setEnabled","enabled":false},{"id":"b","op":"setSkip","occurrence":${t1.toEpochMilli()}},""" +
+            """{"id":"b","op":"setSkip"}]"""
+        deviceProtectedPrefs(context, "alarm_deferred_writes").edit().putString("writes", legacy).commit()
+        val queue = SharedPrefsDeferredAlarmWrites(context)
+
+        val entries = queue.entries()
+        assertEquals(writes.take(3), entries.map { it.write })
+        assertEquals(entries.map { it.seq }.sorted().distinct(), entries.map { it.seq })
+        queue.append(writes[3])
+        assertTrue(queue.entries().last().seq > entries.last().seq)
+
+        queue.removeThrough(entries[0].seq)
+        assertEquals(writes.drop(1), SharedPrefsDeferredAlarmWrites(context).all())
     }
 }
