@@ -22,6 +22,12 @@ object AlarmIntents {
     const val ACTION_FIRE = "me.shawnsquire.tandem.action.FIRE"
     const val ACTION_SNOOZE_FIRE = "me.shawnsquire.tandem.action.SNOOZE_FIRE"
 
+    const val ACTION_DISMISS = "me.shawnsquire.tandem.action.DISMISS"
+    const val ACTION_SNOOZE = "me.shawnsquire.tandem.action.SNOOZE"
+
+    private const val DISMISS_REQUEST_CODE = 0x444953 // "DIS"
+    private const val SNOOZE_ACTION_REQUEST_CODE = 0x53415A // "SAZ"
+    private const val RINGING_REQUEST_CODE = 0x52494E // "RIN"
     private const val SNOOZE_REQUEST_CODE = 0x534E5A // "SNZ"
     private const val SHOW_REQUEST_CODE = 0x53484F // "SHO"
 
@@ -74,6 +80,33 @@ object AlarmIntents {
             context,
             SHOW_REQUEST_CODE,
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    /** Notification action: dismiss the ring [ringId] (from the ringing or the snoozed notification). */
+    fun dismissPendingIntent(context: Context, ringId: String): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            DISMISS_REQUEST_CODE,
+            Intent(ACTION_DISMISS, Uri.parse("tandem://dismiss/$ringId"), context, AlarmReceiver::class.java)
+                .putExtra(EXTRA_RING_ID, ringId),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    /** Notification action: snooze the current ring. */
+    fun snoozeActionPendingIntent(context: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            SNOOZE_ACTION_REQUEST_CODE,
+            Intent(ACTION_SNOOZE, Uri.parse("tandem://snooze-action"), context, AlarmReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    fun ringingActivityPendingIntent(context: Context): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            RINGING_REQUEST_CODE,
+            Intent(context, RingingActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 }
