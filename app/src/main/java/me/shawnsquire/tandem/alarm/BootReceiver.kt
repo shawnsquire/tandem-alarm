@@ -21,7 +21,7 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_TIMEZONE_CHANGED -> {
                 val pending = goAsync()
                 val scheduler = (context.applicationContext as TandemApp).container.alarmScheduler
-                rescheduleAsync(pending, scheduler, CoroutineScope(SupervisorJob() + Dispatchers.Default))
+                rescheduleAsync(pending, scheduler, CoroutineScope(SupervisorJob() + Dispatchers.Default), rearmOverdueSnooze = true)
             }
             else -> Unit
         }
@@ -32,9 +32,14 @@ internal fun rescheduleAsync(
     pending: BroadcastReceiver.PendingResult?,
     scheduler: AlarmScheduler,
     scope: CoroutineScope,
+    rearmOverdueSnooze: Boolean = false,
 ): Job = scope.launch {
     try {
-        scheduler.rescheduleAll()
+        if (rearmOverdueSnooze && scheduler is AlarmSchedulerImpl) {
+            scheduler.rescheduleAll(rearmOverdueSnooze = true)
+        } else {
+            scheduler.rescheduleAll()
+        }
     } catch (e: Throwable) {
         if (e is CancellationException) throw e
         Log.e("BootReceiver", "rescheduleAll failed", e)

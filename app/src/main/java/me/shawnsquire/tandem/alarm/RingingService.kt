@@ -18,6 +18,7 @@ class RingingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val sessions = mutableSetOf<RingingSession>()
     private val adapters = mutableMapOf<RingingSession, Pair<AlarmSound, AlarmVibration>>()
+    private val snoozeRingIds = mutableMapOf<RingingSession, String>()
     private var lastStartId = 0
     private var wakeLock: PowerManager.WakeLock? = null
     private val vibrationArbiter by lazy { VibrationArbiter.forContext(this) }
@@ -45,6 +46,13 @@ class RingingService : Service() {
         val isSnooze = intent.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false)
         val ringId = intent.getStringExtra(AlarmIntents.EXTRA_RING_ID)
 
+        // A repeated snooze-fire for a ring that already has a live session must not stack a second sound.
+        if (shouldIgnoreSnoozeStart(isSnooze, ringId, snoozeRingIds.values)) {
+            Log.w(TAG, "ignoring duplicate snooze start for ring $ringId")
+            stopIfIdle()
+            return START_NOT_STICKY
+        }
+
         val container = (application as TandemApp).container
         val sound = MediaPlayerAlarmSound(this)
         val vibration = SystemAlarmVibration(vibrationArbiter)
@@ -66,11 +74,13 @@ class RingingService : Service() {
             onFinished = {
                 sessions.remove(session)
                 adapters.remove(session)
+                snoozeRingIds.remove(session)
                 stopIfIdle()
             },
         )
         sessions += session
         adapters[session] = sound to vibration
+        if (isSnooze && ringId != null) snoozeRingIds[session] = ringId
         session.start(alarmId, occurrence, isSnooze, ringId)
         return START_NOT_STICKY
     }
@@ -107,3 +117,7 @@ class RingingService : Service() {
         private const val TAG = "RingingService"
     }
 }
+
+/** True when a snooze-fire start targets a ring that already has a live session. */
+internal fun shouldIgnoreSnoozeStart(isSnooze: Boolean, ringId: String?, liveSnoozeRingIds: Collection<String>): Boolean =
+    isSnooze && ringId != null && ringId in liveSnoozeRingIds

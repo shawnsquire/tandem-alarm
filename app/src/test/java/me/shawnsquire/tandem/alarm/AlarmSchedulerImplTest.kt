@@ -159,10 +159,10 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
-    fun snoozeDueWhilePhoneWasOffIsRearmedShortlyAfterNow() = runTest {
+    fun snoozeDueWhilePhoneWasOffIsRearmedShortlyAfterNowOnBoot() = runTest {
         // snoozedUntil 5 minutes ago: inside the 10 minute window.
         val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 50), at(2, 4, 55)))
-        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll()
+        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll(rearmOverdueSnooze = true)
         val snooze = scheduled.single()
         assertEquals(now.plusSeconds(5).toEpochMilli(), snooze.triggerAtMs)
         val intent = shadowOf(snooze.operation!!).savedIntent
@@ -171,9 +171,36 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
+    fun overdueSnoozeIsNotRearmedByPlainReschedule() = runTest {
+        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 50), at(2, 4, 55)))
+        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll()
+        assertTrue(scheduled.isEmpty())
+    }
+
+    @Test
+    fun overdueSnoozeIsLeftUntouchedByPlainReschedule() = runTest {
+        val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 50), at(2, 4, 55)))
+        val s = scheduler(FakeAlarmRepository(emptyList()), ring)
+        s.armSnooze("a", "ring-1", at(2, 4, 55))
+        val before = scheduled.single().triggerAtMs
+        s.rescheduleAll()
+        assertEquals(before, scheduled.single().triggerAtMs)
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context))
+    }
+
+    @Test
+    fun armSnoozeRegistersSnoozeAlarm() = runTest {
+        val s = scheduler(FakeAlarmRepository(emptyList()))
+        s.armSnooze("a", "ring-1", at(2, 5, 10))
+        val snooze = scheduled.single()
+        assertEquals(at(2, 5, 10).toEpochMilli(), snooze.triggerAtMs)
+        assertEquals("ring-1", shadowOf(snooze.operation!!).savedIntent.getStringExtra(AlarmIntents.EXTRA_RING_ID))
+    }
+
+    @Test
     fun snoozeWellPastIsNotScheduled() = runTest {
         val ring = FakeRingStateStore(RingState("a", "ring-1", at(2, 4, 0), at(2, 4, 10)))
-        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll()
+        scheduler(FakeAlarmRepository(emptyList()), ring).rescheduleAll(rearmOverdueSnooze = true)
         assertTrue(scheduled.isEmpty())
         assertNull(AlarmIntents.existingSnoozePendingIntent(context))
     }
