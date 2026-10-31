@@ -19,7 +19,6 @@ import me.shawnsquire.tandem.data.TandemDatabase
 import me.shawnsquire.tandem.data.ringStateDataStore
 import me.shawnsquire.tandem.data.settingsDataStore
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
-import me.shawnsquire.tandem.fakes.FakeHealthSignals
 import me.shawnsquire.tandem.fakes.FakeRingingController
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +33,10 @@ import me.shawnsquire.tandem.sync.AuthManager
 import me.shawnsquire.tandem.sync.CommandApplier
 import me.shawnsquire.tandem.sync.CommandApplierImpl
 import me.shawnsquire.tandem.sync.CommandSenderImpl
+import me.shawnsquire.tandem.sync.FcmCommandHandler
 import me.shawnsquire.tandem.sync.FcmTokenStore
+import me.shawnsquire.tandem.sync.HealthSignalsImpl
+import me.shawnsquire.tandem.sync.SyncWorker
 import me.shawnsquire.tandem.sync.FirestoreCommandRemote
 import me.shawnsquire.tandem.sync.FirestoreDeviceDocWriter
 import me.shawnsquire.tandem.sync.Household
@@ -93,5 +95,9 @@ class AppContainer(private val context: Context) {
     )
     val ringingCommandListener =
         RingingCommandListener(ringStateStore.state, household, commandRemote, commandApplierImpl::applyPending, syncScope)
-    val healthSignals: HealthSignals = FakeHealthSignals() // T7 replaces this one
+    val healthSignalsImpl = HealthSignalsImpl(context.syncDataStore, fcmTokenStore)
+    val healthSignals: HealthSignals = healthSignalsImpl
+    val fcmCommandHandler = FcmCommandHandler(
+        commandApplier, healthSignalsImpl::recordFcm, Clock.systemDefaultZone(), { SyncWorker.runNow(context) },
+    )
 }

@@ -7,6 +7,7 @@ import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.functions
 import me.shawnsquire.tandem.sync.SyncWorker
+import me.shawnsquire.tandem.sync.refreshFcmToken
 
 class TandemApp : Application() {
     lateinit var container: AppContainer
@@ -23,6 +24,7 @@ class TandemApp : Application() {
         container.statePublisher.start()
         container.ringingCommandListener.start()
         SyncWorker.schedule(this)
+        refreshFcmToken(container.syncScope, container.fcmTokenStore)
     }
 
     private fun connectToEmulators() {
