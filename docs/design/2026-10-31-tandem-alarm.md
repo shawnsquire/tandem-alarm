@@ -54,7 +54,7 @@ Each unit has one job and is testable alone. Package root `me.shawnsquire.tandem
 | `media` | Ringtone choice: system picker (`RingtoneManager.ACTION_RINGTONE_PICKER`) or file (`ACTION_OPEN_DOCUMENT`, persistable URI permission, fallback to default alarm sound if the URI is unreadable at fire time). Wallpaper: photo picker → copied into app files, downscaled | Android only |
 | `sync` | `AuthManager` (anonymous auth), `PairingRepository`, `StatePublisher` (mirror local alarms + ringing state to own device doc), `PartnerRepository` (Flow of partner's device doc), `CommandSender`, `CommandApplier` (validate via `schedule`, apply via `data`, mark applied/rejected, notify user), `TandemMessagingService` (FCM + token upload; the command payload names the sender `fromUid`), `PreFireCheck` (3 s timeout pull), `SyncWorker` | Firebase SDKs, `data`, `schedule` |
 | `ui` | Compose + Material 3: Alarm list, Alarm edit, Partner tab, Settings (pairing, snooze, default wallpaper, **health check**) | `data`, `sync`, `media` |
-| `firebase/` (repo dir, not Android) | `firestore.rules`, `functions/` (TypeScript: `onCommandCreated` → FCM to target's token), emulator tests | Firebase CLI, Node 24 |
+| `firebase/` (repo dir, not Android) | `firestore.rules`, `functions/` (TypeScript: `onCommandCreated` → FCM to target's token), emulator tests | Firebase CLI, Node 22 |
 
 No DI framework; one hand-written `AppContainer` in `Application`.
 

@@ -8,8 +8,8 @@ The design is in [docs/design/2026-10-31-tandem-alarm.md](docs/design/2026-10-31
 
 ## How pairing works
 
-1. Phone A taps Pair. A Cloud Function (`createPairCode`) creates a household and a 6-character code, valid for 10 minutes and usable once. The app shows it as text and a QR code.
-2. Phone B enters or scans the code. `joinHousehold` adds B to the household. A household holds two people at most.
+1. On phone A, open the Partner tab and tap Show pairing code. A Cloud Function (`createPairCode`) creates a household and a 6-character code, valid for 10 minutes and usable once. The app shows it as text and a QR code.
+2. On phone B, open the Partner tab, tap Enter code, enter the code and tap Join. `joinHousehold` adds B to the household. A household holds two people at most.
 3. Both phones now read each other's alarm list from Firestore. Unpairing (`unpair`) removes the household for both.
 
 Each phone signs in anonymously, so there are no accounts. A phone writes only its own alarms. A partner action is a command document that the owner validates and applies. Commands name the exact ring time or ring they were issued against and expire after 24 hours, so a skip sent late never skips the next day's alarm.
@@ -116,13 +116,13 @@ To build a signed APK locally, set `TANDEM_KEYSTORE_PATH`, `TANDEM_KEYSTORE_PASS
 
 To install, download the APK from the [Releases page](https://github.com/shawnsquire/tandem-alarm/releases) and open it on the phone. Or add `https://github.com/shawnsquire/tandem-alarm` to [Obtainium](https://obtainium.imranr.dev/), which tracks GitHub Releases and installs new versions. Updates must be signed with the same key as the installed app, or Android refuses them.
 
-After installing, open Settings, then the health check, and fix anything that is not green (exact alarms, full-screen notifications, notification permission, battery optimization).
+After installing, open Settings, then Health check, and fix anything that is not green (exact alarms, full-screen notifications, notification permission, battery optimization).
 
 ## On-device checklist
 
 Run on both phones. Alarms are the point of the app, so do not skip the reboot and Doze items.
 
-- [ ] Health check shows all green.
+- [ ] Health check (under Settings) shows all green.
 - [ ] An alarm rings with the screen off.
 - [ ] An alarm rings in Doze. Run `adb shell dumpsys deviceidle force-idle`, wait for the alarm, then `adb shell dumpsys deviceidle unforce`.
 - [ ] An alarm rings with the phone offline (airplane mode).
@@ -138,7 +138,7 @@ Run on both phones. Alarms are the point of the app, so do not skip the reboot a
 
 ## Known limitations
 
-- At startup the app deletes imported wallpapers and ringtones that no alarm uses. If that cleanup runs between deleting an alarm and undoing the delete, the restored alarm may have lost its custom ringtone or wallpaper and falls back to the default.
-- A partner command that arrives around a reboot waits until the app finishes starting after the first unlock. It is applied then, not earlier.
-- If the alarm database cannot be read at boot, alarms are re-armed from a small record the scheduler keeps. A repeating alarm armed this way rings, but it is not moved on to its following occurrence until the app next runs normally after unlock.
+- If you delete an alarm in the first moments after the app starts and then tap Undo, the restored alarm may use the default sound and wallpaper. The startup cleanup of unused ringtone and wallpaper files can already have removed that alarm's custom files. The cleanup spares files under one hour old, so this only affects older files.
+- Right after the first unlock, the app replays changes that were made while the phone was locked. An alarm that fires during that replay waits up to 2 seconds to register as ringing, then rings regardless. A partner skip or stop sent in that moment may not take effect.
+- If the alarm list can't be read when alarms are re-armed (for example after a reboot), each alarm is re-armed for its recorded time from a small record. A repeating alarm armed this way rings that once, and its next occurrence isn't armed until a later run that can read the alarm list, normally the next app start after unlock.
 - Daylight saving: an alarm set for a time that does not exist (02:30 on the spring-forward night) rings at 03:30. An alarm set for a time that happens twice rings at the first one.
