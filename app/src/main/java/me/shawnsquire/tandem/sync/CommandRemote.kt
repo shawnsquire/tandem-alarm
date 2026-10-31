@@ -66,13 +66,19 @@ class FirestoreCommandRemote(private val db: FirebaseFirestore) : CommandRemote 
     }
 
     override fun observe(householdId: String, commandId: String): Flow<Pair<CommandStatus, String?>> = callbackFlow {
+        val tracker = CommandSnapshotTracker()
         val reg = commands(householdId).document(commandId).addSnapshotListener { snap, err ->
             if (err != null) {
+                trySend(CommandStatus.REJECTED to COULDNT_SEND)
                 close()
                 return@addSnapshotListener
             }
-            val status = snap?.getString("status")?.let(::commandStatusFromString) ?: return@addSnapshotListener
-            trySend(status to snap.getString("reason"))
+            if (snap == null) return@addSnapshotListener
+            val update = tracker.update(
+                snap.exists(), snap.metadata.hasPendingWrites(),
+                snap.getString("status")?.let(::commandStatusFromString), snap.getString("reason"),
+            )
+            if (update != null) trySend(update)
         }
         awaitClose { reg.remove() }
     }
@@ -120,5 +126,24 @@ class FirestoreCommandRemote(private val db: FirebaseFirestore) : CommandRemote 
 
     private companion object {
         const val TAG = "CommandRemote"
+    }
+}
+
+internal const val COULDNT_SEND = "couldn't send"
+
+/**
+ * Turns a command doc's snapshots into status updates for the sender. Once the doc has been seen to exist,
+ * a later snapshot with no doc and no pending local writes means the server rejected the create and
+ * Firestore rolled the local write back, so the sender gets REJECTED instead of staying PENDING.
+ */
+internal class CommandSnapshotTracker {
+    private var seenExisting = false
+
+    fun update(exists: Boolean, hasPendingWrites: Boolean, status: CommandStatus?, reason: String?): Pair<CommandStatus, String?>? {
+        if (exists) {
+            seenExisting = true
+            return status?.let { it to reason }
+        }
+        return if (seenExisting && !hasPendingWrites) CommandStatus.REJECTED to COULDNT_SEND else null
     }
 }
