@@ -89,17 +89,7 @@ class TandemApp : Application() {
         if (BuildConfig.USE_EMULATOR) connectToEmulators()
         // Building it attaches the engine to Room and the real settings.
         val container = AppContainer(this).also { _container = it }
-        container.authManager.start(container.syncScope)
-        container.statePublisher.start()
-        container.syncScope.launch { container.statePublisherImpl.publishNow() }
-        container.ringingCommandListener.start()
-        // WorkManager's provider is only installed at unlock; schedule() catches its absence too.
-        try {
-            SyncWorker.schedule(this)
-        } catch (e: Throwable) {
-            Log.w(TAG, "could not schedule periodic sync", e)
-        }
-        refreshFcmToken(container.syncScope, container.fcmTokenStore)
+        // Alarm work first, so no sync start can skip it.
         // T4: a RingState no live session owns is left from a killed process.
         // No reschedule of its own: the startup reschedule right after covers it, and a second one
         // would hold the ring-slot mutex longer and could push a concurrent ring's claim into its timeout.
@@ -118,6 +108,22 @@ class TandemApp : Application() {
                 if (e is CancellationException) throw e
                 Log.w(TAG, "media orphan sweep failed", e)
             }
+        }
+        // Each sync start fails alone, so one broken start can't take the others down.
+        syncStart("auth") { container.authManager.start(container.syncScope) }
+        syncStart("state publisher") { container.statePublisher.start() }
+        syncStart("initial publish") { container.syncScope.launch { container.statePublisherImpl.publishNow() } }
+        syncStart("ringing command listener") { container.ringingCommandListener.start() }
+        // WorkManager's provider is only installed at unlock; schedule() catches its absence too.
+        syncStart("periodic sync") { SyncWorker.schedule(this) }
+        syncStart("FCM token refresh") { refreshFcmToken(container.syncScope, container.fcmTokenStore) }
+    }
+
+    private inline fun syncStart(what: String, start: () -> Unit) {
+        try {
+            start()
+        } catch (e: Throwable) {
+            Log.w(TAG, "could not start $what", e)
         }
     }
 
