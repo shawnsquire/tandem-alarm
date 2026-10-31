@@ -1,6 +1,11 @@
 package me.shawnsquire.tandem.alarm
 
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
+import me.shawnsquire.tandem.data.AlarmRepository
+import me.shawnsquire.tandem.data.RingStateStore
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
@@ -133,5 +138,53 @@ class RingingControllerImplTest {
         assertNull(h.store.state.first())
         assertEquals(1, h.notifier.cancelSnoozedCount)
         assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    /** Scheduler that suspends once, so a cancelled caller would lose the call. */
+    private class YieldingScheduler : AlarmScheduler {
+        var completed = 0
+        override suspend fun rescheduleAll() { yield(); completed++ }
+    }
+
+    @Test fun snoozeCompletesWhenCallerIsCancelledAfterStateWrite() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val sched = YieldingScheduler()
+        lateinit var job: Job
+        val cancelling = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) {
+                job.cancel()
+                h.store.set(state)
+            }
+        }
+        val c = RingingControllerImpl(h.repo, cancelling, h.settings, sched, h.notifier) { now }
+        job = launch { c.snooze() }
+        job.join()
+        assertEquals(1, sched.completed)
+        assertEquals(1, h.notifier.snoozed.size)
+        assertTrue(h.store.state.first()!!.snoozedUntil != null)
+    }
+
+    @Test fun dismissCompletesWhenCallerIsCancelledAfterStateWrite() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val sched = YieldingScheduler()
+        lateinit var job: Job
+        val cancelling = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) {
+                job.cancel()
+                h.store.set(state)
+            }
+        }
+        val yieldingRepo = object : AlarmRepository by h.repo {
+            override suspend fun setEnabled(id: String, enabled: Boolean) {
+                yield()
+                h.repo.setEnabled(id, enabled)
+            }
+        }
+        val c = RingingControllerImpl(yieldingRepo, cancelling, h.settings, sched, h.notifier) { now }
+        job = launch { c.dismiss("ring-1") }
+        job.join()
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertEquals(1, sched.completed)
+        assertEquals(1, h.notifier.cancelSnoozedCount)
     }
 }
