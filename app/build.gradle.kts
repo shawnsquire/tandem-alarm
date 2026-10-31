@@ -17,8 +17,9 @@ android {
         applicationId = "me.shawnsquire.tandem"
         minSdk = 33
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        // The release workflow sets these from the tag and run number; local builds use the defaults.
+        versionCode = providers.environmentVariable("TANDEM_VERSION_CODE").orNull?.toIntOrNull() ?: 1
+        versionName = providers.environmentVariable("TANDEM_VERSION_NAME").orNull ?: "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         val emulatorHost = providers.gradleProperty("tandem.emulatorHost").getOrElse("10.0.2.2")
@@ -26,7 +27,32 @@ android {
         buildConfigField("String", "EMULATOR_HOST", "\"$emulatorHost\"")
     }
 
+    // Signing comes from the environment so no key material lives in the repo. Without all four
+    // variables the release build stays unsigned.
+    val signingEnv = listOf(
+        "TANDEM_KEYSTORE_PATH",
+        "TANDEM_KEYSTORE_PASSWORD",
+        "TANDEM_KEY_ALIAS",
+        "TANDEM_KEY_PASSWORD",
+    ).associateWith { providers.environmentVariable(it).orNull }
+    val releaseSigning = if (signingEnv.values.all { !it.isNullOrBlank() }) {
+        signingConfigs.create("release") {
+            storeFile = file(signingEnv.getValue("TANDEM_KEYSTORE_PATH")!!)
+            storePassword = signingEnv.getValue("TANDEM_KEYSTORE_PASSWORD")
+            keyAlias = signingEnv.getValue("TANDEM_KEY_ALIAS")
+            keyPassword = signingEnv.getValue("TANDEM_KEY_PASSWORD")
+        }
+    } else {
+        null
+    }
+
     buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = releaseSigning
+        }
         debug {
             buildConfigField("boolean", "USE_EMULATOR", "true")
         }
