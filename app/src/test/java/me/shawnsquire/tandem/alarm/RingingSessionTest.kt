@@ -58,6 +58,10 @@ private class ThrowingSetStore(private val inner: FakeRingStateStore) : RingStat
     override suspend fun set(state: RingState?) { throw IllegalStateException("disk full") }
 }
 
+private class ThrowingReadStore(inner: FakeRingStateStore) : RingStateStore by inner {
+    override val state: Flow<RingState?> = flow { throw IllegalStateException("read") }
+}
+
 private class ThrowingSettings : SettingsRepository by FakeSettingsRepository() {
     override val defaultRingtoneUri: Flow<String?> = flow { throw IllegalStateException("datastore") }
 }
@@ -153,6 +157,37 @@ class RingingSessionTest {
         } finally {
             latch.countDown()
         }
+    }
+
+    @Test fun i1_preFireThrowsErrorStillRings() = runTest {
+        val h = harness(preFire = LambdaPreFire { throw NoClassDefFoundError("broken") })
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun snoozeStateReadFailureStillRingsWithGivenRingId() = runTest {
+        val h = harness(storeWrap = { ThrowingReadStore(it) })
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-X"), h.notifier.ringing)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun newRingIdFailureStillRings() = runTest {
+        val h = harness()
+        val session = RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { throw IllegalStateException("uuid") },
+            onFinished = {},
+        )
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertNotNull(h.rawStore.state.first())
     }
 
     @Test fun skipAppliedBySuccessfulCheckSuppresses() = runTest {

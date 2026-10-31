@@ -44,6 +44,7 @@ class RingingSession(
 ) {
     private val jobs = mutableListOf<Job>()
     private var finished = false
+    private var ringStarted = false
 
     fun start(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?) {
         jobs += scope.launch {
@@ -51,10 +52,22 @@ class RingingSession(
                 execute(alarmId, occurrence, isSnooze, snoozeRingId)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // I1: an unexpected error is never a reason to stay silent.
                 log("ringing session failed", e)
-                finish()
+                if (!ringStarted) fallbackRing() else finish()
             }
+        }
+    }
+
+    /** Best-effort ring when something unexpected failed before sound started. */
+    private fun fallbackRing() {
+        ringStarted = true
+        try { sound.start(emptyList()) } catch (e: Exception) { log("fallback sound failed", e) }
+        try { vibration.start() } catch (e: Exception) { log("fallback vibration failed", e) }
+        jobs += scope.launch {
+            delay(10.minutes)
+            finish()
         }
     }
 
@@ -62,7 +75,14 @@ class RingingSession(
         preFire()
 
         if (isSnooze) {
-            val state = ringStateStore.state.first()
+            val state = try {
+                ringStateStore.state.first()
+            } catch (e: Exception) {
+                log("state read failed; ringing with the snooze ringId", e)
+                val alarm = try { alarmRepository.get(alarmId) } catch (e2: Exception) { log("alarm read failed", e2); null }
+                if (snoozeRingId == null) fallbackRing() else ring(alarm, snoozeRingId, observe = false)
+                return
+            }
             if (state == null || state.ringId != snoozeRingId || state.snoozedUntil == null) {
                 finish() // dismissed while snoozed
                 return
@@ -92,7 +112,12 @@ class RingingSession(
             }
         }
 
-        val ringId = newRingId()
+        val ringId = try {
+            newRingId()
+        } catch (e: Exception) {
+            log("newRingId failed", e)
+            UUID.randomUUID().toString()
+        }
         try {
             val old = ringStateStore.state.first()
             if (old != null) controller.dismiss(old.ringId) // newest alarm supersedes
@@ -111,18 +136,25 @@ class RingingSession(
     private suspend fun preFire() {
         try {
             val d = scope.async(ioDispatcher) {
-                try { preFireCheck.pullAndApply(3.seconds) } catch (e: Exception) { false }
+                try {
+                    preFireCheck.pullAndApply(3.seconds)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    false
+                }
             }
             withTimeoutOrNull(3.seconds) { d.await() } ?: d.cancel()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             log("pre-fire check failed", e)
         }
     }
 
     private suspend fun ring(alarm: Alarm?, ringId: String, observe: Boolean) {
         val default = try { settingsRepository.defaultRingtoneUri.first() } catch (e: Exception) { log("settings read failed", e); null }
+        ringStarted = true
         try { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) } catch (e: Exception) { log("sound failed", e) }
         try { vibration.start() } catch (e: Exception) { log("vibration failed", e) }
         try { notifier.showRinging(alarm, ringId) } catch (e: Exception) { log("notifier failed", e) }
