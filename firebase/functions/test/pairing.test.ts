@@ -93,8 +93,8 @@ describe("joinHousehold", () => {
     const { code } = await createPairCodeFor(A);
     const hid = (await db().doc(`users/${A}`).get()).data()!.householdId;
     await db().doc(`pairCodes/${code}`).delete();
-    await seedCode("EXPIRD", hid, Date.now() - 1000);
-    await rejects(joinHouseholdFor(B, { code: "EXPIRD" }), ...INVALID);
+    await seedCode("EXPRED", hid, Date.now() - 1000);
+    await rejects(joinHouseholdFor(B, { code: "EXPRED" }), ...INVALID);
   });
 
   it("rejects a reused code", async () => {
@@ -121,8 +121,8 @@ describe("joinHousehold", () => {
   });
 
   it("treats a code for a deleted household as invalid", async () => {
-    await seedCode("GONEHH", "no-such-household", Date.now() + 60_000);
-    await rejects(joinHouseholdFor(B, { code: "GONEHH" }), ...INVALID);
+    await seedCode("NHHABC", "no-such-household", Date.now() + 60_000);
+    await rejects(joinHouseholdFor(B, { code: "NHHABC" }), ...INVALID);
   });
 
   it("rejects a garbage code", async () => {
