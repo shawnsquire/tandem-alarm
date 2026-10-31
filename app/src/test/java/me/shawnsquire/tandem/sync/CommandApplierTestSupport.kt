@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.sync
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
@@ -11,15 +12,38 @@ import java.time.Instant
 class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : CommandRemote {
     data class Resolved(val hid: String, val id: String, val status: CommandStatus, val reason: String?)
 
+    data class Created(
+        val hid: String, val from: String, val to: String, val type: CommandType, val alarmId: String,
+        val occurrenceAt: Instant?, val ringId: String?, val now: Instant,
+    )
+
     val resolved = mutableListOf<Resolved>()
+    val created = mutableListOf<Created>()
     var statusCalls = 0
+
+    /** Id returned by [create]. */
+    var createdId = "c1"
+
+    /** When set, [create] throws it instead of recording. */
+    var createFailure: Throwable? = null
+
+    private val updates = mutableMapOf<String, MutableSharedFlow<Pair<CommandStatus, String?>>>()
+
+    /** Drives [observe] for [commandId]; replays the latest so a late collector still sees it. */
+    fun updatesFor(commandId: String): MutableSharedFlow<Pair<CommandStatus, String?>> =
+        updates.getOrPut(commandId) { MutableSharedFlow(replay = 1) }
 
     override fun create(
         householdId: String, from: String, to: String, type: CommandType, alarmId: String,
         occurrenceAt: Instant?, ringId: String?, now: Instant,
-    ): String = error("unused")
+    ): String {
+        createFailure?.let { throw it }
+        created += Created(householdId, from, to, type, alarmId, occurrenceAt, ringId, now)
+        return createdId
+    }
 
-    override fun observe(householdId: String, commandId: String): Flow<Pair<CommandStatus, String?>> = emptyFlow()
+    override fun observe(householdId: String, commandId: String): Flow<Pair<CommandStatus, String?>> =
+        updatesFor(commandId)
     override suspend fun status(householdId: String, commandId: String): CommandStatus? {
         statusCalls++
         return status
