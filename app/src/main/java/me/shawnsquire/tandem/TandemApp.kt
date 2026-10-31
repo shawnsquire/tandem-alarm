@@ -44,7 +44,9 @@ class TandemApp : Application() {
         }
 
     private val startup = TandemStartup(
-        isUnlocked = { getSystemService(UserManager::class.java).isUserUnlocked },
+        // A check that throws counts as locked: onCreate on a direct-boot alarm start must not
+        // crash, and ensureStarted never throws.
+        isUnlocked = { runCatching { getSystemService(UserManager::class.java).isUserUnlocked }.getOrDefault(false) },
         registerUnlockReceiver = ::registerUnlockReceiver,
         fullStartup = ::fullStartup,
     )
