@@ -1,0 +1,97 @@
+package me.shawnsquire.tandem.data
+
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import java.io.File
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+
+class SettingsRepositoryImplTest {
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    private fun TestScope.repo() = SettingsRepositoryImpl(
+        PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { File(tmp.root, "test.preferences_pb") },
+        ),
+    )
+
+    @Test
+    fun snoozeDefaultsToTen() = runTest {
+        assertEquals(10, repo().snoozeMinutes.first())
+    }
+
+    @Test
+    fun snoozeRoundTrips() = runTest {
+        val r = repo()
+        r.setSnoozeMinutes(15)
+        assertEquals(15, r.snoozeMinutes.first())
+    }
+
+    @Test
+    fun snoozeClampedOnWrite() = runTest {
+        val ds = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { File(tmp.root, "test.preferences_pb") },
+        )
+        val r = SettingsRepositoryImpl(ds)
+        val key = intPreferencesKey("snoozeMinutes")
+        r.setSnoozeMinutes(0)
+        assertEquals(1, ds.data.first()[key])
+        r.setSnoozeMinutes(61)
+        assertEquals(60, ds.data.first()[key])
+    }
+
+    @Test
+    fun snoozeBoundsKept() = runTest {
+        val r = repo()
+        r.setSnoozeMinutes(1)
+        assertEquals(1, r.snoozeMinutes.first())
+        r.setSnoozeMinutes(60)
+        assertEquals(60, r.snoozeMinutes.first())
+    }
+
+    @Test
+    fun wallpaperSetAndCleared() = runTest {
+        val r = repo()
+        assertNull(r.defaultWallpaperPath.first())
+        r.setDefaultWallpaperPath("/files/wall.jpg")
+        assertEquals("/files/wall.jpg", r.defaultWallpaperPath.first())
+        r.setDefaultWallpaperPath(null)
+        assertNull(r.defaultWallpaperPath.first())
+    }
+
+    @Test
+    fun ringtoneSetAndCleared() = runTest {
+        val r = repo()
+        assertNull(r.defaultRingtoneUri.first())
+        r.setDefaultRingtoneUri("content://media/1")
+        assertEquals("content://media/1", r.defaultRingtoneUri.first())
+        r.setDefaultRingtoneUri(null)
+        assertNull(r.defaultRingtoneUri.first())
+    }
+
+    @Test
+    fun snoozeClampedOnRead() = runTest {
+        val ds = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { File(tmp.root, "test.preferences_pb") },
+        )
+        val r = SettingsRepositoryImpl(ds)
+        val key = intPreferencesKey("snoozeMinutes")
+        ds.edit { it[key] = 0 }
+        assertEquals(1, r.snoozeMinutes.first())
+        ds.edit { it[key] = 99 }
+        assertEquals(60, r.snoozeMinutes.first())
+        ds.edit { it[key] = -5 }
+        assertEquals(1, r.snoozeMinutes.first())
+    }
+}
