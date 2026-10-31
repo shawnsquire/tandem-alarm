@@ -16,10 +16,9 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.data.SettingsRepositoryImpl
 import me.shawnsquire.tandem.data.TandemDatabase
 import me.shawnsquire.tandem.data.settingsDataStore
-import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
-import me.shawnsquire.tandem.fakes.FakeRingingController
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
@@ -57,11 +56,15 @@ import me.shawnsquire.tandem.sync.PreFireCheck
 import me.shawnsquire.tandem.sync.StatePublisher
 
 @Suppress("unused")
-class AppContainer(private val context: Context) {
+class AppContainer private constructor(
+    private val context: Context,
+    private val database: TandemDatabase,
+    val syncScope: CoroutineScope,
+) {
     // U1: swap to real
     // Only the engine sees Room and the settings DataStore directly: everyone else goes through
     // alarmRepository and settingsRepository below.
-    private val roomAlarmRepository = AlarmRepositoryImpl(TandemDatabase.build(context).alarmDao(), Clock.systemDefaultZone())
+    private val roomAlarmRepository = AlarmRepositoryImpl(database.alarmDao(), Clock.systemDefaultZone())
     private val roomSettings = SettingsRepositoryImpl(context.settingsDataStore)
 
     // U3: swap to real
@@ -79,9 +82,6 @@ class AppContainer(private val context: Context) {
     val ringSlot: me.shawnsquire.tandem.alarm.RingSlot = alarmEngine.ringSlot
 
     // U4: swap to real
-    val syncScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e("Sync", "uncaught", e) },
-    )
     private val firestore by lazy { Firebase.firestore }
     val authManager = AuthManager(Firebase.auth, context.syncDataStore)
     // Live shared flow (replay 1): its first value is a real snapshot result, so cold-process pulls don't see a fake null.
@@ -126,5 +126,26 @@ class AppContainer(private val context: Context) {
     // retry builds another. The provider runs when a fire pulls, not here.
     init {
         alarmEngine.attach(roomAlarmRepository, roomSettings) { preFireCheck }
+    }
+
+    companion object {
+        /**
+         * The scope and database are made here, outside the constructor, so a construction that throws
+         * can cancel the listeners and collectors started on the scope and close Room. Otherwise each
+         * retry would leave another set running.
+         */
+        operator fun invoke(context: Context): AppContainer {
+            val syncScope = CoroutineScope(
+                SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e("Sync", "uncaught", e) },
+            )
+            val database = TandemDatabase.build(context)
+            try {
+                return AppContainer(context, database, syncScope)
+            } catch (e: Throwable) {
+                syncScope.cancel()
+                runCatching { database.close() }
+                throw e
+            }
+        }
     }
 }
