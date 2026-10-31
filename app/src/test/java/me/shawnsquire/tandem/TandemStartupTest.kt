@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -127,13 +128,12 @@ class TandemStartupTest {
     }
 
     @Test
-    fun aThrowingStartupIsLoggedNotRethrownAndNeverRetried() {
-        unlocked = true
+    fun aThrowingStartupIsLoggedNotRethrownAndRetriedUntilItSucceeds() {
         var logged: Throwable? = null
         val startup = TandemStartup(
             isUnlocked = { true },
             registerUnlockReceiver = { error("unused") },
-            fullStartup = { runs.incrementAndGet(); error("boom") },
+            fullStartup = { if (runs.incrementAndGet() == 1) error("boom") },
             log = { _, e -> logged = e },
         )
 
@@ -141,10 +141,57 @@ class TandemStartupTest {
         assertNotNull(logged)
         assertEquals("boom", logged!!.message)
 
-        // A retry would double-start whatever listeners the first attempt already started.
+        // Not marked as started: the next caller (e.g. the container getter) tries again.
         logged = null
         startup.ensureStarted()
-        assertEquals(1, runs.get())
+        assertEquals(2, runs.get())
         assertNull(logged)
+
+        // Success sticks.
+        startup.ensureStarted()
+        startup.start()
+        assertEquals(2, runs.get())
+    }
+
+    @Test
+    fun aCallerOnAnotherThreadWaitsForTheRunningAttempt() {
+        unlocked = true
+        val entered = CountDownLatch(1)
+        val gate = CountDownLatch(1)
+        val startup = startup(fullStartup = { entered.countDown(); gate.await(5, TimeUnit.SECONDS); runs.incrementAndGet() })
+        val first = Thread { startup.ensureStarted() }.apply { start() }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+
+        // Started while the first attempt runs: must not return before it finishes.
+        val returned = CountDownLatch(1)
+        val second = Thread { startup.ensureStarted(); returned.countDown() }.apply { start() }
+        assertFalse("second caller returned during the first attempt", returned.await(200, TimeUnit.MILLISECONDS))
+
+        gate.countDown()
+        assertTrue(returned.await(5, TimeUnit.SECONDS))
+        first.join(5_000)
+        second.join(5_000)
+        assertEquals(1, runs.get())
+    }
+
+    @Test
+    fun aReentrantCallFromInsideStartupNeitherRunsAgainNorDeadlocks() {
+        unlocked = true
+        lateinit var startup: TandemStartup
+        startup = startup(fullStartup = {
+            runs.incrementAndGet()
+            // e.g. something in full startup reading TandemApp.container
+            startup.ensureStarted()
+        })
+
+        // On its own thread, so a deadlock fails the test instead of hanging the suite.
+        val done = CountDownLatch(1)
+        Thread { startup.ensureStarted(); done.countDown() }.apply { isDaemon = true; start() }
+
+        assertTrue("re-entrant call deadlocked", done.await(5, TimeUnit.SECONDS))
+        assertEquals(1, runs.get())
+        // The outer attempt still counts as the success.
+        startup.ensureStarted()
+        assertEquals(1, runs.get())
     }
 }

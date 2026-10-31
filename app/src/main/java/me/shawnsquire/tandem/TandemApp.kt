@@ -30,8 +30,18 @@ import me.shawnsquire.tandem.sync.refreshFcmToken
  */
 class TandemApp : Application() {
     @Volatile private var _container: AppContainer? = null
+
+    /**
+     * Starts up on first access if the user is unlocked, which always holds for a
+     * credential-encrypted component: an activity or the FCM service can run before USER_UNLOCKED
+     * reaches the receiver (Android 14+ defers it to a cached process). Still throws while locked,
+     * or if full startup failed again.
+     */
     val container: AppContainer
-        get() = checkNotNull(_container) { "AppContainer is only available after the user unlocks; alarm code must use AlarmEngine" }
+        get() = _container ?: run {
+            startup.ensureStarted()
+            checkNotNull(_container) { "AppContainer is only available after the user unlocks; alarm code must use AlarmEngine" }
+        }
 
     private val startup = TandemStartup(
         isUnlocked = { getSystemService(UserManager::class.java).isUserUnlocked },
@@ -57,7 +67,10 @@ class TandemApp : Application() {
         startup.start()
     }
 
-    /** Runs full startup if the user is unlocked and it hasn't run yet. Main thread. */
+    /**
+     * Runs full startup if the user is unlocked and it hasn't succeeded yet. Any thread; blocks
+     * while another thread is running it. Never throws.
+     */
     fun ensureStarted() = startup.ensureStarted()
 
     /**
@@ -83,11 +96,20 @@ class TandemApp : Application() {
         )
     }
 
+    // Guarded by TandemStartup's lock, like everything fullStartup touches.
+    private var emulatorsConnected = false
+
+    /** Runs under TandemStartup's lock, on whichever thread first saw the user unlocked. */
     private fun fullStartup() {
         fullStartupRuns++
-        // Must run before anything touches a Firebase instance.
-        if (BuildConfig.USE_EMULATOR) connectToEmulators()
-        // Building it attaches the engine to Room and the real settings.
+        // Must run before anything touches a Firebase instance. One attempt per process, set before
+        // it runs: useEmulator throws when repeated or after first use, so a retry would always fail.
+        if (BuildConfig.USE_EMULATOR && !emulatorsConnected) {
+            emulatorsConnected = true
+            connectToEmulators()
+        }
+        // Building it attaches the engine to Room and the real settings. Assigned only once built,
+        // so a throw here leaves no container and the next ensureStarted retries.
         val container = AppContainer(this).also { _container = it }
         // Alarm work first, so no sync start can skip it.
         // T4: a RingState no live session owns is left from a killed process.
@@ -109,7 +131,8 @@ class TandemApp : Application() {
                 Log.w(TAG, "media orphan sweep failed", e)
             }
         }
-        // Each sync start fails alone, so one broken start can't take the others down.
+        // Each sync start fails alone: nothing after the container is assigned may throw, so one
+        // broken start can't take the others down or make a retry rebuild the container.
         syncStart("auth") { container.authManager.start(container.syncScope) }
         syncStart("state publisher") { container.statePublisher.start() }
         syncStart("initial publish") { container.syncScope.launch { container.statePublisherImpl.publishNow() } }

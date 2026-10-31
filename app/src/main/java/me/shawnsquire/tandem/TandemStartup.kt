@@ -1,15 +1,19 @@
 package me.shawnsquire.tandem
 
 import android.util.Log
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Runs [fullStartup] exactly once per process: at [start] if the user is already unlocked,
- * otherwise when the unlock receiver fires (or [ensureStarted] sees the user unlocked first).
+ * Runs [fullStartup] once per process, as soon as the user is unlocked: at [start] if already
+ * unlocked, otherwise when the unlock receiver fires or [ensureStarted] sees the user unlocked first.
  *
- * If [fullStartup] throws, it stays marked as started and the error is only logged. A retry would
- * double-start whatever listeners the first attempt got to, and a rethrow from the unlock receiver
- * would kill the process, taking down a ring that began before unlock.
+ * A throwing [fullStartup] is only logged, never rethrown: a rethrow from the unlock receiver or a
+ * component would kill the process, taking down a ring that began before unlock. It is not marked
+ * as done either, so the next [ensureStarted] retries. That is safe because [fullStartup] can only
+ * throw before it publishes the container; everything after that catches its own failures, so no
+ * listener is ever started twice.
+ *
+ * Callers on other threads wait for a running attempt, so none returns before the container is
+ * set. A re-entrant call from inside [fullStartup] returns at once instead of running it again.
  */
 class TandemStartup(
     private val isUnlocked: () -> Boolean,
@@ -18,7 +22,9 @@ class TandemStartup(
     // runCatching: Log is unavailable in plain JVM tests.
     private val log: (String, Throwable) -> Unit = { message, e -> runCatching { Log.e(TAG, message, e) } },
 ) {
-    private val started = AtomicBoolean(false)
+    private val lock = Any()
+    @Volatile private var succeeded = false
+    private var inProgress = false // guarded by lock; only its own thread can see it true
 
     fun start() {
         if (isUnlocked()) {
@@ -32,15 +38,21 @@ class TandemStartup(
     }
 
     fun ensureStarted() {
-        if (isUnlocked()) runOnce()
+        if (!succeeded && isUnlocked()) runOnce()
     }
 
     private fun runOnce() {
-        if (!started.compareAndSet(false, true)) return
-        try {
-            fullStartup()
-        } catch (e: Throwable) {
-            log("full startup failed; not retrying", e)
+        synchronized(lock) {
+            if (succeeded || inProgress) return
+            inProgress = true
+            try {
+                fullStartup()
+                succeeded = true
+            } catch (e: Throwable) {
+                log("full startup failed; the next ensureStarted retries", e)
+            } finally {
+                inProgress = false
+            }
         }
     }
 

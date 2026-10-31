@@ -14,7 +14,9 @@ class TandemMessagingService : FirebaseMessagingService() {
     /** Runs on a background thread, and the process stays alive while it runs, so block until handled. */
     override fun onMessageReceived(message: RemoteMessage) {
         try {
-            val container = (application as TandemApp).container
+            val app = application as TandemApp
+            app.ensureStarted()
+            val container = app.container
             runBlocking { container.fcmCommandHandler.handle(message.data) }
         } catch (e: Throwable) {
             Log.e(TAG, "onMessageReceived failed", e)
@@ -23,7 +25,9 @@ class TandemMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         try {
-            val container = (application as TandemApp).container
+            val app = application as TandemApp
+            app.ensureStarted()
+            val container = app.container
             runBlocking { container.fcmTokenStore.set(token) }
         } catch (e: Throwable) {
             Log.e(TAG, "onNewToken failed", e)

@@ -8,6 +8,7 @@ import android.content.SharedPreferences
 import android.os.Looper
 import android.os.UserManager
 import androidx.work.WorkManager
+import com.google.firebase.FirebaseApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -46,6 +47,7 @@ import org.robolectric.annotation.Config
 import java.io.File
 import java.time.Clock
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -272,6 +274,68 @@ class TandemAppLockedTest {
 
         awaitTrue("orphans swept") { !orphanWallpaper.exists() && !orphanTone.exists() }
         assertTrue(young.exists())
+    }
+
+    @Test
+    fun containerAccessAfterUnlockBeforeTheBroadcastStartsUpAndKeepsALockedRing() = runBlocking {
+        RingStateStoreImpl(robolectricApp.ringStateDataStore).set(null)
+        val (app, base) = startLockedApp()
+        val engine = AlarmEngine.get(app)
+        // Millis, as the store keeps them.
+        val ring = RingState("a", "ring-started-locked", Instant.now().truncatedTo(ChronoUnit.MILLIS), null)
+        try {
+            // A ring that began before unlock, as RingingSession starts one: claim the slot, register it live.
+            assertTrue(engine.ringSlot.claimFire(ring))
+            LiveRings.register(ring.ringId)
+
+            // The user unlocks and opens the app while USER_UNLOCKED is still deferred: no broadcast yet.
+            userManager.setUserUnlocked(true)
+            base.locked = false
+            val container = app.container
+
+            assertEquals(1, app.fullStartupRuns)
+            assertSame(engine.scheduler, container.alarmScheduler)
+            withTimeout(10.seconds) { app.startupAlarmWork.joinAll() }
+            awaitTrue("engine attached") { (engine.alarmRepository as SwitchableAlarmRepository).isAttached }
+            assertEquals("live ring kept by the stale-ring cleanup", ring, engine.ringStateStore.state.first())
+            assertTrue(LiveRings.isLive(ring.ringId))
+
+            // The deferred broadcast arrives later and changes nothing.
+            unlock(app)
+            assertEquals(1, app.fullStartupRuns)
+            assertSame(container, app.container)
+        } finally {
+            LiveRings.unregister(ring.ringId)
+            engine.ringStateStore.set(null)
+        }
+    }
+
+    @Test
+    fun aFailedFullStartupIsRetriedByTheNextContainerAccess() = runBlocking {
+        val (app, base) = startLockedApp()
+        base.locked = false
+        userManager.setUserUnlocked(true)
+        // Test-only Firebase hook: with no default app, AppContainer's Firebase.auth throws.
+        FirebaseApp.clearInstancesForTest()
+        try {
+            val error = assertThrows(IllegalStateException::class.java) { app.container }
+            assertEquals(
+                "AppContainer is only available after the user unlocks; alarm code must use AlarmEngine",
+                error.message,
+            )
+            assertEquals(1, app.fullStartupRuns)
+        } finally {
+            FirebaseApp.initializeApp(app)
+        }
+
+        val container = app.container
+
+        assertEquals(2, app.fullStartupRuns)
+        withTimeout(10.seconds) { app.startupAlarmWork.joinAll() }
+        awaitTrue("engine attached") { (AlarmEngine.get(app).alarmRepository as SwitchableAlarmRepository).isAttached }
+        app.ensureStarted()
+        assertEquals(2, app.fullStartupRuns)
+        assertSame(container, app.container)
     }
 
     @Test
