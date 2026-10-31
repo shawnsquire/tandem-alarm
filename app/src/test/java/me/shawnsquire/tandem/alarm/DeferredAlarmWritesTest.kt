@@ -3,15 +3,20 @@ package me.shawnsquire.tandem.alarm
 import android.content.Context
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import java.time.Instant
+import me.shawnsquire.tandem.awaitTandemStartup
 
 @RunWith(RobolectricTestRunner::class)
 class DeferredAlarmWritesTest {
     private val context: Context = RuntimeEnvironment.getApplication()
+
+    // The process engine's attach drain reads this same queue; let it finish first.
+    @Before fun awaitStartup() = awaitTandemStartup()
     private val t1 = Instant.parse("2026-03-02T11:30:00Z")
 
     private val writes = listOf(

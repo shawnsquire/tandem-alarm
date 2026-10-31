@@ -4,17 +4,22 @@ import android.content.Context
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import java.time.Instant
+import me.shawnsquire.tandem.awaitTandemStartup
 
 @RunWith(RobolectricTestRunner::class)
 class SnoozeLedgerTest {
     private val context: Context = RuntimeEnvironment.getApplication()
     private val t1 = Instant.parse("2026-03-02T07:10:00Z")
     private val t2 = Instant.parse("2026-03-02T07:20:00Z")
+
+    // The startup reschedule drops long-past ledger entries; it must not race these.
+    @Before fun awaitStartup() = awaitTandemStartup()
 
     private fun exercise(ledger: SnoozeLedger, fresh: () -> SnoozeLedger = { ledger }) {
         assertTrue(ledger.all().isEmpty())
