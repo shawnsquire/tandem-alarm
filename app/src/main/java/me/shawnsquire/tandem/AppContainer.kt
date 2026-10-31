@@ -60,6 +60,7 @@ class AppContainer private constructor(
     private val context: Context,
     private val database: TandemDatabase,
     val syncScope: CoroutineScope,
+    val authManager: AuthManager,
 ) {
     // U1: swap to real
     // Only the engine sees Room and the settings DataStore directly: everyone else goes through
@@ -83,7 +84,6 @@ class AppContainer private constructor(
 
     // U4: swap to real
     private val firestore by lazy { Firebase.firestore }
-    val authManager = AuthManager(Firebase.auth, context.syncDataStore)
     // Live shared flow (replay 1): its first value is a real snapshot result, so cold-process pulls don't see a fake null.
     val householdFlow: Flow<Household?> = HouseholdSource(authManager.uid, firestore, syncScope).household
 
@@ -130,18 +130,20 @@ class AppContainer private constructor(
 
     companion object {
         /**
-         * The scope and database are made here, outside the constructor, so a construction that throws
-         * can cancel the listeners and collectors started on the scope and close Room. Otherwise each
-         * retry would leave another set running.
+         * The scope, database and auth manager are made here, outside the constructor, so a construction
+         * that throws can cancel the listeners and collectors started on the scope, close Room and
+         * detach the auth-state listener. Otherwise each retry would leave another set running.
          */
         operator fun invoke(context: Context): AppContainer {
             val syncScope = CoroutineScope(
                 SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e("Sync", "uncaught", e) },
             )
             val database = TandemDatabase.build(context)
+            val authManager = AuthManager(Firebase.auth, context.syncDataStore)
             try {
-                return AppContainer(context, database, syncScope)
+                return AppContainer(context, database, syncScope, authManager)
             } catch (e: Throwable) {
+                authManager.close()
                 syncScope.cancel()
                 runCatching { database.close() }
                 throw e

@@ -28,8 +28,15 @@ class AuthManager(
     /** Current user's uid; null when signed out. */
     val uid: StateFlow<String?> = _uid.asStateFlow()
 
+    private val listener = FirebaseAuth.AuthStateListener { _uid.value = it.currentUser?.uid }
+
     init {
-        auth.addAuthStateListener { _uid.value = it.currentUser?.uid }
+        auth.addAuthStateListener(listener)
+    }
+
+    /** Detaches the auth-state listener; [uid] stops following sign-in changes. */
+    fun close() {
+        auth.removeAuthStateListener(listener)
     }
 
     /** Returns the current uid, signing in anonymously if needed. Throws on failure. */
