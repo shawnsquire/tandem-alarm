@@ -46,8 +46,8 @@ open class RingingService : Service() {
         lastStartId = startId
         // Must come first: a startForegroundService() start has a short deadline.
         // The quiet prep notification has no full-screen intent: a suppressed fire never lights the screen.
-        promotePrep()
-        acquireWakeLock()
+        promoteForStart()
+        try { acquireWakeLock() } catch (e: Throwable) { Log.e(TAG, "acquiring ringing wake lock failed", e) }
         FireWakeLock.release() // our own lock is held now
 
         val alarmId = intent?.getStringExtra(AlarmIntents.EXTRA_ALARM_ID)
@@ -135,6 +135,12 @@ open class RingingService : Service() {
         }
     }
 
+    /** Keep a ringing notification as the foreground one on re-entry; prep only when nothing is ringing. */
+    private fun promoteForStart() {
+        val ringing = ringingNotifications.values.lastOrNull()
+        if (ringing != null) safeStartForeground(ringing.first, ringing.second) else promotePrep()
+    }
+
     private fun promotePrep() {
         val prep = try {
             notifier.prepNotification()
@@ -146,7 +152,7 @@ open class RingingService : Service() {
     }
 
     /** A session decided to ring: its notification becomes the foreground one and the prep one goes away. */
-    private fun onRingingPosted(ringId: String, id: Int, notification: Notification) {
+    internal fun onRingingPosted(ringId: String, id: Int, notification: Notification) {
         ringingNotifications[ringId] = id to notification
         safeStartForeground(id, notification)
         try { notifier.cancelPrep() } catch (e: Throwable) { Log.w(TAG, "cancel prep failed", e) }
@@ -154,10 +160,13 @@ open class RingingService : Service() {
 
     private fun onSessionFinished(ringId: String?) {
         val finished = ringId?.let { ringingNotifications.remove(it) }
-        if (sessions.isNotEmpty() && finished != null && finished.first == foregroundId) {
+        if (sessions.isNotEmpty()) {
             // Foreground moves first: the system won't remove the current foreground notification.
             val next = ringingNotifications.values.lastOrNull()
-            if (next != null) safeStartForeground(next.first, next.second) else promotePrep()
+            val finishedWasForeground = finished != null && finished.first == foregroundId
+            if (next != null && (finishedWasForeground || foregroundId == AndroidRingingNotifier.PREP_NOTIFICATION_ID)) {
+                safeStartForeground(next.first, next.second)
+            } else if (finishedWasForeground) promotePrep()
         }
         stopIfIdle()
         if (ringId != null && finished != null) {

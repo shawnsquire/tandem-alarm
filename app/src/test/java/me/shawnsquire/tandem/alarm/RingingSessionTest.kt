@@ -338,6 +338,15 @@ class RingingSessionTest {
         assertEquals(1, h.scheduler.rescheduleCount)
     }
 
+    @Test fun fallbackRingShowsFallbackNotification() = runTest {
+        val h = harness(storeWrap = { ThrowingReadStore(it) })
+        h.session.start("a", clockNow, true, null)
+        runCurrent()
+        assertEquals(1, h.notifier.fallback.size)
+        assertTrue(h.notifier.fallback[0].startsWith("fallback-"))
+        assertTrue(h.notifier.ringing.isEmpty())
+    }
+
     @Test fun snoozeResumeCancelsSnoozedNotification() = runTest {
         val h = harness(state = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow))
         h.session.start("a", clockNow, true, "ring-X")

@@ -19,6 +19,12 @@ interface RingingNotifier {
     /** Update the foreground notification: label plus Stop and Snooze actions. */
     fun showRinging(alarm: Alarm?, ringId: String)
 
+    /**
+     * Ringing notification for a fallback ring with no stored RingState: full-screen and content
+     * intents only, since Stop/Snooze would be ignored by the controller.
+     */
+    fun showFallbackRinging(ringId: String) {}
+
     /** Non-foreground notification with a Dismiss action, one per ring so parked snoozes coexist. */
     fun showSnoozed(ringId: String, until: Instant)
     fun cancelSnoozed(ringId: String)

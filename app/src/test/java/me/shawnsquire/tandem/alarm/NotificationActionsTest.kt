@@ -134,6 +134,30 @@ class NotificationActionsTest {
     }
 
     @Test
+    fun fallbackRingingHasFullScreenButNoActions() {
+        AndroidRingingNotifier(context).showFallbackRinging("fallback-1")
+        val posted = shadowOf(manager).getNotification(AndroidRingingNotifier.ringingNotificationId("fallback-1"))
+        assertNotNull(posted.fullScreenIntent)
+        assertNotNull(posted.contentIntent)
+        assertNull(posted.actions)
+    }
+
+    @Test
+    fun reentryKeepsRingingNotificationAsForeground() {
+        val controller = Robolectric.buildService(RingingService::class.java, fireIntent()).create()
+        controller.startCommand(0, 1) // session A, pending
+        val n = AndroidRingingNotifier(context)
+        val ringId = "ring-A"
+        val id = AndroidRingingNotifier.ringingNotificationId(ringId)
+        n.showRinging(null, ringId)
+        controller.get().onRingingPosted(ringId, id, shadowOf(manager).getNotification(id))
+        assertEquals(id, shadowOf(controller.get()).lastForegroundNotificationId)
+
+        controller.startCommand(0, 2) // session B starts; foreground must stay on A's notification
+        assertEquals(id, shadowOf(controller.get()).lastForegroundNotificationId)
+    }
+
+    @Test
     fun ringingNotificationIdsAvoidReservedIds() {
         val id = AndroidRingingNotifier.ringingNotificationId("r1")
         assertTrue(id != AndroidRingingNotifier.PREP_NOTIFICATION_ID && id != AndroidRingingNotifier.SNOOZED_NOTIFICATION_ID && id != 0)

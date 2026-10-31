@@ -55,7 +55,11 @@ class AndroidRingingNotifier(
 
     fun cancelRinging(ringId: String) = manager.cancel(ringingNotificationId(ringId))
 
-    override fun showRinging(alarm: Alarm?, ringId: String) {
+    override fun showRinging(alarm: Alarm?, ringId: String) = post(alarm, ringId, withActions = true)
+
+    override fun showFallbackRinging(ringId: String) = post(null, ringId, withActions = false)
+
+    private fun post(alarm: Alarm?, ringId: String, withActions: Boolean) {
         ensureChannels()
         val activity = AlarmIntents.ringingActivityPendingIntent(context)
         val stop = Notification.Action.Builder(null, context.getString(R.string.alarm_action_stop), AlarmIntents.dismissPendingIntent(context, ringId)).build()
@@ -76,8 +80,7 @@ class AndroidRingingNotifier(
             .setOnlyAlertOnce(true)
             .setContentIntent(activity)
             .setFullScreenIntent(activity, true)
-            .addAction(stop)
-            .addAction(snooze)
+            .apply { if (withActions) { addAction(stop); addAction(snooze) } }
             .build()
         val id = ringingNotificationId(ringId)
         manager.notify(id, notification)

@@ -54,7 +54,8 @@ class RingingSession(
     private var registeredRingId: String? = null
 
     /** The ring this session registered, once it has one. */
-    val ringId: String? get() = registeredRingId
+    val ringId: String? get() = registeredRingId ?: fallbackNotifiedId
+    private var fallbackNotifiedId: String? = null
 
     /** Registered before any claim writes state, so a cleaner never sees this ring as stale. */
     private fun register(ringId: String) {
@@ -88,18 +89,22 @@ class RingingSession(
                 currentCoroutineContext().ensureActive() // only real session cancellation propagates
                 // I1: an unexpected error never silences a ring, started or not.
                 log("ringing session failed", e)
-                if (!ringStarted) fallbackRing(if (isSnooze) null else alarmId to occurrence) else ensureAutoSilence(null)
+                if (!ringStarted) fallbackRing(if (isSnooze) null else alarmId to occurrence, snoozeRingId) else ensureAutoSilence(null)
             }
         }
     }
 
     /** Best-effort ring when something unexpected failed before sound started. */
-    private suspend fun fallbackRing(fire: Pair<String, Instant>? = null) {
+    private suspend fun fallbackRing(fire: Pair<String, Instant>? = null, snoozeRingId: String? = null) {
         currentCoroutineContext().ensureActive()
         ringStarted = true
         // Vibration first: sound setup must never delay or prevent it.
         guarded("fallback vibration", Unit) { vibration.start() }
         guarded("fallback sound", Unit) { sound.start(emptyList()) }
+        // The ring decision is made, so the full-screen intent is fine; no actions without a RingState.
+        val notifyId = snoozeRingId ?: "fallback-" + UUID.randomUUID()
+        fallbackNotifiedId = notifyId
+        guarded("fallback notifier", Unit) { notifier.showFallbackRinging(notifyId) }
         if (fire != null) guarded("fired ledger write", Unit) { firedLedger.markRang(fire.first, fire.second) }
         guarded("fallback reschedule", Unit) { alarmScheduler.rescheduleAll() }
         ensureAutoSilence(null)
