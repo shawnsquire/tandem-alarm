@@ -1,7 +1,87 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function householdMembers(hid) {
+      return get(/databases/$(database)/documents/households/$(hid)).data.members;
+    }
+
+    // Optional fields: absent, null, or the expected type.
+    function optionalTimestamp(data, field) {
+      return !(field in data) || data[field] == null || data[field] is timestamp;
+    }
+
+    function optionalString(data, field) {
+      return !(field in data) || data[field] == null || data[field] is string;
+    }
+
+    // Absent, or a string. Null is not accepted.
+    function reasonOk(data) {
+      return !('reason' in data) || data.reason is string;
+    }
+
+    function isMember(hid) {
+      return isSignedIn() && request.auth.uid in householdMembers(hid);
+    }
+
+    // Written only by Cloud Functions (Admin SDK bypasses these rules).
+    match /users/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /households/{hid} {
+      allow read: if isMember(hid);
+      allow write: if false;
+
+      // Each device doc is written only by its own user.
+      match /devices/{uid} {
+        allow read: if isMember(hid);
+        allow create, update: if isSignedIn() && request.auth.uid == uid && isMember(hid);
+      }
+
+      match /commands/{cid} {
+        // No field conditions on read, so list queries pass (membership only).
+        allow read: if isMember(hid);
+
+        // The sender must be a member, and `to` must be the other member.
+        allow create: if isMember(hid)
+          && request.resource.data.keys().hasOnly(
+               ['from', 'to', 'type', 'alarmId', 'createdAt', 'expiresAt', 'status',
+                'occurrenceAt', 'ringId'])
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.to != request.auth.uid
+          && request.resource.data.to in householdMembers(hid)
+          && request.resource.data.status == 'pending'
+          && request.resource.data.type in
+               ['SKIP_NEXT', 'UNSKIP', 'DISABLE', 'ENABLE', 'STOP_RINGING']
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.alarmId is string
+          && request.resource.data.expiresAt is timestamp
+          && request.resource.data.expiresAt > request.time
+          // 24 h lifetime plus 10 minutes of allowance for client clock skew.
+          && request.resource.data.expiresAt <= request.time + duration.value(1450, 'm')
+          && optionalTimestamp(request.resource.data, 'occurrenceAt')
+          && optionalString(request.resource.data, 'ringId');
+
+        // Only the recipient may resolve a pending command, touching nothing else.
+        allow update: if isMember(hid)
+          && request.auth.uid == resource.data.to
+          && resource.data.status == 'pending'
+          && request.resource.data.status in ['applied', 'rejected']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reason'])
+          && reasonOk(request.resource.data);
+
+        allow delete: if false;
+      }
+    }
+
+    // Server only: pair codes are created and redeemed by Cloud Functions.
+    match /pairCodes/{code} {
       allow read, write: if false;
     }
   }
