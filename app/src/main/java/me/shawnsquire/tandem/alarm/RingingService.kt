@@ -25,6 +25,9 @@ open class RingingService : Service() {
     private val snoozeRingIds = mutableMapOf<RingingSession, String>()
     private var lastStartId = 0
     private var wakeLock: PowerManager.WakeLock? = null
+
+    /** Tests only: the service's own wake lock, independent of other locks the process creates. */
+    internal fun wakeLockForTest(): PowerManager.WakeLock? = wakeLock
     private val vibrationArbiter by lazy { VibrationArbiter.forContext(this) }
     private lateinit var notifier: AndroidRingingNotifier
 

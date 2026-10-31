@@ -229,11 +229,11 @@ class NotificationActionsTest {
     @Test
     fun serviceReleasesFireWakeLockAfterTakingItsOwn() {
         FireWakeLock.acquire(context)
-        val fire = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+        val fire = FireWakeLock.lockForTest()!!
         assertTrue(fire.isHeld)
-        Robolectric.buildService(RingingService::class.java, fireIntent()).create().startCommand(0, 1)
+        val service = Robolectric.buildService(RingingService::class.java, fireIntent()).create().startCommand(0, 1).get()
         assertFalse(fire.isHeld)
-        val own = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+        val own = service.wakeLockForTest()!!
         assertTrue(own !== fire && own.isHeld)
     }
 
