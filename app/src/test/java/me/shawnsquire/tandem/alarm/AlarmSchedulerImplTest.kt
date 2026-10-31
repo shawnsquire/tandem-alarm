@@ -2,8 +2,12 @@ package me.shawnsquire.tandem.alarm
 
 import android.app.AlarmManager
 import android.content.Context
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.awaitTandemStartup
+import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
@@ -48,11 +52,13 @@ class AlarmSchedulerImplTest {
         ZonedDateTime.of(2026, 3, day, hour, minute, 0, 0, zone).toInstant()
 
     private fun scheduler(
-        repo: FakeAlarmRepository,
+        repo: AlarmRepository,
         ring: FakeRingStateStore = FakeRingStateStore(),
         next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
         ledger: SnoozeLedger = InMemorySnoozeLedger(),
-    ) = AlarmSchedulerImpl(context, repo, ring, ledger, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher())
+        onScheduled: suspend (List<Alarm>, Map<String, Long>) -> Unit = { _, _ -> },
+        ctx: Context = context,
+    ) = AlarmSchedulerImpl(ctx, repo, ring, ledger, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher(), onScheduled = onScheduled)
 
     private fun ledgerOf(vararg entries: SnoozeEntry) = InMemorySnoozeLedger().apply {
         entries.forEach { put(it.ringId, it.alarmId, it.until) }
@@ -62,6 +68,8 @@ class AlarmSchedulerImplTest {
 
     @Before
     fun setUp() {
+        // TandemApp's startup reschedule shares the scheduler records and AlarmManager.
+        awaitTandemStartup()
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
     }
 
@@ -139,6 +147,28 @@ class AlarmSchedulerImplTest {
         s.rescheduleAll()
         assertEquals(1, scheduled.size)
         assertEquals(at(3, 6, 30).toEpochMilli(), scheduled.single().triggerAtMs)
+    }
+
+    @Test
+    fun onScheduledGetsTheAlarmsAndTheArmedTriggers() = runTest {
+        val alarms = listOf(alarm("a", 6, 30), alarm("b", 7, 0, enabled = false))
+        var seen: Pair<List<Alarm>, Map<String, Long>>? = null
+        scheduler(FakeAlarmRepository(alarms), onScheduled = { a, t -> seen = a to t }).rescheduleAll()
+        assertEquals(alarms to mapOf("a" to at(2, 6, 30).toEpochMilli()), seen)
+    }
+
+    @Test
+    fun throwingOnScheduledDoesNotFailReschedule() = runTest {
+        scheduler(FakeAlarmRepository(listOf(alarm("a"))), onScheduled = { _, _ -> throw IllegalStateException("boom") }).rescheduleAll()
+        assertEquals(1, scheduled.size)
+    }
+
+    @Test
+    fun schedulerOnlyTouchesDeviceStorage() = runTest {
+        val locked = LockedContext(context)
+        scheduler(FakeAlarmRepository(listOf(alarm("a"))), ctx = locked).rescheduleAll()
+        scheduler(FakeAlarmRepository(emptyList()), ctx = locked).rescheduleAll()
+        assertTrue(scheduled.isEmpty())
     }
 
     @Test
@@ -278,7 +308,7 @@ class AlarmSchedulerImplTest {
     @Test
     fun idsArePersistedBeforeFinalCommit() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
-        val prefs = context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+        val prefs = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
         var idsWhenComputingB: Set<String>? = null
         val probe: (Alarm, Instant, ZoneId) -> Instant? = { alarm, n, z ->
             if (alarm.id == "b") idsWhenComputingB = prefs.getStringSet("scheduled_records", null)?.map { it.substringAfter('|') }?.toSet()
@@ -291,6 +321,96 @@ class AlarmSchedulerImplTest {
             setOf("${at(2, 6, 30).toEpochMilli()}|a", "${at(2, 7, 0).toEpochMilli()}|b"),
             prefs.getStringSet("scheduled_records", null),
         )
+    }
+
+    /** A locked repository whose mirror can't be read: its alarms flow throws. */
+    private fun unreadable(repo: FakeAlarmRepository) = object : AlarmRepository by repo {
+        override val alarms: Flow<List<Alarm>> = flow { throw IllegalStateException("alarm mirror unreadable") }
+    }
+
+    /** A reboot: AlarmManager and every PendingIntent it held are gone. */
+    private fun reboot() {
+        for (alarm in scheduled) {
+            alarm.operation?.let { alarmManager.cancel(it); it.cancel() }
+        }
+        assertTrue(scheduled.isEmpty())
+    }
+
+    private val schedulerPrefs get() = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+
+    private val fires get() = scheduled.filter { !shadowOf(it.operation!!).savedIntent.data.toString().endsWith("/replay") }
+        .filter { shadowOf(it.operation!!).savedIntent.action == AlarmIntents.ACTION_FIRE }
+
+    private fun idAndOccurrence(alarm: ShadowAlarmManager.ScheduledAlarm): Pair<String?, Long> {
+        val intent = shadowOf(alarm.operation!!).savedIntent
+        return intent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID) to intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1)
+    }
+
+    @Test
+    fun unreadableAlarmsAfterARebootRearmTheRecordsAndChangeNothingElse() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30), alarm("b", 7, 0)))
+        scheduler(repo).rescheduleAll()
+        val records = schedulerPrefs.getStringSet("scheduled_records", null)
+        assertEquals(2, records?.size)
+        reboot()
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 5, 10)))
+        var onScheduledCalls = 0
+        val s = AlarmSchedulerImpl(
+            context, unreadable(repo), FakeRingStateStore(), ledger, now = { clock }, zone = { zone },
+            io = UnconfinedTestDispatcher(), onScheduled = { _, _ -> onScheduledCalls++ },
+        )
+
+        val e = runCatching { s.rescheduleAll(rearmOverdueSnooze = true) }.exceptionOrNull()
+
+        assertTrue("expected IllegalStateException, got $e", e is IllegalStateException)
+        assertEquals(
+            setOf("a" to at(2, 6, 30).toEpochMilli(), "b" to at(2, 7, 0).toEpochMilli()),
+            fires.map(::idAndOccurrence).toSet(),
+        )
+        for (fire in fires) {
+            assertEquals(idAndOccurrence(fire).second, fire.triggerAtMs)
+            assertNotNull(fire.showIntent)
+        }
+        assertEquals(records, schedulerPrefs.getStringSet("scheduled_records", null))
+        // Snoozes come from the ledger, not the alarms: still armed.
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
+        assertEquals(0, onScheduledCalls)
+    }
+
+    @Test
+    fun unreadableAlarmsAtBootReplayRecentRecordsAndSkipPastOnes() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0), alarm("b", 5, 2), alarm("c", 7, 0)))
+        clock = at(2, 4, 55)
+        scheduler(repo).rescheduleAll()
+        // A plain run after a's 05:00 sets it aside as missed and records tomorrow's.
+        clock = at(2, 5, 1)
+        scheduler(repo).rescheduleAll()
+        assertEquals(setOf("${at(2, 5, 0).toEpochMilli()}|a"), missed)
+        val records = schedulerPrefs.getStringSet("scheduled_records", null)
+        reboot()
+        // Back up after b's 05:02 too.
+        clock = at(2, 5, 3)
+
+        val plain = runCatching { scheduler(unreadable(repo)).rescheduleAll() }.exceptionOrNull()
+        assertTrue("expected IllegalStateException, got $plain", plain is IllegalStateException)
+        assertTrue("a plain run never replays", replays.isEmpty())
+        reboot()
+        val e = runCatching { scheduler(unreadable(repo)).rescheduleAll(rearmOverdueSnooze = true) }.exceptionOrNull()
+
+        assertTrue("expected IllegalStateException, got $e", e is IllegalStateException)
+        // Missed a and just-passed b replay shortly; their enabled and skip state can't be read (I1).
+        assertEquals(
+            setOf("a" to at(2, 5, 0).toEpochMilli(), "b" to at(2, 5, 2).toEpochMilli()),
+            replays.map(::idAndOccurrence).toSet(),
+        )
+        assertTrue(replays.all { it.triggerAtMs == clock.plusSeconds(5).toEpochMilli() })
+        // b's past record isn't armed as a fire; a's next and c are.
+        assertEquals(
+            setOf("a" to at(3, 5, 0).toEpochMilli(), "c" to at(2, 7, 0).toEpochMilli()),
+            fires.map(::idAndOccurrence).toSet(),
+        )
+        assertEquals(records, schedulerPrefs.getStringSet("scheduled_records", null))
+        assertEquals(setOf("${at(2, 5, 0).toEpochMilli()}|a"), missed)
     }
 
     @Test
@@ -436,6 +556,83 @@ class AlarmSchedulerImplTest {
         assertTrue(replays.isEmpty())
     }
 
+    // A plain reschedule (full startup, T4's clearStale, the UI) can take the mutex before the
+    // boot or time-change rearm run; the occurrence it moves past must still be replayed.
+
+    private val missed: Set<String>
+        get() = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+            .getStringSet("missed_records", emptySet()).orEmpty()
+
+    @Test
+    fun plainRescheduleBeforeRearmStillReplaysMissedAlarm() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        assertTrue(replays.isEmpty())
+        assertEquals(setOf("${at(2, 5, 0).toEpochMilli()}|a"), missed)
+
+        s.rescheduleAll(rearmOverdueSnooze = true)
+
+        val intent = shadowOf(replays.single().operation!!).savedIntent
+        assertEquals(at(2, 5, 0).toEpochMilli(), intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+        // Consumed by the rearm run.
+        assertTrue(missed.isEmpty())
+    }
+
+    @Test
+    fun missedOlderThanTheWindowIsPrunedAndNotReplayed() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        clock = at(2, 5, 11)
+        s.rescheduleAll()
+        assertTrue(missed.isEmpty())
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+    }
+
+    @Test
+    fun missedButOutOfWindowAtRearmIsNotReplayed() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        clock = at(2, 5, 11)
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+        assertTrue(missed.isEmpty())
+    }
+
+    @Test
+    fun missedSkippedOccurrenceIsNotReplayed() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
+        val s = armedThenLater(repo, at(2, 5, 3))
+        s.rescheduleAll()
+        repo.setSkip("a", at(2, 5, 0))
+        s.rescheduleAll(rearmOverdueSnooze = true)
+        assertTrue(replays.isEmpty())
+        assertTrue(missed.isEmpty())
+    }
+
+    @Test
+    fun missedSurvivesSeveralPlainReschedulesAndANewSchedulerInstance() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0), alarm("b", 5, 2)))
+        val s = armedThenLater(repo, at(2, 5, 1))
+        s.rescheduleAll() // a missed
+        clock = at(2, 5, 3)
+        s.rescheduleAll() // b missed; a kept
+        assertEquals(setOf("${at(2, 5, 0).toEpochMilli()}|a", "${at(2, 5, 2).toEpochMilli()}|b"), missed)
+
+        scheduler(repo).rescheduleAll(rearmOverdueSnooze = true)
+
+        val occurrences = replays.associate {
+            val intent = shadowOf(it.operation!!).savedIntent
+            intent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID) to intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1)
+        }
+        assertEquals(mapOf("a" to at(2, 5, 0).toEpochMilli(), "b" to at(2, 5, 2).toEpochMilli()), occurrences)
+        assertTrue(missed.isEmpty())
+    }
+
     @Test
     fun noReplayForSkippedOccurrence() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
@@ -487,13 +684,13 @@ class AlarmSchedulerImplTest {
 
     @Test
     fun legacyIdSetIsMigratedWithoutReplayAndStillCancelled() = runTest {
-        context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE).edit()
+        context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE).edit()
             .putStringSet("scheduled_ids", setOf("gone")).commit()
         val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0)))
         scheduler(repo).rescheduleAll(rearmOverdueSnooze = true)
         assertTrue(replays.isEmpty())
         assertEquals(1, scheduled.size)
-        val prefs = context.getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+        val prefs = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
         assertFalse(prefs.contains("scheduled_ids"))
         assertTrue(prefs.contains("scheduled_records"))
     }

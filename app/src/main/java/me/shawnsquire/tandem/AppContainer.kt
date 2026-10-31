@@ -12,11 +12,9 @@ import me.shawnsquire.tandem.alarm.RingingController
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.AlarmRepositoryImpl
 import me.shawnsquire.tandem.data.RingStateStore
-import me.shawnsquire.tandem.data.RingStateStoreImpl
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.data.SettingsRepositoryImpl
 import me.shawnsquire.tandem.data.TandemDatabase
-import me.shawnsquire.tandem.data.ringStateDataStore
 import me.shawnsquire.tandem.data.settingsDataStore
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingingController
@@ -61,22 +59,24 @@ import me.shawnsquire.tandem.sync.StatePublisher
 @Suppress("unused")
 class AppContainer(private val context: Context) {
     // U1: swap to real
-    val alarmRepository: AlarmRepository = AlarmRepositoryImpl(TandemDatabase.build(context).alarmDao(), Clock.systemDefaultZone())
-    val ringStateStore: RingStateStore = RingStateStoreImpl(context.ringStateDataStore)
-    val settingsRepository: SettingsRepository = SettingsRepositoryImpl(context.settingsDataStore)
+    // Only the engine sees Room and the settings DataStore directly: everyone else goes through
+    // alarmRepository and settingsRepository below.
+    private val roomAlarmRepository = AlarmRepositoryImpl(TandemDatabase.build(context).alarmDao(), Clock.systemDefaultZone())
+    private val roomSettings = SettingsRepositoryImpl(context.settingsDataStore)
 
     // U3: swap to real
-    private val snoozeLedger: me.shawnsquire.tandem.alarm.SnoozeLedger =
-        me.shawnsquire.tandem.alarm.SharedPrefsSnoozeLedger(context)
-    private val alarmSchedulerImpl =
-        me.shawnsquire.tandem.alarm.AlarmSchedulerImpl(context, alarmRepository, ringStateStore, snoozeLedger)
-    val alarmScheduler: AlarmScheduler = alarmSchedulerImpl
-    private val ringingControllerImpl = me.shawnsquire.tandem.alarm.RingingControllerImpl(
-        alarmRepository, ringStateStore, settingsRepository, alarmScheduler, alarmSchedulerImpl,
-        me.shawnsquire.tandem.alarm.AndroidRingingNotifier(context), snoozeLedger,
-    )
-    val ringingController: RingingController = ringingControllerImpl
-    val ringSlot: me.shawnsquire.tandem.alarm.RingSlot = ringingControllerImpl
+    // Attached at the end of construction (the init block below).
+    private val alarmEngine = me.shawnsquire.tandem.alarm.AlarmEngine.get(context)
+    // Waits for the attach drain, so no consumer (a command applied at unlock, the UI) can be
+    // overwritten by an older locked write replayed after it. No initializer below calls it.
+    val alarmRepository: AlarmRepository = alarmEngine.alarmRepository
+    // Its snooze and ringtone edits refresh the device-protected mirror.
+    val settingsRepository: SettingsRepository = alarmEngine.settings
+    // One store per process: the engine's.
+    val ringStateStore: RingStateStore = alarmEngine.ringStateStore
+    val alarmScheduler: AlarmScheduler = alarmEngine.scheduler
+    val ringingController: RingingController = alarmEngine.controller
+    val ringSlot: me.shawnsquire.tandem.alarm.RingSlot = alarmEngine.ringSlot
 
     // U4: swap to real
     val syncScope = CoroutineScope(
@@ -120,4 +120,11 @@ class AppContainer(private val context: Context) {
     val fcmCommandHandler = FcmCommandHandler(
         commandApplier, householdFlow, healthSignalsImpl::recordFcm, LiveZoneClock, { SyncWorker.runNow(context) },
     )
+
+    // Last, once every property above is built: a construction that throws never attaches, so the
+    // engine is never left on a failed attempt's Room (or a half-built preFireCheck) while the
+    // retry builds another. The provider runs when a fire pulls, not here.
+    init {
+        alarmEngine.attach(roomAlarmRepository, roomSettings) { preFireCheck }
+    }
 }

@@ -10,12 +10,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import me.shawnsquire.tandem.TandemApp
 
 /**
  * Entry point for exact-alarm broadcasts and notification actions. Fires do no work here: they
  * go straight to [RingingService] as a foreground service (an allowed start from a
- * `setAlarmClock` broadcast). Dismiss/Snooze actions run on the app-scoped controller.
+ * `setAlarmClock` broadcast). Dismiss/Snooze actions run on the process [AlarmEngine]'s
+ * controller, which works before the first unlock.
  */
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -32,12 +32,12 @@ class AlarmReceiver : BroadcastReceiver() {
             AlarmIntents.ACTION_DISMISS -> {
                 val ringId = intent.getStringExtra(AlarmIntents.EXTRA_RING_ID) ?: return
                 val pending = goAsync()
-                val controller = (context.applicationContext as TandemApp).container.ringingController
+                val controller = AlarmEngine.get(context).controller
                 controlAsync(pending, CoroutineScope(SupervisorJob() + Dispatchers.Default)) { controller.dismiss(ringId) }
             }
             AlarmIntents.ACTION_SNOOZE -> {
                 val pending = goAsync()
-                val controller = (context.applicationContext as TandemApp).container.ringingController
+                val controller = AlarmEngine.get(context).controller
                 controlAsync(pending, CoroutineScope(SupervisorJob() + Dispatchers.Default)) { controller.snooze() }
             }
             else -> Unit

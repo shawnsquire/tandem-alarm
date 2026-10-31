@@ -8,6 +8,12 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
+/** Snooze length when none is stored or it can't be read. */
+internal const val DEFAULT_SNOOZE_MINUTES = 10
+
+/** Every snooze length read or written is coerced into this range. */
+internal val SNOOZE_RANGE = 1..60
+
 class SettingsRepositoryImpl(private val dataStore: DataStore<Preferences>) : SettingsRepository {
     override val snoozeMinutes: Flow<Int> =
         dataStore.data.map { (it[SNOOZE_MINUTES] ?: DEFAULT_SNOOZE_MINUTES).coerceIn(SNOOZE_RANGE) }
@@ -29,8 +35,6 @@ class SettingsRepositoryImpl(private val dataStore: DataStore<Preferences>) : Se
     }
 
     private companion object {
-        const val DEFAULT_SNOOZE_MINUTES = 10
-        val SNOOZE_RANGE = 1..60
         val SNOOZE_MINUTES = intPreferencesKey("snoozeMinutes")
         val WALLPAPER_PATH = stringPreferencesKey("defaultWallpaperPath")
         val RINGTONE_URI = stringPreferencesKey("defaultRingtoneUri")

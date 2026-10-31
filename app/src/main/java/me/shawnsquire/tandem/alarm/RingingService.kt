@@ -14,7 +14,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import me.shawnsquire.tandem.TandemApp
 import java.time.Instant
 
 /** Thin Android glue: foreground promotion, wake lock, and one [RingingSession] per start. */
@@ -70,18 +69,19 @@ open class RingingService : Service() {
             return START_NOT_STICKY
         }
 
-        val container = (application as TandemApp).container
+        // Before the first unlock the engine reads the DE mirror and skips the pre-fire pull.
+        val engine = AlarmEngine.get(this)
         val sound = MediaPlayerAlarmSound(this)
         val vibration = SystemAlarmVibration(vibrationArbiter)
         lateinit var session: RingingSession
         session = RingingSession(
-            alarmRepository = container.alarmRepository,
-            ringStateStore = container.ringStateStore,
-            settingsRepository = container.settingsRepository,
-            preFireCheck = container.preFireCheck,
-            alarmScheduler = container.alarmScheduler,
-            controller = container.ringingController,
-            ringSlot = container.ringSlot,
+            alarmRepository = engine.alarmRepository,
+            ringStateStore = engine.ringStateStore,
+            settingsRepository = engine.settings,
+            preFireCheck = engine.preFireCheck,
+            alarmScheduler = engine.scheduler,
+            controller = engine.controller,
+            ringSlot = engine.ringSlot,
             sound = sound,
             vibration = vibration,
             notifier = notifier,
@@ -89,7 +89,7 @@ open class RingingService : Service() {
             ioDispatcher = Dispatchers.IO,
             now = Instant::now,
             log = { msg, t -> Log.w(TAG, msg, t) },
-            firedLedger = SharedPrefsFiredLedger(applicationContext),
+            firedLedger = engine.firedLedger,
             liveRings = LiveRings,
             onFinished = {
                 sessions.remove(session)
@@ -106,7 +106,7 @@ open class RingingService : Service() {
         // Not awaited: the session must never wait on the ring-slot lock before vibrating. The
         // controller's Mutex is fair, so this clear still runs before the session's claim, which
         // is queued only after the pre-fire check.
-        launchClearStale(scope, container.ringSlot, LiveRings::isLive) { msg, t -> Log.w(TAG, msg, t) }
+        launchClearStale(scope, engine.ringSlot, LiveRings::isLive) { msg, t -> Log.w(TAG, msg, t) }
         session.start(alarmId, occurrence, isSnooze, ringId)
         return START_NOT_STICKY
     }

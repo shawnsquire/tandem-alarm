@@ -28,25 +28,31 @@
 
         <receiver
             android:name=".alarm.AlarmReceiver"
+            android:directBootAware="true"
             android:exported="false" />
 
         <receiver
             android:name=".alarm.BootReceiver"
+            android:directBootAware="true"
             android:exported="true">
             <intent-filter>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
         <service
             android:name=".alarm.RingingService"
+            android:directBootAware="true"
             android:exported="false"
             android:foregroundServiceType="systemExempted" />
 
         <activity
             android:name=".alarm.RingingActivity"
+            android:directBootAware="true"
             android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"

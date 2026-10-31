@@ -37,6 +37,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 import java.time.Instant
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -82,7 +83,9 @@ private class YieldingRingStateStore(private val inner: FakeRingStateStore) : Ri
 private class GatedSlot(private val inner: RingSlot) : RingSlot {
     val gate = CompletableDeferred<Unit>()
     var events: MutableList<String>? = null
-    override suspend fun claimFire(newRing: RingState) { events?.add("claim"); gate.await(); inner.claimFire(newRing) }
+    override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean {
+        events?.add("claim"); gate.await(); return inner.claimFire(newRing, stillDue)
+    }
     override suspend fun claimSnoozeResume(ringId: String, alarmId: String): Boolean {
         gate.await()
         return inner.claimSnoozeResume(ringId, alarmId)
@@ -568,6 +571,27 @@ class RingingSessionTest {
         assertEquals(1, h.sound.starts.size)
     }
 
+    @Test fun claimReCheckReadFailureStillRings() = runTest {
+        val h = harness()
+        val reads = AtomicInteger()
+        // The first read succeeds; the re-check inside the claim (T2's stillDue) throws.
+        val flakyRepo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
+            override suspend fun get(id: String): Alarm? =
+                if (reads.incrementAndGet() == 1) h.repo.get(id) else throw IllegalStateException("db")
+        }
+        val session = RingingSession(
+            flakyRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = { h.finished++ },
+        )
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(2, reads.get()) // the re-check ran
+        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts) // the alarm from the first read
+        assertEquals(RingState("a", "ring-1", clockNow, null), h.rawStore.state.first())
+        assertEquals(0, h.finished)
+    }
+
     // ---- D1: snoozes survive a supersede; atomic slot claims ----
 
     private fun TestScope.secondSession(
@@ -890,6 +914,64 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(1, h.finished)
         assertTrue(h.sound.stops >= 1)
+    }
+
+    /** Runs [before] after the session's first alarm read but before the claim's re-check. */
+    private fun RingSlot.before(before: suspend () -> Unit): RingSlot {
+        val inner = this
+        return object : RingSlot by inner {
+            override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean {
+                before()
+                return inner.claimFire(newRing, stillDue)
+            }
+        }
+    }
+
+    @Test fun skipStoredBetweenReadAndClaimSuppressesTheRing() = runTest {
+        val h = harness()
+        val slot = h.controller.before { h.repo.setSkip("a", occurrence) }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(1, h.vibration.starts) // started before the claim
+        assertTrue(h.vibration.stops >= 1)
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        assertNull(h.repo.get("a")!!.skippedOccurrenceAt)
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+        assertFalse(h.live.isLive("ring-1"))
+    }
+
+    @Test fun disabledBetweenReadAndClaimSuppressesTheRing() = runTest {
+        val h = harness()
+        val slot = h.controller.before { h.repo.setEnabled("a", false) }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertTrue(h.vibration.stops >= 1)
+        assertNull(h.fired.lastRang("a"))
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun lateClaimFireNotDueDoesNotStopTheRing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val h = harness()
+        val slot = object : RingSlot by h.controller {
+            override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean {
+                gate.await()
+                return false
+            }
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size) // rang on timeout
+        gate.complete(Unit) // the claim finishes late with "not due"
+        runCurrent()
+        assertEquals(0, h.sound.stops)
+        assertEquals(0, h.finished)
     }
 
     @Test fun lateClaimAfterSessionFinishedIsIgnored() = runTest {

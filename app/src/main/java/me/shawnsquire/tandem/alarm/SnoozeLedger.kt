@@ -20,7 +20,7 @@ interface SnoozeLedger {
 
 /** Durable ledger. Writes use commit(): receivers may kill the process right after. */
 class SharedPrefsSnoozeLedger(context: Context) : SnoozeLedger {
-    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    private val prefs by lazy { deviceProtectedPrefs(context, PREFS) }
 
     override fun put(ringId: String, alarmId: String, until: Instant) {
         check(prefs.edit().putString(ringId, "${until.toEpochMilli()}|$alarmId").commit()) { "snooze ledger write failed" }

@@ -10,8 +10,16 @@ import me.shawnsquire.tandem.schedule.RingState
  * A call that throws means the new state was not written.
  */
 interface RingSlot {
-    /** Supersedes a sounding ring (dismiss), parks a snoozed one, then writes [newRing]. */
-    suspend fun claimFire(newRing: RingState)
+    /**
+     * Supersedes a sounding ring (dismiss), parks a snoozed one, then writes [newRing].
+     *
+     * [stillDue] runs first, inside the same critical section, so a command stored locally
+     * between the caller's decision to ring and this claim is not missed. When it returns false
+     * nothing is superseded or written and this returns false. When it throws, the error is
+     * logged and the ring counts as due (I1: an error never silences a ring). Returns true when
+     * [newRing] was written; a throw from that write still propagates.
+     */
+    suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean = { true }): Boolean
 
     /**
      * Snooze-fire path. Returns false when the snooze is no longer live (dismissed while

@@ -257,13 +257,7 @@ class RingingSession(
         if (alarm != null) {
             val skipped = alarm.skippedOccurrenceAt == occurrence
             if (!alarm.enabled || skipped) {
-                if (skipped) {
-                    // Recorded as handled, so a replay of this skipped occurrence cannot ring once the skip is cleared.
-                    guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
-                    guarded("clear skip", Unit) { alarmRepository.setSkip(alarm.id, null) }
-                }
-                guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
-                finish()
+                suppressFire(alarmId, occurrence, skipped)
                 return
             }
         }
@@ -281,10 +275,38 @@ class RingingSession(
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
         register(ringId)
         // Newest alarm supersedes a sounding ring; a snoozed one is parked and keeps its snooze.
-        val claim = boundedClaim("ring slot claim", onLate = { _: Unit -> adoptLateClaim(alarm, ringId) }) {
-            ringSlot.claimFire(RingState(alarmId, ringId, now(), null))
+        // The decision is re-checked inside the claim's critical section, so a skip, disable or delete
+        // stored since the read above still suppresses; a failed re-check counts as due (I1).
+        var skippedAtClaim = false
+        val claim = boundedClaim(
+            "ring slot claim",
+            onLate = { written: Boolean ->
+                // A late "no longer due" does not stop a ring that has started.
+                if (written) adoptLateClaim(alarm, ringId) else log("late ring slot claim: no longer due", null)
+            },
+        ) {
+            ringSlot.claimFire(RingState(alarmId, ringId, now(), null)) {
+                val current = alarmRepository.get(alarmId)
+                skippedAtClaim = current?.skippedOccurrenceAt == occurrence
+                current != null && current.enabled && !skippedAtClaim
+            }
+        }
+        if (claim is Claim.Done && !claim.value) {
+            suppressFire(alarmId, occurrence, skippedAtClaim) // finish() stops vibration and unregisters the ring
+            return
         }
         ring(alarm, ringId, observe = claim is Claim.Done, fire = alarmId to occurrence)
+    }
+
+    /** Quiet end for a deleted, disabled or skipped occurrence, all of them commands already stored locally. */
+    private suspend fun suppressFire(alarmId: String, occurrence: Instant, skipped: Boolean) {
+        if (skipped) {
+            // Recorded as handled, so a replay of this skipped occurrence cannot ring once the skip is cleared.
+            guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
+            guarded("clear skip", Unit) { alarmRepository.setSkip(alarmId, null) }
+        }
+        guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
+        finish()
     }
 
     /** I1: hard 3 s bound that also holds when the check blocks a thread without cooperating. */
