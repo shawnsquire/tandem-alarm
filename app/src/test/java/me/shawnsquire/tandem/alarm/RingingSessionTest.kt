@@ -929,10 +929,53 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(1, h.sound.starts.size)
         advanceTimeBy(10.minutes + 1.seconds); runCurrent()
-        assertEquals(1, h.finished)
-        assertTrue(h.sound.stops >= 1)
+        assertTrue(h.sound.stops >= 1) // silent at once
         assertTrue(h.vibration.stops >= 1)
-        assertEquals(listOf("ring-1"), dismissed) // still asked, after the sound stopped
+        assertEquals(listOf("ring-1"), dismissed) // asked after the sound stopped
+        assertEquals(0, h.finished) // the service stays up while the dismiss gets its chance
+        advanceTimeBy(5.seconds); runCurrent()
+        assertEquals(1, h.finished) // bounded: a hung dismiss cannot keep the session forever
+    }
+
+    @Test fun autoSilenceFinishesOnlyAfterTheDismissCompletes() = runTest {
+        val h = harness()
+        val gate = CompletableDeferred<Unit>()
+        val gated = object : RingingController {
+            override suspend fun dismiss(ringId: String) { gate.await(); h.controller.dismiss(ringId) }
+            override suspend fun snooze() = Unit
+        }
+        slotSession(h, h.controller, controller = gated).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertTrue(h.sound.stops >= 1)
+        assertEquals(0, h.finished)
+        gate.complete(Unit); runCurrent()
+        assertNull(h.rawStore.state.first())
+        assertFalse(h.repo.get("a")!!.enabled) // a real dismiss: one-shot disabled
+        assertEquals(1, h.finished)
+    }
+
+    @Test fun lateClaimFireWriteBehindStuckLockIsClearedByAutoSilence() = runTest {
+        // The claim waits behind a stuck dismiss of B; auto-silence's dismiss queues behind the claim.
+        val ringB = RingState("b", "ring-B", clockNow, null)
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringB)
+        val stuck = GatedScheduler()
+        val ctl = RingingControllerImpl(h.repo, h.store, FakeSettingsRepository(), stuck, h.armer, h.notifier, h.ledger) { h.clock }
+        backgroundScope.launch { ctl.dismiss("ring-B") }
+        runCurrent()
+
+        slotSession(h, ctl, controller = ctl).start("a", occurrence, false, null)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.fallback) // claim timed out, ringing inertly
+        advanceTimeBy(10.minutes + 5.seconds); runCurrent()
+        assertEquals(1, h.finished) // auto-silence gave up waiting on the lock
+        assertTrue(h.sound.stops >= 1)
+
+        stuck.gate.complete(Unit) // lock released: the late claim writes, then the queued dismiss runs
+        runCurrent()
+        assertNull(h.rawStore.state.first()) // no RingState left without a session
+        assertFalse(h.repo.get("a")!!.enabled) // A counted as dismissed
+        assertTrue(h.notifier.ringing.isEmpty()) // the finished session did not adopt the late claim
     }
 
     @Test fun replayFindsOccurrenceRungDuringPreFireAndIsQuiet() = runTest {

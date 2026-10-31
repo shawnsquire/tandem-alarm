@@ -54,6 +54,7 @@ class RingingSession(
     private var ringStarted = false
     private var autoSilence: Job? = null
     private var vibrationStarted = false
+    private var silencing = false
     private var registeredRingId: String? = null
 
     /** The ring this session registered, once it has one. */
@@ -120,20 +121,34 @@ class RingingSession(
     }
 
     /**
-     * Auto-silence counts as a dismiss; with no known ringId it just ends the session. Sound stops
-     * first: the dismiss waits on the ring-slot lock, and a stuck lock must never keep a ring going.
-     * The dismiss runs NonCancellable, so finish() cancelling the session's jobs cannot abort it.
+     * Auto-silence counts as a dismiss; with no known ringId it just ends the session.
+     * 1. Sound and vibration stop at once: the dismiss waits on the ring-slot lock, and a stuck
+     *    lock must never keep a ring going.
+     * 2. The dismiss runs while the session (so the foreground service and its wake lock) is still
+     *    alive, bounded like a claim: the controller makes it NonCancellable, so only waiting on it
+     *    from outside can time out. It keeps running past the bound.
+     * 3. Only then does the session finish.
      */
     private fun ensureAutoSilence(ringId: String?) {
         if (autoSilence != null) return
         autoSilence = scope.launch {
             delay(10.minutes)
-            finish() // cancels this job too; the dismiss below still runs to completion
+            silencing = true
+            guardedNow("sound stop") { sound.stop() }
+            guardedNow("vibration stop") { vibration.stop() }
             if (ringId != null) {
-                withContext(NonCancellable) {
+                observeJob?.cancel() // the dismiss's clear must not end the session before the dismiss is done
+                val d = scope.async {
                     try { controller.dismiss(ringId) } catch (e: Throwable) { log("auto-silence dismiss failed", e) }
                 }
+                try {
+                    withTimeoutOrNull(DISMISS_TIMEOUT) { d.await() } ?: log("auto-silence dismiss timed out", null)
+                } catch (e: Throwable) {
+                    currentCoroutineContext().ensureActive()
+                    log("auto-silence dismiss failed", e)
+                }
             }
+            finish()
         }.also { jobs += it }
     }
 
@@ -178,7 +193,7 @@ class RingingSession(
      * Snooze from the ringing screen end it) and show the actions. It never stops the ring itself.
      */
     private suspend fun adoptLateClaim(alarm: Alarm?, ringId: String) {
-        if (finished || observing) return
+        if (finished || observing || silencing) return
         if (!ringPosted) {
             lateClaimed = true // ring() has not posted its notification yet; it will adopt the claim itself
             return
@@ -317,6 +332,7 @@ class RingingSession(
     }
 
     private var observing = false
+    private var observeJob: Job? = null
     private var ringPosted = false
     private var lateClaimed = false
 
@@ -324,7 +340,7 @@ class RingingSession(
     private fun observe(ringId: String) {
         if (observing) return
         observing = true
-        jobs += scope.launch {
+        observeJob = scope.launch {
             var ok = true
             try {
                 ringStateStore.state.first { it == null || it.ringId != ringId || it.snoozedUntil != null }
@@ -334,7 +350,7 @@ class RingingSession(
                 ok = false
             }
             if (ok) finish()
-        }
+        }.also { jobs += it }
     }
 
     private fun finish() {
@@ -349,5 +365,6 @@ class RingingSession(
 
     private companion object {
         val CLAIM_TIMEOUT = 2.seconds
+        val DISMISS_TIMEOUT = 5.seconds
     }
 }
