@@ -56,17 +56,21 @@ jobs:
         run: |
           export TANDEM_VERSION_NAME="${GITHUB_REF_NAME#v}"
           export TANDEM_VERSION_CODE="$RUN_NUMBER"
-          ./gradlew assembleRelease
+          ./gradlew --no-daemon assembleRelease
 
       - name: Verify signature and name the APK
         run: |
           "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
           cp app/build/outputs/apk/release/app-release.apk "tandem-${GITHUB_REF_NAME}.apk"
 
-      - uses: softprops/action-gh-release@v3
+      # Drop the key and Firebase config before any third-party action runs.
+      - name: Remove signing key
+        run: rm -f "$RUNNER_TEMP/tandem.jks" app/google-services.json
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: tandem-${{ github.ref_name }}.apk
 
-      - name: Remove signing key
+      - name: Remove signing key (backstop)
         if: always()
         run: rm -f "$RUNNER_TEMP/tandem.jks" app/google-services.json
