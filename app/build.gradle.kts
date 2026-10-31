@@ -72,6 +72,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.zxing.core)
 
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
