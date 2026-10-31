@@ -166,6 +166,12 @@ describe("after the household is deleted", () => {
   it("denies a former member writing a command", async () => {
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c2")), command()));
   });
+  it("denies a former member writing their own device doc", async () => {
+    await assertFails(updateDoc(doc(dbFor(ALICE), devicePath(ALICE)), { fcmToken: "new" }));
+  });
+  it("denies the recipient resolving a pending command", async () => {
+    await assertFails(updateDoc(doc(dbFor(BOB), cmdPath("c1")), { status: "applied" }));
+  });
 });
 
 describe("households/{hid}/devices/{uid}", () => {

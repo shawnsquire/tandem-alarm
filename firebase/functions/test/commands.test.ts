@@ -1,6 +1,6 @@
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
-import { notifyCommandTarget } from "../src/commands";
+import { notifyCommandTarget, onCommandCreated } from "../src/commands";
 import { sendMessage } from "../src/messaging";
 
 jest.mock("../src/messaging");
@@ -169,6 +169,17 @@ describe("notifyCommandTarget", () => {
     const data = await seedCommand({ type: "ENABLE" });
 
     await notifyCommandTarget(HID, CID, data);
+
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("onCommandCreated", () => {
+  it("ignores an event with no snapshot", async () => {
+    await seedDevice({ fcmToken: TOKEN });
+    const event = { data: undefined, params: { hid: HID, cid: CID } };
+
+    await expect(Promise.resolve(onCommandCreated.run(event as never))).resolves.toBeUndefined();
 
     expect(send).not.toHaveBeenCalled();
   });
