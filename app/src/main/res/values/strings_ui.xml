@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="alarms_title">Alarms</string>
+    <string name="alarms_add">Add alarm</string>
+    <string name="alarms_empty">No alarms yet. Tap Add alarm to create one.</string>
+    <string name="alarm_no_label">Alarm</string>
+    <string name="alarm_off">Off</string>
+    <string name="alarm_enabled_switch">Alarm enabled</string>
+    <string name="alarm_more_options">More options</string>
+    <string name="alarm_skip_next">Skip next</string>
+    <string name="alarm_unskip">Unskip</string>
+    <string name="alarm_skipped_next">Skipped · next %1$s</string>
+    <string name="alarm_skipped">Skipped</string>
+    <string name="alarm_deleted">Alarm deleted</string>
+    <string name="alarm_deleted_undo">Undo</string>
+</resources>

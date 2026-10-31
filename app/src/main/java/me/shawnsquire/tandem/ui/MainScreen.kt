@@ -20,7 +20,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import me.shawnsquire.tandem.ui.alarms.AlarmsScreen
+import me.shawnsquire.tandem.ui.alarms.AlarmsRoute
 import me.shawnsquire.tandem.ui.partner.PartnerScreen
 import me.shawnsquire.tandem.ui.settings.SettingsScreen
 
@@ -63,7 +63,7 @@ fun MainScreen() {
             startDestination = Tab.Alarms.route,
             modifier = Modifier.padding(innerPadding),
         ) {
-            composable(Tab.Alarms.route) { AlarmsScreen() }
+            composable(Tab.Alarms.route) { AlarmsRoute(onAddAlarm = {}, onEditAlarm = {}) }
             composable(Tab.Partner.route) { PartnerScreen() }
             composable(Tab.Settings.route) { SettingsScreen() }
         }
