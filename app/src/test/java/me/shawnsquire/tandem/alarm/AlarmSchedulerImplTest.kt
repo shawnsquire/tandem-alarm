@@ -52,7 +52,9 @@ class AlarmSchedulerImplTest {
         ring: FakeRingStateStore = FakeRingStateStore(),
         next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
         ledger: SnoozeLedger = InMemorySnoozeLedger(),
-    ) = AlarmSchedulerImpl(context, repo, ring, ledger, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher())
+        onScheduled: suspend (List<Alarm>, Map<String, Long>) -> Unit = { _, _ -> },
+        ctx: Context = context,
+    ) = AlarmSchedulerImpl(ctx, repo, ring, ledger, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher(), onScheduled = onScheduled)
 
     private fun ledgerOf(vararg entries: SnoozeEntry) = InMemorySnoozeLedger().apply {
         entries.forEach { put(it.ringId, it.alarmId, it.until) }
@@ -139,6 +141,28 @@ class AlarmSchedulerImplTest {
         s.rescheduleAll()
         assertEquals(1, scheduled.size)
         assertEquals(at(3, 6, 30).toEpochMilli(), scheduled.single().triggerAtMs)
+    }
+
+    @Test
+    fun onScheduledGetsTheAlarmsAndTheArmedTriggers() = runTest {
+        val alarms = listOf(alarm("a", 6, 30), alarm("b", 7, 0, enabled = false))
+        var seen: Pair<List<Alarm>, Map<String, Long>>? = null
+        scheduler(FakeAlarmRepository(alarms), onScheduled = { a, t -> seen = a to t }).rescheduleAll()
+        assertEquals(alarms to mapOf("a" to at(2, 6, 30).toEpochMilli()), seen)
+    }
+
+    @Test
+    fun throwingOnScheduledDoesNotFailReschedule() = runTest {
+        scheduler(FakeAlarmRepository(listOf(alarm("a"))), onScheduled = { _, _ -> throw IllegalStateException("boom") }).rescheduleAll()
+        assertEquals(1, scheduled.size)
+    }
+
+    @Test
+    fun schedulerOnlyTouchesDeviceStorage() = runTest {
+        val locked = LockedContext(context)
+        scheduler(FakeAlarmRepository(listOf(alarm("a"))), ctx = locked).rescheduleAll()
+        scheduler(FakeAlarmRepository(emptyList()), ctx = locked).rescheduleAll()
+        assertTrue(scheduled.isEmpty())
     }
 
     @Test

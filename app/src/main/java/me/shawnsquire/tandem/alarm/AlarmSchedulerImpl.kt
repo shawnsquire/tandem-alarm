@@ -27,6 +27,8 @@ internal val OVERDUE_SNOOZE_DELAY: Duration = Duration.ofSeconds(5)
  * Registers one `setAlarmClock` per enabled alarm, plus one per armed snooze in [ledger], from
  * local state only.
  * [now] and [zone] are read on every [rescheduleAll] so time and timezone changes are honored.
+ * [onScheduled] gets the alarms read and the triggers armed at the end of every run (it feeds the
+ * device-protected mirror); a failure there is logged and never fails the run.
  */
 class AlarmSchedulerImpl(
     private val context: Context,
@@ -37,6 +39,7 @@ class AlarmSchedulerImpl(
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val onScheduled: suspend (alarms: List<Alarm>, triggers: Map<String, Long>) -> Unit = { _, _ -> },
 ) : AlarmScheduler, SnoozeArmer {
 
     private val alarmManager: AlarmManager = context.getSystemService(AlarmManager::class.java)
@@ -134,7 +137,14 @@ class AlarmSchedulerImpl(
             }
         }
         // commit(): the records must be durable before we return (receivers may kill the process).
-        writeRecords(scheduledNow.mapNotNull { (id, at) -> at?.let { id to it } }.toMap(), emptySet(), dropLegacy = true)
+        val triggers = scheduledNow.mapNotNull { (id, at) -> at?.let { id to it } }.toMap()
+        writeRecords(triggers, emptySet(), dropLegacy = true)
+        try {
+            onScheduled(alarms, triggers)
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            Log.e(TAG, "onScheduled failed", e)
+        }
     }
 
     /**
