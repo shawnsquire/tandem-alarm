@@ -41,4 +41,37 @@ fun validate(
     ring: RingState?,
     now: Instant,
     zone: ZoneId,
-): CommandDecision = TODO("U1")
+): CommandDecision {
+    if (now >= cmd.expiresAt) return CommandDecision.Reject("expired")
+    if (alarm == null) return CommandDecision.Reject("alarm not found")
+    val stale = CommandDecision.Reject("already rang or changed")
+    return when (cmd.type) {
+        CommandType.SKIP_NEXT ->
+            if (cmd.occurrenceAt != null && cmd.occurrenceAt == nextOccurrence(alarm, now, zone)) {
+                CommandDecision.Apply
+            } else {
+                stale
+            }
+        CommandType.UNSKIP -> {
+            val skipped = alarm.skippedOccurrenceAt
+            if (skipped != null && skipped > now && skipped == cmd.occurrenceAt) {
+                CommandDecision.Apply
+            } else {
+                CommandDecision.Reject("nothing to unskip")
+            }
+        }
+        CommandType.DISABLE -> when {
+            !alarm.enabled -> CommandDecision.Reject("already off")
+            cmd.occurrenceAt != null && cmd.occurrenceAt == nextOccurrence(alarm, now, zone) ->
+                CommandDecision.Apply
+            else -> stale
+        }
+        CommandType.ENABLE -> CommandDecision.Apply
+        CommandType.STOP_RINGING ->
+            if (ring != null && ring.alarmId == cmd.alarmId && cmd.ringId != null && ring.ringId == cmd.ringId) {
+                CommandDecision.Apply
+            } else {
+                CommandDecision.Reject("not ringing")
+            }
+    }
+}
