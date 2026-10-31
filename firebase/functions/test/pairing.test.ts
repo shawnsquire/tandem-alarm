@@ -163,6 +163,39 @@ describe("unpair", () => {
     }
   });
 
+  it("removes everything when the joiner unpairs", async () => {
+    const hid = await pairedHousehold();
+    const hh = db().doc(`households/${hid}`);
+    await hh.collection("devices").doc(A).set({ displayName: "a" });
+    await hh.collection("devices").doc(B).set({ displayName: "b" });
+    await hh.collection("commands").doc("x").set({ type: "ring" });
+
+    await unpairFor(B);
+
+    for (const ref of [
+      hh,
+      hh.collection("devices").doc(A),
+      hh.collection("devices").doc(B),
+      hh.collection("commands").doc("x"),
+      db().doc(`users/${A}`),
+      db().doc(`users/${B}`),
+    ]) {
+      expect((await ref.get()).exists).toBe(false);
+    }
+  });
+
+  it("lets a former member start a fresh household after unpairing", async () => {
+    const oldHid = await pairedHousehold();
+
+    await unpairFor(A);
+    await createPairCodeFor(B);
+
+    const newHid = (await db().doc(`users/${B}`).get()).get("householdId");
+    expect(newHid).not.toBe(oldHid);
+    expect((await db().doc(`households/${newHid}`).get()).get("members")).toEqual([B]);
+    expect((await db().doc(`households/${oldHid}`).get()).exists).toBe(false);
+  });
+
   it("does not throw for a user with no household", async () => {
     await expect(unpairFor(C)).resolves.toBeUndefined();
   });

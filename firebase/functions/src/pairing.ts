@@ -98,14 +98,23 @@ export async function joinHouseholdFor(uid: string, data: { code?: unknown }): P
 
 export async function unpairFor(uid: string): Promise<void> {
   const db = getFirestore();
-  const user = await db.doc(`users/${uid}`).get();
-  if (!user.exists) return; // idempotent
-  const householdRef = db.doc(`households/${user.get("householdId")}`);
-  const household = await householdRef.get();
-  const members = new Set<string>([uid, ...((household.get("members") as string[] | undefined) ?? [])]);
+  const userRef = db.doc(`users/${uid}`);
+  const householdRef = await db.runTransaction(async (tx) => {
+    const user = await tx.get(userRef);
+    if (!user.exists) return null; // idempotent
+    const ref = db.doc(`households/${user.get("householdId")}`);
+    const household = await tx.get(ref);
+    const members = new Set<string>([uid, ...((household.get("members") as string[] | undefined) ?? [])]);
 
-  await db.recursiveDelete(householdRef); // includes devices/ and commands/
-  await Promise.all([...members].map((m) => db.doc(`users/${m}`).delete()));
+    // Delete the household doc first: the rules read it for membership, so
+    // this denies new devices/commands writes at once, and it serializes
+    // against joinHousehold (reads the household) and ensureHousehold (reads users/{uid}).
+    tx.delete(ref);
+    for (const m of members) tx.delete(db.doc(`users/${m}`));
+    return ref;
+  });
+  // The subcollections are unreachable by now; clear them out.
+  if (householdRef) await db.recursiveDelete(householdRef);
 }
 
 export const createPairCode = onCall((request) => createPairCodeFor(requireUid(request)));
