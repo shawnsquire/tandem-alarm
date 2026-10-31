@@ -4,6 +4,15 @@ import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.toJavaDuration
+
+/** How long after an occurrence fires that commands and skips pinned to it are still honored. */
+val FIRE_GRACE: Duration = 2.minutes
+
+/** True when the alarm has no repeat days (rings once, then is done). */
+fun Alarm.isOneShot(): Boolean = days.isEmpty()
 
 /**
  * Next time [alarm] should ring strictly after [now] in [zone], or null if none.
@@ -32,8 +41,15 @@ fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
 
 /**
  * Owner-side validation of a partner [cmd] against local state (I2, I3).
- * Rejects expired commands (24 h), commands whose target occurrence has passed or doesn't
- * match [alarm]'s current next occurrence, and stop-ringing whose ringId doesn't match [ring].
+ * Rejects expired commands (24 h), commands whose target occurrence doesn't match [alarm]'s
+ * next occurrence, and stop-ringing whose ringId doesn't match [ring].
+ *
+ * SKIP_NEXT and DISABLE are also rejected while the alarm is ringing (the partner should send
+ * STOP_RINGING). They are pinned to the occurrence after `now - FIRE_GRACE` or after `now`, so
+ * a command for an occurrence that has just fired still applies for [FIRE_GRACE]; the second
+ * form keeps the genuinely current next occurrence valid during that window.
+ * SKIP_NEXT on a one-shot alarm is validated like DISABLE; for a one-shot alarm the applier/UI
+ * disables it instead of setting a skip.
  */
 fun validate(
     cmd: Command,
@@ -45,13 +61,27 @@ fun validate(
     if (now >= cmd.expiresAt) return CommandDecision.Reject("expired")
     if (alarm == null) return CommandDecision.Reject("alarm not found")
     val stale = CommandDecision.Reject("already rang or changed")
+    val ringing = ring != null && ring.alarmId == cmd.alarmId
+    val grace = FIRE_GRACE.toJavaDuration()
+    fun pinned(): Boolean {
+        val target = cmd.occurrenceAt ?: return false
+        return target == nextOccurrence(alarm, now.minus(grace), zone) ||
+            target == nextOccurrence(alarm, now, zone)
+    }
+    fun disableLike(): CommandDecision = when {
+        !alarm.enabled -> CommandDecision.Reject("already off")
+        ringing -> CommandDecision.Reject("already ringing")
+        pinned() -> CommandDecision.Apply
+        else -> stale
+    }
     return when (cmd.type) {
         CommandType.SKIP_NEXT -> {
             val skipped = alarm.skippedOccurrenceAt
             when {
-                skipped != null && skipped > now -> CommandDecision.Reject("already skipped")
-                cmd.occurrenceAt != null && cmd.occurrenceAt == nextOccurrence(alarm, now, zone) ->
-                    CommandDecision.Apply
+                alarm.isOneShot() -> disableLike()
+                ringing -> CommandDecision.Reject("already ringing")
+                skipped != null && skipped > now.minus(grace) -> CommandDecision.Reject("already skipped")
+                pinned() -> CommandDecision.Apply
                 else -> stale
             }
         }
@@ -63,12 +93,7 @@ fun validate(
                 CommandDecision.Reject("nothing to unskip")
             }
         }
-        CommandType.DISABLE -> when {
-            !alarm.enabled -> CommandDecision.Reject("already off")
-            cmd.occurrenceAt != null && cmd.occurrenceAt == nextOccurrence(alarm, now, zone) ->
-                CommandDecision.Apply
-            else -> stale
-        }
+        CommandType.DISABLE -> disableLike()
         CommandType.ENABLE -> CommandDecision.Apply
         CommandType.STOP_RINGING ->
             if (ring != null && ring.alarmId == cmd.alarmId && cmd.ringId != null && ring.ringId == cmd.ringId) {

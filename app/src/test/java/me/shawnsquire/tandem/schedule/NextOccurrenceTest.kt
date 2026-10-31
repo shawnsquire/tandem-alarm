@@ -162,4 +162,11 @@ class NextOccurrenceTest {
         val now = Instant.parse("2026-11-07T20:00:00Z")
         assertEquals(Instant.parse("2026-11-08T00:30:00Z"), next(alarm, now, kolkata))
     }
+
+    @Test
+    fun oneSecondAfterFireReturnsTomorrow() {
+        val daily = alarm(8, days = allDays)
+        val result = next(daily, Instant.parse("2026-11-07T13:00:01Z"))
+        assertEquals(Instant.parse("2026-11-08T13:00:00Z"), result)
+    }
 }

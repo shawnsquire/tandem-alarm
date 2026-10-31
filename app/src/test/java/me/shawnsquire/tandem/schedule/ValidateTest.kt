@@ -3,7 +3,10 @@ package me.shawnsquire.tandem.schedule
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ValidateTest {
@@ -62,6 +65,13 @@ class ValidateTest {
 
     private fun check(cmd: Command, alarm: Alarm?, ring: RingState? = null) =
         validate(cmd, alarm, ring, now, newYork)
+
+    private fun checkAt(at: Instant, cmd: Command, alarm: Alarm?, ring: RingState? = null) =
+        validate(cmd.copy(expiresAt = at.plusSeconds(3600)), alarm, ring, at, newYork)
+
+    private val afterRing = todayRing.plusSeconds(1)
+    private val laterRing = todayRing.plus(3, ChronoUnit.MINUTES)
+    private fun oneShot(enabled: Boolean = true) = alarm(enabled = enabled).copy(days = emptySet())
 
     @Test
     fun expiredAtExactlyExpiresAtRejects() {
@@ -136,9 +146,9 @@ class ValidateTest {
     }
 
     @Test
-    fun skipNextWithSkipExactlyNowApplies() {
+    fun skipNextWithSkipExactlyNowRejectsAsAlreadySkippedWithinGrace() {
         val a = alarm(skippedOccurrenceAt = now)
-        assertEquals(apply, check(cmd(CommandType.SKIP_NEXT, todayRing), a))
+        assertEquals(reject("already skipped"), check(cmd(CommandType.SKIP_NEXT, tomorrowRing), a))
     }
 
     @Test
@@ -255,5 +265,112 @@ class ValidateTest {
     fun stopRingingNullRingIdRejects() {
         val c = cmd(CommandType.STOP_RINGING)
         assertEquals(reject("not ringing"), check(c, alarm(), ringState()))
+    }
+
+    @Test
+    fun skipNextPinnedToFiredOccurrenceStillAppliesJustAfterFire() {
+        assertEquals(apply, checkAt(afterRing, cmd(CommandType.SKIP_NEXT, todayRing), alarm()))
+    }
+
+    @Test
+    fun skipNextPinnedToFiredOccurrenceRejectsAfterGrace() {
+        assertEquals(
+            reject("already rang or changed"),
+            checkAt(laterRing, cmd(CommandType.SKIP_NEXT, todayRing), alarm()),
+        )
+    }
+
+    @Test
+    fun skipNextPinnedToTomorrowAppliesJustAfterFire() {
+        assertEquals(apply, checkAt(afterRing, cmd(CommandType.SKIP_NEXT, tomorrowRing), alarm()))
+    }
+
+    @Test
+    fun skipNextWhileRingingRejects() {
+        val c = cmd(CommandType.SKIP_NEXT, todayRing)
+        assertEquals(reject("already ringing"), checkAt(afterRing, c, alarm(), ringState()))
+    }
+
+    @Test
+    fun skipNextWithOtherAlarmRingingIsNotBlocked() {
+        val c = cmd(CommandType.SKIP_NEXT, todayRing)
+        assertEquals(apply, checkAt(afterRing, c, alarm(), ringState(alarmId = "other")))
+    }
+
+    @Test
+    fun disablePinnedToFiredOccurrenceAppliesJustAfterFire() {
+        assertEquals(apply, checkAt(afterRing, cmd(CommandType.DISABLE, todayRing), alarm()))
+    }
+
+    @Test
+    fun disablePinnedToFiredOccurrenceRejectsAfterGrace() {
+        assertEquals(
+            reject("already rang or changed"),
+            checkAt(laterRing, cmd(CommandType.DISABLE, todayRing), alarm()),
+        )
+    }
+
+    @Test
+    fun disableWhileRingingRejects() {
+        val c = cmd(CommandType.DISABLE, todayRing)
+        assertEquals(reject("already ringing"), checkAt(afterRing, c, alarm(), ringState()))
+    }
+
+    @Test
+    fun disableOnDisabledWhileRingingRejectsAsAlreadyOff() {
+        val c = cmd(CommandType.DISABLE, todayRing)
+        assertEquals(reject("already off"), checkAt(afterRing, c, alarm(enabled = false), ringState()))
+    }
+
+    @Test
+    fun oneShotSkipNextPinnedCorrectlyApplies() {
+        assertEquals(apply, check(cmd(CommandType.SKIP_NEXT, todayRing), oneShot()))
+        assertEquals(apply, checkAt(afterRing, cmd(CommandType.SKIP_NEXT, todayRing), oneShot()))
+    }
+
+    @Test
+    fun oneShotSkipNextOnDisabledRejectsAsAlreadyOff() {
+        assertEquals(reject("already off"), check(cmd(CommandType.SKIP_NEXT, todayRing), oneShot(enabled = false)))
+    }
+
+    @Test
+    fun oneShotSkipNextWhileRingingRejects() {
+        val c = cmd(CommandType.SKIP_NEXT, todayRing)
+        assertEquals(reject("already ringing"), checkAt(afterRing, c, oneShot(), ringState()))
+    }
+
+    @Test
+    fun oneShotSkipNextStaleRejects() {
+        assertEquals(
+            reject("already rang or changed"),
+            checkAt(laterRing, cmd(CommandType.SKIP_NEXT, todayRing), oneShot()),
+        )
+        assertEquals(reject("already rang or changed"), check(cmd(CommandType.SKIP_NEXT, tomorrowRing), oneShot()))
+    }
+
+    @Test
+    fun skipNextAlreadySkippedStillBlocksOneMinuteAfterFire() {
+        val a = alarm(skippedOccurrenceAt = todayRing)
+        val c = cmd(CommandType.SKIP_NEXT, tomorrowRing)
+        assertEquals(reject("already skipped"), checkAt(todayRing.plusSeconds(60), c, a))
+    }
+
+    @Test
+    fun skipNextNotBlockedByExpiredSkipThreeMinutesAfterFire() {
+        val a = alarm(skippedOccurrenceAt = todayRing)
+        val c = cmd(CommandType.SKIP_NEXT, tomorrowRing)
+        assertEquals(apply, checkAt(laterRing, c, a))
+    }
+
+    @Test
+    fun unskipAfterSkippedOccurrenceHasFiredRejects() {
+        val a = alarm(skippedOccurrenceAt = todayRing)
+        assertEquals(reject("nothing to unskip"), checkAt(afterRing, cmd(CommandType.UNSKIP, todayRing), a))
+    }
+
+    @Test
+    fun isOneShotIsTrueOnlyForEmptyDays() {
+        assertTrue(oneShot().isOneShot())
+        assertFalse(alarm().isOneShot())
     }
 }
