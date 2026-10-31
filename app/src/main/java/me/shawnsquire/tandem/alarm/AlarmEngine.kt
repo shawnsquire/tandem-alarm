@@ -20,8 +20,10 @@ import java.time.Instant
  * lock), one set of ledgers and one ring-state store, whether it started before or after the
  * first unlock. Built only from device-protected storage: until [attach], alarm and settings reads
  * come from the DE mirror and the pre-fire check is skipped.
+ *
+ * [unlocked] only steers the one-time prefs migration; null means the unlock check failed.
  */
-class AlarmEngine(context: Context, unlocked: Boolean, scope: CoroutineScope) {
+class AlarmEngine(context: Context, unlocked: Boolean?, scope: CoroutineScope) {
     init {
         // Before anything below opens the moved prefs.
         migrateAlarmPrefsToDeviceStorage(context, unlocked)
@@ -78,11 +80,13 @@ class AlarmEngine(context: Context, unlocked: Boolean, scope: CoroutineScope) {
         }
 
         private fun build(app: Context): AlarmEngine {
-            val unlocked = try {
+            // Null when the check throws: the engine runs as locked either way (it reads only DE
+            // storage until attach), but only a definite answer may migrate or abandon the CE prefs.
+            val unlocked: Boolean? = try {
                 app.getSystemService(UserManager::class.java).isUserUnlocked
             } catch (e: Throwable) {
-                Log.w(TAG, "unlock check failed; assuming locked", e)
-                false
+                Log.w(TAG, "unlock check failed; running as locked, prefs migration deferred", e)
+                null
             }
             val scope = CoroutineScope(
                 SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> Log.e(TAG, "uncaught", e) },

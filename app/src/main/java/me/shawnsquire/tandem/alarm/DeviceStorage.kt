@@ -21,12 +21,20 @@ private const val KEY_MIGRATED = "prefs_migrated"
  * While locked the CE copies can't be read, so they are abandoned: the marker is set anyway, and a
  * later unlocked move can never overwrite DE data written in the meantime. The marker is also set
  * when a move fails, for the same reason. Never throws.
+ *
+ * [unlocked] is null when the unlock check failed: then nothing is moved or abandoned, and a later
+ * start with a definite answer migrates. Residual risk, accepted as rare: this process may write
+ * DE prefs that a later unlocked move then overwrites with the older CE copy.
  */
-fun migrateAlarmPrefsToDeviceStorage(context: Context, unlocked: Boolean) {
+fun migrateAlarmPrefsToDeviceStorage(context: Context, unlocked: Boolean?) {
     try {
         val de = context.createDeviceProtectedStorageContext()
         val storage = de.getSharedPreferences(STORAGE_PREFS, Context.MODE_PRIVATE)
         if (storage.getBoolean(KEY_MIGRATED, false)) return
+        if (unlocked == null) {
+            Log.w(TAG, "unlock state unknown; migrating alarm prefs on a later start")
+            return
+        }
         if (unlocked) {
             for (name in MOVED_PREFS) {
                 try {

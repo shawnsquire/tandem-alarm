@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.alarm
 import android.content.Context
 import me.shawnsquire.tandem.awaitTandemStartup
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -62,6 +63,26 @@ class DeviceStorageTest {
 
         assertEquals(t2, SharedPrefsFiredLedger(context).lastRang("a"))
         assertEquals(t1.toEpochMilli(), cePrefs("alarm_fired").getLong("a", 0L))
+    }
+
+    @Test
+    fun anUnknownUnlockStateMigratesNothingAndALaterUnlockedCallStillMoves() {
+        check(cePrefs("alarm_fired").edit().putLong("a", t1.toEpochMilli()).commit())
+
+        val unknown = LockedContext(context)
+        migrateAlarmPrefsToDeviceStorage(unknown, unlocked = null)
+
+        assertTrue(unknown.touches.isEmpty())
+        val de = context.createDeviceProtectedStorageContext()
+        assertFalse(de.getSharedPreferences("alarm_storage", Context.MODE_PRIVATE).getBoolean("prefs_migrated", false))
+        assertNull(SharedPrefsFiredLedger(context).lastRang("a"))
+        assertEquals(t1.toEpochMilli(), cePrefs("alarm_fired").getLong("a", 0L))
+
+        migrateAlarmPrefsToDeviceStorage(context, unlocked = true)
+
+        assertEquals(t1, SharedPrefsFiredLedger(LockedContext(context)).lastRang("a"))
+        assertTrue(cePrefs("alarm_fired").all.isEmpty())
+        assertTrue(de.getSharedPreferences("alarm_storage", Context.MODE_PRIVATE).getBoolean("prefs_migrated", false))
     }
 
     @Test
