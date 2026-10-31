@@ -1,7 +1,7 @@
 package me.shawnsquire.tandem.ui.alarms
 
 import app.cash.turbine.test
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
@@ -37,7 +37,7 @@ class AlarmsViewModelTest {
         val repo = FakeAlarmRepository(initial)
         val scheduler = FakeAlarmScheduler()
         val purged = mutableListOf<Alarm>()
-        val ticker = MutableSharedFlow<Unit>()
+        val ticker = MutableStateFlow(Unit)
         val vm = AlarmsViewModel(repo, AlarmEdits(repo, scheduler), clock, ticker) { purged += it }
     }
 
@@ -138,7 +138,7 @@ class AlarmsViewModelTest {
             e.vm.delete("w")
             assertEquals(AlarmsEvent.AlarmDeleted("w"), awaitItem())
             assertNull(e.repo.get("w"))
-            e.vm.undoDelete()
+            e.vm.undoDelete("w")
             assertEquals(w, e.repo.get("w"))
             e.vm.onDeleteSnackbarDismissed("w") // dismissal after undo must not purge
             assertTrue(e.purged.isEmpty())
@@ -158,12 +158,15 @@ class AlarmsViewModelTest {
         assertNull(e.repo.get("w"))
     }
 
-    @Test fun secondDeletePurgesFirstImmediately() = runTest {
+    @Test fun secondDeletePurgesFirstAndStaleUndoIsNoOp() = runTest {
         val e = env(alarm("a"), alarm("b"))
         e.vm.delete("a")
         e.vm.delete("b")
         assertEquals(listOf("a"), e.purged.map { it.id })
-        e.vm.onDeleteSnackbarDismissed("a") // stale dismissal of the replaced snackbar
+        e.vm.undoDelete("a") // stale Undo from the first snackbar
+        assertNull(e.repo.get("a"))
+        assertNull(e.repo.get("b"))
+        e.vm.onDeleteSnackbarDismissed("a")
         assertEquals(1, e.purged.size)
         e.vm.onDeleteSnackbarDismissed("b")
         assertEquals(listOf("a", "b"), e.purged.map { it.id })

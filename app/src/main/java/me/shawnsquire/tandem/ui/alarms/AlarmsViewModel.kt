@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -53,12 +52,13 @@ class AlarmsViewModel(
     private val repository: AlarmRepository,
     private val edits: AlarmEdits,
     private val clock: Clock,
+    /** Must emit once immediately, then on each refresh (see tickerFlow). */
     ticker: Flow<Unit>,
     private val onAlarmPurged: (Alarm) -> Unit,
 ) : ViewModel() {
 
     val state: StateFlow<AlarmsUiState> =
-        combine(repository.alarms, ticker.onStart { emit(Unit) }) { alarms, _ -> buildState(alarms) }
+        combine(repository.alarms, ticker) { alarms, _ -> buildState(alarms) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlarmsUiState(zone = clock.zone))
 
     private val eventChannel = Channel<AlarmsEvent>(Channel.BUFFERED)
@@ -119,8 +119,9 @@ class AlarmsViewModel(
         }
     }
 
-    fun undoDelete() {
-        val alarm = pendingDelete ?: return
+    /** Restores the pending delete only if it is still [alarmId]; a stale Undo is a no-op. */
+    fun undoDelete(alarmId: String) {
+        val alarm = pendingDelete?.takeIf { it.id == alarmId } ?: return
         pendingDelete = null
         viewModelScope.launch { edits.upsert(alarm) }
     }

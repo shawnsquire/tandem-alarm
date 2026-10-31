@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -33,12 +34,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -67,7 +71,7 @@ fun AlarmsRoute(
     val undo = stringResource(R.string.alarm_deleted_undo)
 
     LaunchedEffect(viewModel) {
-        viewModel.events.collect { event ->
+        viewModel.events.collectLatest { event ->
             when (event) {
                 is AlarmsEvent.AlarmDeleted -> {
                     val result = snackbarHostState.showSnackbar(
@@ -77,7 +81,7 @@ fun AlarmsRoute(
                         duration = SnackbarDuration.Long,
                     )
                     when (result) {
-                        SnackbarResult.ActionPerformed -> viewModel.undoDelete()
+                        SnackbarResult.ActionPerformed -> viewModel.undoDelete(event.alarmId)
                         SnackbarResult.Dismissed -> viewModel.onDeleteSnackbarDismissed(event.alarmId)
                     }
                 }
@@ -186,14 +190,14 @@ private fun AlarmRow(
                     )
                 }
             }
-            val title = row.label.ifBlank { stringResource(R.string.alarm_no_label) }
             Text(
-                "$title · ${row.daysText}",
+                row.label.ifBlank { stringResource(R.string.alarm_no_label) },
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            SuggestionChip(onClick = onClick, label = { Text(row.daysText) })
             Text(
                 row.ringsInText ?: stringResource(R.string.alarm_off),
                 style = MaterialTheme.typography.bodyMedium,
@@ -215,7 +219,12 @@ private fun AlarmRow(
                 )
             }
         }
-        Switch(checked = row.enabled, onCheckedChange = onToggleEnabled)
+        val switchDescription = stringResource(R.string.alarm_enabled_switch)
+        Switch(
+            checked = row.enabled,
+            onCheckedChange = onToggleEnabled,
+            modifier = Modifier.semantics { contentDescription = switchDescription },
+        )
         Box {
             IconButton(onClick = { menuOpen = true }) {
                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.alarm_more_options))
