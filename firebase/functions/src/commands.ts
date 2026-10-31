@@ -41,7 +41,8 @@ export async function notifyCommandTarget(
   await sendMessage({
     token,
     data: commandPayload(householdId, commandId, command),
-    android: { priority: "high" },
+    // Don't let FCM deliver a command after it has expired (default TTL is 4 weeks).
+    android: { priority: "high", ttl: Math.max(0, (command.expiresAt as Timestamp).toMillis() - Date.now()) },
   });
 }
 

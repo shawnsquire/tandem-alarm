@@ -52,7 +52,12 @@ describe("notifyCommandTarget", () => {
       occurrenceAt: Timestamp.fromMillis(OCCURRENCE_MS),
     });
 
-    await notifyCommandTarget(HID, CID, data);
+    const now = jest.spyOn(Date, "now").mockReturnValue(CREATED_MS);
+    try {
+      await notifyCommandTarget(HID, CID, data);
+    } finally {
+      now.mockRestore();
+    }
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({
@@ -69,8 +74,22 @@ describe("notifyCommandTarget", () => {
         expiresAt: String(EXPIRES_MS),
         status: "pending",
       },
-      android: { priority: "high" },
+      android: { priority: "high", ttl: EXPIRES_MS - CREATED_MS },
     });
+  });
+
+  it("clamps the FCM ttl to zero once the command has expired", async () => {
+    await seedDevice({ fcmToken: TOKEN });
+    const data = await seedCommand({ type: "ENABLE" });
+
+    const now = jest.spyOn(Date, "now").mockReturnValue(EXPIRES_MS + 5_000);
+    try {
+      await notifyCommandTarget(HID, CID, data);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(send.mock.calls[0][0]).toMatchObject({ android: { ttl: 0 } });
   });
 
   it("includes ringId and omits an absent occurrenceAt for STOP_RINGING", async () => {
@@ -112,7 +131,7 @@ describe("notifyCommandTarget", () => {
       expect(typeof value).toBe("string");
       expect(key).not.toBe("from");
       expect(key).not.toBe("message_type");
-      expect(key.startsWith("google.")).toBe(false);
+      expect(key.startsWith("google")).toBe(false);
       expect(key.startsWith("gcm.")).toBe(false);
     }
     expect(payload).not.toHaveProperty("extra");
