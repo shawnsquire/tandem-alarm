@@ -1,0 +1,31 @@
+package me.shawnsquire.tandem.sync
+
+import kotlinx.coroutines.flow.Flow
+import me.shawnsquire.tandem.schedule.RingState
+import java.time.DayOfWeek
+import java.time.Instant
+
+/** Read-only view of a partner alarm, mirrored from their phone (I2: partner data is never written here). */
+data class PartnerAlarm(
+    val id: String,
+    val label: String,
+    val hour: Int,
+    val minute: Int,
+    val days: Set<DayOfWeek>,
+    val enabled: Boolean,
+    val nextOccurrenceAt: Instant?,
+    val skippedOccurrenceAt: Instant?,
+)
+
+/** Read-only mirror of the partner's state; commands target [PartnerAlarm.nextOccurrenceAt] / [ringing] (I3). */
+data class PartnerState(
+    val displayName: String,
+    val alarms: List<PartnerAlarm>,
+    val ringing: RingState?,
+    val lastSeen: Instant?,
+)
+
+interface PartnerRepository {
+    /** Null when unpaired or nothing has been received yet. */
+    val partner: Flow<PartnerState?>
+}

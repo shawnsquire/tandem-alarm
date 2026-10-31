@@ -1,1 +1,11 @@
 .claude-brief.md
+build/
+.gradle/
+local.properties
+*.keystore
+*.jks
+node_modules/
+.idea/
+*.iml
+firebase/functions/lib/
+*-debug.log
