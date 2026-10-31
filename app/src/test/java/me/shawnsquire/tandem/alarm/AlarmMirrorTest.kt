@@ -5,6 +5,7 @@ import me.shawnsquire.tandem.awaitTandemStartup
 import me.shawnsquire.tandem.schedule.Alarm
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -44,6 +45,7 @@ class AlarmMirrorTest {
         assertEquals(MirrorSnapshot.EMPTY, fresh().read())
         mirror.write(snapshot)
         assertEquals(snapshot, fresh().read())
+        assertEquals(snapshot, fresh().readOrNull())
         mirror.update { it.copy(snoozeMinutes = null, defaultRingtoneUri = null, alarms = it.alarms.drop(1)) }
         assertEquals(MirrorSnapshot(listOf(bare), null, null), fresh().read())
     }
@@ -59,11 +61,43 @@ class AlarmMirrorTest {
         assertNull(SharedPrefsAlarmMirror(context).read().alarms.single().alarm.wallpaperPath)
     }
 
-    @Test fun garbageReadsAsEmpty() {
+    private fun putRaw(raw: String) = check(deviceProtectedPrefs(context, "alarm_mirror").edit().putString("snapshot", raw).commit())
+    private fun raw() = deviceProtectedPrefs(context, "alarm_mirror").getString("snapshot", null)
+
+    @Test fun garbageReadsAsEmptyButUnreadable() {
         for (garbage in listOf("not json", "[1,2]", "{\"alarms\":\"nope\"}")) {
-            deviceProtectedPrefs(context, "alarm_mirror").edit().putString("snapshot", garbage).commit()
+            putRaw(garbage)
             assertEquals(garbage, MirrorSnapshot.EMPTY, SharedPrefsAlarmMirror(context).read())
+            assertNull(garbage, SharedPrefsAlarmMirror(context).readOrNull())
         }
+    }
+
+    @Test fun absentIsUnreadable() {
+        // The updater always writes a snapshot, even with no alarms, so a missing key never means "no alarms".
+        assertNull(SharedPrefsAlarmMirror(context).readOrNull())
+        SharedPrefsAlarmMirror(context).write(MirrorSnapshot.EMPTY)
+        assertEquals(MirrorSnapshot.EMPTY, SharedPrefsAlarmMirror(context).readOrNull())
+    }
+
+    @Test fun oneUndecodableAlarmMakesTheSnapshotUnreadable() {
+        SharedPrefsAlarmMirror(context).write(snapshot)
+        val root = org.json.JSONObject(raw()!!)
+        root.getJSONArray("alarms").put(org.json.JSONObject().put("id", "broken"))
+        putRaw(root.toString())
+
+        assertNull(SharedPrefsAlarmMirror(context).readOrNull())
+        // The lenient read still has the settings and the decodable alarms.
+        assertEquals(snapshot, SharedPrefsAlarmMirror(context).read())
+    }
+
+    @Test fun updateRefusesAnUnreadableMirror() {
+        for (mirror in listOf(SharedPrefsAlarmMirror(context), InMemoryAlarmMirror(initial = null))) {
+            putRaw("not json")
+            val e = runCatching { mirror.update { snapshot } }.exceptionOrNull()
+            assertTrue("$mirror: expected IllegalStateException, got $e", e is IllegalStateException)
+            assertNull(mirror.readOrNull())
+        }
+        assertEquals("not json", raw())
     }
 
     @Test fun onlyTouchesDeviceStorage() = exercise(SharedPrefsAlarmMirror(locked)) { SharedPrefsAlarmMirror(locked) }

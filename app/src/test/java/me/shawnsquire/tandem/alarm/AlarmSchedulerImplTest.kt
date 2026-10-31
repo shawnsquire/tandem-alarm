@@ -2,9 +2,12 @@ package me.shawnsquire.tandem.alarm
 
 import android.app.AlarmManager
 import android.content.Context
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.awaitTandemStartup
+import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
@@ -318,6 +321,32 @@ class AlarmSchedulerImplTest {
             setOf("${at(2, 6, 30).toEpochMilli()}|a", "${at(2, 7, 0).toEpochMilli()}|b"),
             prefs.getStringSet("scheduled_records", null),
         )
+    }
+
+    @Test
+    fun unreadableAlarmsCancelNothingButSnoozesStillArm() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", 6, 30)))
+        scheduler(repo).rescheduleAll()
+        val prefs = context.createDeviceProtectedStorageContext().getSharedPreferences("alarm_scheduler", Context.MODE_PRIVATE)
+        val records = prefs.getStringSet("scheduled_records", null)
+        // A locked repository whose mirror can't be read: its alarms flow throws.
+        val unreadable = object : AlarmRepository by repo {
+            override val alarms: Flow<List<Alarm>> = flow { throw IllegalStateException("alarm mirror unreadable") }
+        }
+        val ledger = ledgerOf(SnoozeEntry("ring-1", "a", at(2, 5, 10)))
+        var onScheduledCalls = 0
+        val s = AlarmSchedulerImpl(
+            context, unreadable, FakeRingStateStore(), ledger, now = { clock }, zone = { zone },
+            io = UnconfinedTestDispatcher(), onScheduled = { _, _ -> onScheduledCalls++ },
+        )
+
+        val e = runCatching { s.rescheduleAll(rearmOverdueSnooze = true) }.exceptionOrNull()
+
+        assertTrue("expected IllegalStateException, got $e", e is IllegalStateException)
+        assertNotNull(AlarmIntents.existingFirePendingIntent(context, "a"))
+        assertEquals(records, prefs.getStringSet("scheduled_records", null))
+        assertNotNull(AlarmIntents.existingSnoozePendingIntent(context, "ring-1"))
+        assertEquals(0, onScheduledCalls)
     }
 
     @Test

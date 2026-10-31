@@ -26,15 +26,25 @@ data class MirrorSnapshot(
 
 /**
  * Device-protected copy of the alarm data. Wallpapers are never mirrored: they are CE files, so
- * [read] always reports `wallpaperPath = null`.
+ * reads always report `wallpaperPath = null`.
  */
 interface AlarmMirror {
-    /** Empty when absent or unparseable; never throws. */
+    /**
+     * Null when the mirror is absent, unparseable, or any mirrored alarm fails to decode; never
+     * throws. Absent counts as unreadable: once attached, every reschedule writes a snapshot (even
+     * one with no alarms), so a missing one never means "no alarms". A partial list would make a
+     * locked reschedule cancel the missing alarm, so it is unreadable too.
+     */
+    fun readOrNull(): MirrorSnapshot?
+    /** Lenient, for settings: empty when unreadable, skipping alarms that fail to decode; never throws. */
     fun read(): MirrorSnapshot
     /** Throws when the write could not be committed. */
     fun write(snapshot: MirrorSnapshot)
+    /** Throws, writing nothing, when [readOrNull] is null: an empty stand-in must never be saved over the real data. */
     fun update(transform: (MirrorSnapshot) -> MirrorSnapshot)
 }
+
+private fun unreadable() = IllegalStateException("alarm mirror unreadable")
 
 /**
  * The whole snapshot is one JSON string under one key, written with commit(), so a reader never
@@ -43,18 +53,24 @@ interface AlarmMirror {
 class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
     private val prefs by lazy { deviceProtectedPrefs(context, PREFS) }
 
-    @Synchronized override fun read(): MirrorSnapshot = try {
-        prefs.getString(KEY, null)?.let(::decode) ?: MirrorSnapshot.EMPTY
-    } catch (e: Exception) {
-        Log.w(TAG, "unreadable alarm mirror", e)
-        MirrorSnapshot.EMPTY
-    }
+    @Synchronized override fun readOrNull(): MirrorSnapshot? = decodeStored(strict = true)
+
+    @Synchronized override fun read(): MirrorSnapshot = decodeStored(strict = false) ?: MirrorSnapshot.EMPTY
 
     @Synchronized override fun write(snapshot: MirrorSnapshot) {
         check(prefs.edit().putString(KEY, encode(snapshot)).commit()) { "alarm mirror write failed" }
     }
 
-    @Synchronized override fun update(transform: (MirrorSnapshot) -> MirrorSnapshot) = write(transform(read()))
+    @Synchronized override fun update(transform: (MirrorSnapshot) -> MirrorSnapshot) =
+        write(transform(readOrNull() ?: throw unreadable()))
+
+    /** [strict]: null if any alarm fails to decode; otherwise those alarms are skipped. */
+    private fun decodeStored(strict: Boolean): MirrorSnapshot? = try {
+        prefs.getString(KEY, null)?.let { decode(it, strict) }
+    } catch (e: Exception) {
+        Log.w(TAG, "unreadable alarm mirror", e)
+        null
+    }
 
     private fun encode(snapshot: MirrorSnapshot): String = JSONObject().apply {
         put("alarms", JSONArray().apply { snapshot.alarms.forEach { put(encode(it)) } })
@@ -78,18 +94,20 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
         }
     }
 
-    private fun decode(json: String): MirrorSnapshot {
+    private fun decode(json: String, strict: Boolean): MirrorSnapshot? {
         val root = JSONObject(json)
         val alarms = root.getJSONArray("alarms")
+        val decoded = (0 until alarms.length()).mapNotNull { i ->
+            try {
+                decode(alarms.getJSONObject(i))
+            } catch (e: Exception) {
+                Log.w(TAG, "unreadable mirrored alarm", e)
+                if (strict) return null
+                null
+            }
+        }
         return MirrorSnapshot(
-            alarms = (0 until alarms.length()).mapNotNull { i ->
-                try {
-                    decode(alarms.getJSONObject(i))
-                } catch (e: Exception) {
-                    Log.w(TAG, "skipping unreadable mirrored alarm", e)
-                    null
-                }
-            },
+            alarms = decoded,
             snoozeMinutes = if (root.isNull("snoozeMinutes")) null else root.getInt("snoozeMinutes"),
             defaultRingtoneUri = root.stringOrNull("defaultRingtoneUri"),
         )
@@ -120,17 +138,20 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
     }
 }
 
-/** In-memory mirror for tests. Drops wallpapers like the durable one. */
-class InMemoryAlarmMirror(initial: MirrorSnapshot = MirrorSnapshot.EMPTY) : AlarmMirror {
-    private var snapshot = initial.withoutWallpapers()
+/** In-memory mirror for tests; [initial] null stands for an unreadable one. Drops wallpapers like the durable one. */
+class InMemoryAlarmMirror(initial: MirrorSnapshot? = MirrorSnapshot.EMPTY) : AlarmMirror {
+    private var snapshot = initial?.withoutWallpapers()
 
-    @Synchronized override fun read(): MirrorSnapshot = snapshot
+    @Synchronized override fun readOrNull(): MirrorSnapshot? = snapshot
+
+    @Synchronized override fun read(): MirrorSnapshot = snapshot ?: MirrorSnapshot.EMPTY
 
     @Synchronized override fun write(snapshot: MirrorSnapshot) {
         this.snapshot = snapshot.withoutWallpapers()
     }
 
-    @Synchronized override fun update(transform: (MirrorSnapshot) -> MirrorSnapshot) = write(transform(snapshot))
+    @Synchronized override fun update(transform: (MirrorSnapshot) -> MirrorSnapshot) =
+        write(transform(snapshot ?: throw unreadable()))
 
     private fun MirrorSnapshot.withoutWallpapers() =
         copy(alarms = alarms.map { it.copy(alarm = it.alarm.copy(wallpaperPath = null)) })

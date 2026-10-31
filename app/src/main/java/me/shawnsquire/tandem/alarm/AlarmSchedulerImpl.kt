@@ -71,9 +71,9 @@ class AlarmSchedulerImpl(
     private suspend fun rescheduleLocked(rearmOverdueSnooze: Boolean) {
         val nowInstant = now()
         val zoneId = zone()
-        val alarms = alarmRepository.alarms.first()
 
-        // Snoozes first: one bad alarm must never cost the user a pending snooze (I1).
+        // Snoozes first: one bad alarm, or alarms that can't be read, must never cost the user a
+        // pending snooze (I1). They come from the ledger, not the alarm repository.
         val snoozes = try {
             ledger.all()
         } catch (e: Throwable) {
@@ -88,6 +88,10 @@ class AlarmSchedulerImpl(
                 Log.e(TAG, "snooze scheduling failed for ring ${entry.ringId}", e)
             }
         }
+
+        // A throw here (a locked, unreadable mirror) ends the run before any record is written or
+        // PendingIntent cancelled, so whatever is armed stays armed.
+        val alarms = alarmRepository.alarms.first()
 
         // What the previous run armed (alarmId -> triggerAt), read before anything is replaced.
         val old = readRecords()

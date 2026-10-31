@@ -26,13 +26,16 @@ class MirrorUpdater(
             val mirrored = alarms.map { alarm ->
                 MirroredAlarm(alarm.copy(wallpaperPath = null), triggers[alarm.id]?.let(Instant::ofEpochMilli))
             }
-            mirror.update { old ->
+            // Not update(), which refuses an unreadable mirror: Room is the source here, so this
+            // also repairs a corrupt or missing one. Nothing else writes the mirror while attached.
+            val old = mirror.read()
+            mirror.write(
                 MirrorSnapshot(
                     alarms = mirrored,
                     snoozeMinutes = snooze.getOrElse { old.snoozeMinutes },
                     defaultRingtoneUri = ringtone.getOrElse { old.defaultRingtoneUri },
-                )
-            }
+                ),
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {

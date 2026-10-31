@@ -17,6 +17,7 @@ private class BrokenSettings(ringtone: String?) : SettingsRepository by FakeSett
 }
 
 private class FailingMirror : AlarmMirror by InMemoryAlarmMirror() {
+    override fun write(snapshot: MirrorSnapshot) = throw IllegalStateException("commit failed")
     override fun update(transform: (MirrorSnapshot) -> MirrorSnapshot) = throw IllegalStateException("commit failed")
 }
 
@@ -59,6 +60,14 @@ class MirrorUpdaterTest {
         assertEquals(7, snapshot.snoozeMinutes)
         assertEquals(null, snapshot.defaultRingtoneUri) // a null ringtone is a value, not a failure
         assertEquals(listOf(MirroredAlarm(a.copy(wallpaperPath = null), null)), snapshot.alarms)
+    }
+
+    @Test
+    fun anUnreadableMirrorIsReplaced() = runTest {
+        // Room is the source once attached, so a corrupt or missing mirror is repaired, not kept.
+        val mirror = InMemoryAlarmMirror(initial = null)
+        MirrorUpdater(mirror, isAttached = { true }, FakeSettingsRepository()).onScheduled(listOf(b), emptyMap())
+        assertEquals(MirrorSnapshot(listOf(MirroredAlarm(b, null)), 10, null), mirror.readOrNull())
     }
 
     @Test

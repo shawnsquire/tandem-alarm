@@ -194,6 +194,90 @@ class AlarmEngineTest {
         assertEquals(listOf<DeferredWrite>(DeferredWrite.SetEnabled("once", false)), queued)
     }
 
+    // ---- unreadable mirror (I1: a read problem rings, never suppresses) ----
+
+    private val mirrorPrefs get() = deviceProtectedPrefs(app, "alarm_mirror")
+    private fun putRawMirror(raw: String) = check(mirrorPrefs.edit().putString("snapshot", raw).commit())
+
+    /** A mirror whose second alarm fails to decode: readable JSON, but not every alarm in it. */
+    private fun partlyDecodableMirror(good: Alarm): String {
+        seedMirror(good)
+        val root = org.json.JSONObject(mirrorPrefs.getString("snapshot", null)!!)
+        root.getJSONArray("alarms").put(org.json.JSONObject().put("id", "broken"))
+        return root.toString()
+    }
+
+    @Test
+    fun lockedFireWithAnUnreadableMirrorRingsWithDefaults() = runBlocking {
+        putRawMirror("not json")
+        val ring = LockedRing(lockedEngine(), scope)
+
+        ring.session.start("a", dueNow(), false, null)
+
+        awaitTrue("sound") { ring.sound.starts.isNotEmpty() }
+        assertEquals(listOf(emptyList<String>()), ring.sound.starts)
+        // The in-claim re-check throws too, which counts as due, so the ring holds the slot.
+        awaitTrue("ring state") { ring.engine.ringStateStore.state.first()?.alarmId == "a" }
+        assertFalse(ring.finished.isCompleted)
+    }
+
+    @Test
+    fun lockedFireForAnIdMissingFromTheMirrorRings() = runBlocking {
+        // Locked, delete throws, so a missing id is a read problem, never a local delete.
+        seedMirror(alarm("other", ringtone = "content://tone/other"), defaultRingtone = "content://tone/default")
+        val ring = LockedRing(lockedEngine(), scope)
+
+        ring.session.start("a", dueNow(), false, null)
+
+        awaitTrue("sound") { ring.sound.starts.isNotEmpty() }
+        assertEquals(listOf(listOf("content://tone/default")), ring.sound.starts)
+        awaitTrue("ring state") { ring.engine.ringStateStore.state.first()?.alarmId == "a" }
+        assertFalse(ring.finished.isCompleted)
+    }
+
+    @Test
+    fun lockedRescheduleWithAnUnreadableMirrorCancelsNothing() = runBlocking {
+        val time = Instant.now().atZone(zone).plusHours(3)
+        val a = alarm("a", time.hour, time.minute, days = DayOfWeek.entries.toSet())
+        val snoozeUntil = Instant.now().plusSeconds(3600).truncatedTo(ChronoUnit.MILLIS)
+        for (raw in listOf("not json", partlyDecodableMirror(a))) {
+            seedMirror(a)
+            val armed = lockedEngine()
+            armed.scheduler.rescheduleAll()
+            assertNotNull(AlarmIntents.existingFirePendingIntent(app, "a"))
+            val records = deviceProtectedPrefs(app, "alarm_scheduler").getStringSet("scheduled_records", null)
+            assertEquals(1, records?.size)
+            SharedPrefsSnoozeLedger(app).put("ring-1", "a", snoozeUntil)
+            AlarmIntents.existingSnoozePendingIntent(app, "ring-1")?.cancel()
+
+            putRawMirror(raw)
+            val engine = lockedEngine()
+            rescheduleAsync(null, engine.scheduler, scope, rearmOverdueSnooze = true, ringSlot = engine.ringSlot).join()
+
+            assertNotNull(raw, AlarmIntents.existingFirePendingIntent(app, "a"))
+            assertEquals(raw, records, deviceProtectedPrefs(app, "alarm_scheduler").getStringSet("scheduled_records", null))
+            // Snoozes come from the ledger, not the mirror: still re-armed.
+            assertNotNull(raw, AlarmIntents.existingSnoozePendingIntent(app, "ring-1"))
+            assertEquals(raw, raw, mirrorPrefs.getString("snapshot", null))
+        }
+    }
+
+    @Test
+    fun lockedSetEnabledWithAnUnreadableMirrorDoesNotWipeIt() = runBlocking {
+        for (raw in listOf("not json", partlyDecodableMirror(alarm("a")))) {
+            putRawMirror(raw)
+            val engine = lockedEngine()
+
+            val e = runCatching { engine.alarmRepository.setEnabled("a", false) }.exceptionOrNull()
+            assertTrue("expected IllegalStateException, got $e", e is IllegalStateException)
+            val skip = runCatching { engine.alarmRepository.setSkip("a", dueNow()) }.exceptionOrNull()
+            assertTrue("expected IllegalStateException, got $skip", skip is IllegalStateException)
+
+            assertEquals(raw, mirrorPrefs.getString("snapshot", null))
+            assertTrue(queued.isEmpty())
+        }
+    }
+
     // ---- attach ----
 
     @Test

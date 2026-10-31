@@ -47,18 +47,23 @@ class SwitchableAlarmRepository(
     // queued before the drain reads the queue or forwarded after it.
     private val lock = Any()
     private val attachment = MutableStateFlow<Attachment?>(null)
-    private val mirrored = MutableStateFlow(mirror.read().alarms.map { it.alarm })
+    // Null while the mirror is unreadable.
+    private val mirrored = MutableStateFlow(mirror.readOrNull()?.alarms?.map { it.alarm })
 
     /** True once the drain has finished and calls go to the real repository. */
     val isAttached: Boolean get() = attachment.value?.drained?.isCompleted == true
 
-    /** Collected after [attach], it waits for the drain like every other call (a reschedule reads it). */
+    /**
+     * Collected after [attach], it waits for the drain like every other call (a reschedule reads it).
+     * Locked, it throws while the mirror is unreadable: an empty list would make a reschedule cancel
+     * every armed alarm, while a throw leaves them and their records untouched.
+     */
     @OptIn(ExperimentalCoroutinesApi::class)
     override val alarms: Flow<List<Alarm>> = attachment.flatMapLatest { a ->
         if (a == null) {
             mirrored.map { list ->
                 val now = clock()
-                list.map { it.withoutExpiredSkip(now) }
+                (list ?: throw mirrorUnreadable()).map { it.withoutExpiredSkip(now) }
             }
         } else {
             flow {
@@ -68,9 +73,21 @@ class SwitchableAlarmRepository(
         }
     }
 
+    /**
+     * Locked, it never returns null. Delete needs the user to unlock, so an id missing from the
+     * mirror is a read problem, not a local delete: it throws, and the ring session then rings with
+     * defaults (I1).
+     */
     override suspend fun get(id: String): Alarm? {
-        val real = target() ?: return mirror.read().alarms.firstOrNull { it.alarm.id == id }?.alarm?.withoutExpiredSkip(clock())
+        val real = target() ?: return lockedGet(id)
         return real.get(id)
+    }
+
+    private fun lockedGet(id: String): Alarm {
+        val snapshot = mirror.readOrNull() ?: throw mirrorUnreadable()
+        val alarm = snapshot.alarms.firstOrNull { it.alarm.id == id }?.alarm
+            ?: throw IllegalStateException("alarm $id is not in the alarm mirror")
+        return alarm.withoutExpiredSkip(clock())
     }
 
     override suspend fun upsert(alarm: Alarm) = (target() ?: throw lockedEdit()).upsert(alarm)
@@ -124,12 +141,15 @@ class SwitchableAlarmRepository(
     private suspend fun write(w: DeferredWrite, change: (Alarm) -> Alarm, forward: suspend (AlarmRepository) -> Unit) {
         val attached = synchronized(lock) {
             attachment.value ?: run {
+                // An unreadable mirror refuses the write before anything is queued, so a failed
+                // write changes nothing: the caller logs it, and a ring is never affected.
+                if (mirror.readOrNull() == null) throw mirrorUnreadable()
                 // Queue first: if that fails nothing changed; the mirror only reflects queued writes.
                 deferred.append(w)
                 mirror.update { s ->
                     s.copy(alarms = s.alarms.map { if (it.alarm.id == w.id) it.copy(alarm = change(it.alarm)) else it })
                 }
-                mirrored.value = mirror.read().alarms.map { it.alarm }
+                mirrored.value = mirror.readOrNull()?.alarms?.map { it.alarm }
                 return
             }
         }
@@ -144,6 +164,8 @@ class SwitchableAlarmRepository(
     }
 
     private fun lockedEdit() = IllegalStateException("alarm edits need the user to unlock")
+
+    private fun mirrorUnreadable() = IllegalStateException("alarm mirror unreadable")
 
     /** Same expiry as AlarmRepositoryImpl: a skip at or before `now - FIRE_GRACE` reads as null. */
     private fun Alarm.withoutExpiredSkip(now: Instant): Alarm =

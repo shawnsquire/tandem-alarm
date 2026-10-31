@@ -78,9 +78,34 @@ class SwitchablePortsTest {
     fun lockedReadsComeFromTheMirror() = runTest {
         val repo = repo(mirrorOf(alarm("a"), alarm("b", enabled = false)))
         assertEquals(alarm("a"), repo.get("a"))
-        assertNull(repo.get("missing"))
         assertEquals(listOf(alarm("a"), alarm("b", enabled = false)), repo.alarms.first())
         assertFalse(repo.isAttached)
+    }
+
+    // I1: locked, delete throws, so an id missing from the mirror is a read problem, never a local
+    // delete. A throw makes the session ring with defaults and a reschedule cancel nothing.
+
+    @Test
+    fun lockedGetThrowsForAnIdMissingFromTheMirror() = runTest {
+        val repo = repo(mirrorOf(alarm("a")))
+        assertIllegalState { repo.get("missing") }
+    }
+
+    @Test
+    fun lockedReadsThrowWhenTheMirrorIsUnreadable() = runTest {
+        val repo = repo(InMemoryAlarmMirror(initial = null))
+        assertIllegalState { repo.get("a") }
+        assertIllegalState { repo.alarms.first() }
+    }
+
+    @Test
+    fun lockedWriteWithAnUnreadableMirrorChangesNothing() = runTest {
+        val mirror = InMemoryAlarmMirror(initial = null)
+        val repo = repo(mirror)
+        assertIllegalState { repo.setEnabled("a", false) }
+        assertIllegalState { repo.setSkip("a", now) }
+        assertNull(mirror.readOrNull())
+        assertTrue(queue.all().isEmpty())
     }
 
     @Test
