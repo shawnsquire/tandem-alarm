@@ -29,6 +29,20 @@ android {
         debug {
             buildConfigField("boolean", "USE_EMULATOR", "true")
         }
+        // A second debug install (.partner) so one emulator can host both devices of a pair.
+        create("partner") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".partner"
+            matchingFallbacks += listOf("debug")
+        }
+    }
+
+    sourceSets {
+        // Reuse the debug manifest (cleartext to the emulator host) and resources.
+        getByName("partner") {
+            manifest.srcFile("src/debug/AndroidManifest.xml")
+            res.srcDirs("src/debug/res")
+        }
     }
 
     compileOptions {
