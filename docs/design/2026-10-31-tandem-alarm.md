@@ -1,6 +1,6 @@
 # Tandem Alarm — design
 
-Date: 2026-10-31 · Status: draft for review
+Date: 2026-10-31 · Status: implemented (see "Decisions made during the build")
 
 ## Goal
 
@@ -9,7 +9,7 @@ An Android alarm clock in the spirit of the stock Clock app, plus partner contro
 ## Requirements
 
 1. Runs on current Android (compile/target SDK 37, Android 17; minSdk 33).
-2. Alarms have a time and a set of weekdays. No weekdays = one-shot (turns itself off after it rings).
+2. Alarms have a time and a set of weekdays. No weekdays = one-shot (turns itself off after it rings, or when a partner skips it).
 3. Per-alarm ringtone: any system alarm/ringtone sound, or an audio file the user picks.
 4. Per-alarm wallpaper shown full-screen while ringing, falling back to one default image from Settings.
 5. Pair with one other phone. The partner sees **all** your alarms and their state (on/off, next ring time, skipped, ringing, snoozed).
@@ -50,9 +50,9 @@ Each unit has one job and is testable alone. Package root `me.shawnsquire.tandem
 |---|---|---|
 | `schedule` (pure Kotlin, no Android) | `Alarm` model; `nextOccurrence(alarm, now, zone)` honoring weekdays, skip, one-shot; skip-expiry; command validation (`validate(command, alarm, now)` → apply/reject reason) | `java.time` only |
 | `data` | Room DB + `AlarmRepository` (Flow of alarms, CRUD, `applySkip/clearSkip/setEnabled`) and `SettingsRepository` (DataStore: snooze length, default wallpaper, ringtone default) | `schedule` |
-| `alarm` | `AlarmScheduler` (setAlarmClock for each enabled alarm's next occurrence; reschedule on any change), `AlarmReceiver`, `BootReceiver` (boot/time/timezone change), `RingingService` (foreground service, `USAGE_ALARM` MediaPlayer, vibration, snooze/dismiss, auto-silence), `RingingActivity` (full-screen intent, wallpaper, big Stop/Snooze) | `data`, `media`, `sync.PreFireCheck` (interface) |
+| `alarm` | `AlarmScheduler` (setAlarmClock for each enabled alarm's next occurrence; reschedule on any change), `AlarmReceiver`, `BootReceiver` (locked boot, boot, time/timezone change, app update), `RingingService` (foreground service, `USAGE_ALARM` MediaPlayer, vibration, snooze/dismiss, auto-silence), `RingingActivity` (full-screen intent, wallpaper, big Stop/Snooze) | `data`, `media`, `sync.PreFireCheck` (interface) |
 | `media` | Ringtone choice: system picker (`RingtoneManager.ACTION_RINGTONE_PICKER`) or file (`ACTION_OPEN_DOCUMENT`, persistable URI permission, fallback to default alarm sound if the URI is unreadable at fire time). Wallpaper: photo picker → copied into app files, downscaled | Android only |
-| `sync` | `AuthManager` (anonymous auth), `PairingRepository`, `StatePublisher` (mirror local alarms + ringing state to own device doc), `PartnerRepository` (Flow of partner's device doc), `CommandSender`, `CommandApplier` (validate via `schedule`, apply via `data`, mark applied/rejected, notify user), `TandemMessagingService` (FCM + token upload), `PreFireCheck` (3 s timeout pull), `SyncWorker` | Firebase SDKs, `data`, `schedule` |
+| `sync` | `AuthManager` (anonymous auth), `PairingRepository`, `StatePublisher` (mirror local alarms + ringing state to own device doc), `PartnerRepository` (Flow of partner's device doc), `CommandSender`, `CommandApplier` (validate via `schedule`, apply via `data`, mark applied/rejected, notify user), `TandemMessagingService` (FCM + token upload; the command payload names the sender `fromUid`), `PreFireCheck` (3 s timeout pull), `SyncWorker` | Firebase SDKs, `data`, `schedule` |
 | `ui` | Compose + Material 3: Alarm list, Alarm edit, Partner tab, Settings (pairing, snooze, default wallpaper, **health check**) | `data`, `sync`, `media` |
 | `firebase/` (repo dir, not Android) | `firestore.rules`, `functions/` (TypeScript: `onCommandCreated` → FCM to target's token), emulator tests | Firebase CLI, Node 24 |
 
@@ -61,6 +61,7 @@ No DI framework; one hand-written `AppContainer` in `Application`.
 ## Data model (Firestore)
 
 ```
+users/{uid}                       { householdId }                            // index; written only by Cloud Functions
 pairCodes/{code}                  { householdId, createdBy, expiresAt }      // 6 chars, 10 min TTL, single-use
 households/{hid}                  { members: [uidA, uidB], createdAt }
 households/{hid}/devices/{uid}    { displayName, fcmToken, updatedAt,
@@ -73,9 +74,9 @@ households/{hid}/commands/{cid}   { from, to, type, alarmId, occurrenceAt?, ring
 
 Ringtone and wallpaper URIs stay on the device; only display data is mirrored.
 
-**Pairing:** Phone A taps "Pair" → creates household + pair code, shows it (text and QR). Phone B enters/scans it → a transaction adds B to `members` and deletes the code. Unpair removes the household for both.
+**Pairing:** Phone A taps "Pair" → the callable function `createPairCode` creates the household (if A has none) and a pair code, and A shows it (text and QR). Phone B enters/scans it → the callable `joinHousehold` runs a transaction that adds B to `members` and deletes the code. The callable `unpair` removes the household and both `users/{uid}` entries. Clients write none of these documents; `users/{uid}` is the index that lets a function find a caller's household and stops a double tap creating two.
 
-**Auth and rules:** Firebase Anonymous Auth, one uid per install. Rules: only `members` read household data; a device writes only its own device doc; commands may be created only with `from == auth.uid` and `to` = the other member; only the `to` device may update `status`; pair codes are readable by code, consumable once, and rejected after `expiresAt`.
+**Auth and rules:** Firebase Anonymous Auth, one uid per install. Rules: only `members` read household data; a device writes only its own device doc; commands may be created only with `from == auth.uid` and `to` = the other member; only the `to` device may update `status`; `households`, `users` and `pairCodes` are not client-writable, and `pairCodes` is not client-readable; the pairing functions enforce that codes are single-use and rejected after `expiresAt`, and that a household holds at most two members. A user can read only their own `users/{uid}`.
 
 ## Key flows
 
@@ -95,11 +96,20 @@ Ringtone and wallpaper URIs stay on the device; only display data is mirrored.
 
 ## Testing
 
-- `schedule` unit tests (JVM, fast): weekday rollover, one-shot, skip next, skip expiry, command validation (stale occurrence, wrong ringId, expired, duplicate), **DST** — US fall-back on 2026-11-01 (alarm at 01:30 occurs twice; pick the first) and spring-forward 2027-03-14 (02:30 doesn't exist; ring at 03:00).
+- `schedule` unit tests (JVM, fast): weekday rollover, one-shot, skip next, skip expiry, command validation (stale occurrence, wrong ringId, expired, duplicate), **DST** — US fall-back on 2026-11-01 (alarm at 01:30 occurs twice; pick the first) and spring-forward 2027-03-14 (02:30 doesn't exist; rings at 03:30, the shifted local time `ZonedDateTime` gives).
 - `data` Room tests (Robolectric or instrumented).
 - Firestore rules tests against the emulator (`@firebase/rules-unit-testing`): non-members denied, own-doc-only writes, command `from` spoofing denied, only target updates status, pair codes single-use and expiring.
 - Cloud Function test against the emulator with a mocked messaging send.
-- Manual on-device checklist (both phones): ring with screen off, in Doze (`adb shell dumpsys deviceidle force-idle`), offline, through DND, remote skip while target dozes, remote stop while ringing, reboot reschedules.
+- Manual on-device checklist (both phones): ring with screen off, in Doze (`adb shell dumpsys deviceidle force-idle`), offline, through DND, remote skip while target dozes, remote stop while ringing, reboot reschedules (without unlocking first), USER_UNLOCKED after a locked boot, and alarms still armed after an app update. The full list is in the README.
+
+## Decisions made during the build
+
+- **Spring-forward rings at 03:30.** `nextOccurrence` builds the time with `ZonedDateTime.of`, which moves a nonexistent 02:30 forward by the length of the gap. The original plan said 03:00. Fall-back picks the first occurrence as planned. (`schedule/Scheduling.kt`)
+- **`FIRE_GRACE` = 2 min.** A command pinned to an occurrence that has just fired still applies for 2 minutes, so a skip sent as the alarm fires is not rejected as stale. (`schedule/Scheduling.kt`, `validate`)
+- **Skipping a one-shot alarm turns it off.** A one-shot has no later occurrence to resume at, so SKIP_NEXT on one disables it instead of setting `skippedOccurrenceAt`. (`sync/CommandApplierImpl.kt`)
+- **Pairing goes through callable functions and a `users/{uid}` index**, as described under Pairing. (`firebase/functions/src/pairing.ts`, `firebase/firestore.rules`)
+- **FCM key `fromUid`.** `from` is a reserved key in FCM data messages, so the payload uses `fromUid` and the app maps it back to `Command.from`. (`firebase/functions/src/commands.ts`, `sync/FirestoreMapping.kt`)
+- **Direct boot.** After a reboot the alarms must ring before the first unlock, when credential-encrypted storage (Room, Firebase, WorkManager) is unavailable. `AlarmReceiver`, `BootReceiver` (also on `LOCKED_BOOT_COMPLETED`), `RingingService` and `RingingActivity` are `directBootAware`; ring state and scheduler records live in device-protected storage (`alarm/DeviceStorage.kt`, `data/DataStores.kt`), and `AlarmEngine` schedules from them. `TandemApp` defers Firebase, WorkManager and the `AppContainer` until `USER_UNLOCKED` (`TandemStartup`), then applies writes deferred while locked.
 
 ## Toolchain and build
 
