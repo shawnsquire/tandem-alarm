@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ringtone_default_alarm">Default alarm</string>
+    <string name="ringtone_unknown">Unknown sound</string>
+    <string name="ringtone_picker_title">Choose alarm sound</string>
+</resources>

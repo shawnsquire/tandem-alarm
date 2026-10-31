@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="alarm_channel_name">Alarms</string>
+    <string name="alarm_channel_description">Ringing alarms</string>
+    <string name="snooze_channel_name">Snoozed alarms</string>
+    <string name="snooze_channel_description">Shown while an alarm is snoozed</string>
+    <string name="alarm_notification_title">Alarm</string>
+    <string name="alarm_action_stop">Stop</string>
+    <string name="alarm_action_snooze">Snooze</string>
+    <string name="alarm_action_dismiss">Dismiss</string>
+    <string name="alarm_snoozed_until">Snoozed until %1$s</string>
+    <string name="alarm_prep_channel_name">Alarm checks</string>
+    <string name="alarm_prep_channel_description">Shown briefly while an alarm is being checked</string>
+    <string name="alarm_prep_title">Checking alarm\u2026</string>
+</resources>
