@@ -291,4 +291,17 @@ class PartnerViewModelTest {
         assertFalse(state().loading)
         assertFalse(state().paired)
     }
+
+    @Test fun pendingActionNamesOnlyTheInFlightAction() = runTest {
+        val gate = MutableSharedFlow<Pair<CommandStatus, String?>>()
+        val sender = RecordingSender { flow { emit(CommandStatus.PENDING to null); gate.collect { emit(it) } } }
+        val e = env(partner(alarm("a")), sender = sender)
+        val state = e.collect(backgroundScope)
+        assertNull(state().alarms.single().pendingAction)
+        e.vm.turnOff("a")
+        assertEquals(PartnerAction.TURN_OFF, state().alarms.single().pendingAction)
+        // A different action replaces the previous command and becomes the pending one.
+        e.vm.skipNext("a")
+        assertEquals(PartnerAction.SKIP_NEXT, state().alarms.single().pendingAction)
+    }
 }

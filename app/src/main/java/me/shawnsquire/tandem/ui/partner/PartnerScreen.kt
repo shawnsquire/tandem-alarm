@@ -340,8 +340,6 @@ private fun AlarmCard(
                 StateChip(row.chip)
             }
             if (row.actions.isNotEmpty()) {
-                // A second tap while the first command is in flight would just report a false rejection.
-                val idle = row.commandStatus != CommandUiStatus.Pending
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     row.actions.forEach { action ->
                         val label = stringResource(
@@ -353,9 +351,9 @@ private fun AlarmCard(
                             },
                         )
                         if (action == PartnerAction.TURN_OFF) {
-                            TextButton(onClick = { onAction(action, row.id) }, enabled = idle) { Text(label) }
+                            TextButton(onClick = { onAction(action, row.id) }, enabled = row.pendingAction != action) { Text(label) }
                         } else {
-                            OutlinedButton(onClick = { onAction(action, row.id) }, enabled = idle) { Text(label) }
+                            OutlinedButton(onClick = { onAction(action, row.id) }, enabled = row.pendingAction != action) { Text(label) }
                         }
                     }
                 }

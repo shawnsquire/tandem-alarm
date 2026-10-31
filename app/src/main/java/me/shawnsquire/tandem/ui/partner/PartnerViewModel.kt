@@ -48,6 +48,8 @@ data class PartnerAlarmRow(
     val chip: AlarmChip,
     val actions: List<PartnerAction>,
     val commandStatus: CommandUiStatus?,
+    /** The action whose command is still in flight; only its button is disabled. */
+    val pendingAction: PartnerAction? = null,
 )
 
 data class RingingBanner(
@@ -96,7 +98,12 @@ fun formatLastSeen(age: Duration): String {
     }
 }
 
-internal fun partnerAlarmRow(a: PartnerAlarm, now: Instant, status: CommandUiStatus?): PartnerAlarmRow {
+internal fun partnerAlarmRow(
+    a: PartnerAlarm,
+    now: Instant,
+    status: CommandUiStatus?,
+    sentAction: PartnerAction? = null,
+): PartnerAlarmRow {
     val skipped = a.enabled && a.skippedOccurrenceAt?.let { it > now } == true
     val chip = when {
         !a.enabled -> AlarmChip.OFF
@@ -116,6 +123,7 @@ internal fun partnerAlarmRow(a: PartnerAlarm, now: Instant, status: CommandUiSta
     return PartnerAlarmRow(
         id = a.id, label = a.label, hour = a.hour, minute = a.minute, daysText = formatDays(a.days),
         chip = chip, actions = actions, commandStatus = status,
+        pendingAction = sentAction.takeIf { status == CommandUiStatus.Pending },
     )
 }
 
@@ -143,16 +151,20 @@ class PartnerViewModel(
     private val stopStatuses = MutableStateFlow<Map<String, CommandUiStatus>>(emptyMap())
     private val jobs = HashMap<String, Job>()
 
+    /** Which action each alarm's latest command carried; written before the Pending status is published. */
+    private val sentActions = MutableStateFlow<Map<String, PartnerAction>>(emptyMap())
+
     private val partner: StateFlow<PartnerState?> =
         partnerRepository.partner.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val state: StateFlow<PartnerUiState> = combine(
-        pairing.status, partner, local, alarmStatuses, stopStatuses, ticker,
+        pairing.status, partner, local, alarmStatuses, stopStatuses, sentActions, ticker,
     ) { values ->
         @Suppress("UNCHECKED_CAST")
         build(
             values[0] as PairingStatus, values[1] as PartnerState?, values[2] as UnpairedLocal,
             values[3] as Map<String, CommandUiStatus>, values[4] as Map<String, CommandUiStatus>,
+            values[5] as Map<String, PartnerAction>,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PartnerUiState())
 
@@ -171,6 +183,7 @@ class PartnerViewModel(
         local: UnpairedLocal,
         alarmStatuses: Map<String, CommandUiStatus>,
         stopStatuses: Map<String, CommandUiStatus>,
+        sentActions: Map<String, PartnerAction>,
     ): PartnerUiState {
         if (status !is PairingStatus.Paired) {
             return PartnerUiState(
@@ -194,7 +207,7 @@ class PartnerViewModel(
         }
         val rows = partner?.alarms.orEmpty()
             .sortedWith(compareBy<PartnerAlarm>({ it.hour }, { it.minute }, { it.label.lowercase() }, { it.id }))
-            .map { a -> partnerAlarmRow(a, now, alarmStatuses[a.id]) }
+            .map { a -> partnerAlarmRow(a, now, alarmStatuses[a.id], sentActions[a.id]) }
         return PartnerUiState(
             loading = false, paired = true, partnerName = name, partnerLoaded = partner != null,
             lastSeenText = age?.let { formatLastSeen(it) },
@@ -274,7 +287,15 @@ class PartnerViewModel(
     private fun alarm(id: String): PartnerAlarm? = partner.value?.alarms?.firstOrNull { it.id == id }
 
     private fun sendForAlarm(alarmId: String, type: CommandType, occurrenceAt: Instant?) =
-        run(alarmStatuses, alarmId, type, alarmId, occurrenceAt, null)
+        run(alarmStatuses, alarmId, type, alarmId, occurrenceAt, null) {
+            val action = when (type) {
+                CommandType.SKIP_NEXT -> PartnerAction.SKIP_NEXT
+                CommandType.UNSKIP -> PartnerAction.UNSKIP
+                CommandType.DISABLE -> PartnerAction.TURN_OFF
+                else -> PartnerAction.TURN_ON
+            }
+            sentActions.update { it + (alarmId to action) }
+        }
 
     /** One tap = one [CommandSender.send]; a newer command on the same target replaces the old collection. */
     private fun run(
@@ -284,10 +305,12 @@ class PartnerViewModel(
         alarmId: String,
         occurrenceAt: Instant?,
         ringId: String?,
+        beforePending: () -> Unit = {},
     ) {
         val jobKey = (if (statuses === stopStatuses) "stop:" else "alarm:") + key
         jobs.remove(jobKey)?.cancel()
         val flow = sender.send(type, alarmId, occurrenceAt, ringId)
+        beforePending()
         statuses.update { it + (key to CommandUiStatus.Pending) }
         jobs[jobKey] = viewModelScope.launch {
             var last: CommandStatus? = null

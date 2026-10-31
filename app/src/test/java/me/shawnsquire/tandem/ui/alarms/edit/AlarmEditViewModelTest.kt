@@ -31,7 +31,12 @@ class AlarmEditViewModelTest {
         override suspend fun upsert(alarm: Alarm) { gate.await(); inner.upsert(alarm) }
     }
 
-    private class Env(id: String?, initial: List<Alarm>, gate: CompletableDeferred<Unit>? = null) {
+    private class Env(
+        id: String?,
+        initial: List<Alarm>,
+        gate: CompletableDeferred<Unit>? = null,
+        schedulerOverride: ((FakeAlarmRepository) -> me.shawnsquire.tandem.alarm.AlarmScheduler)? = null,
+    ) {
         val repo = FakeAlarmRepository(initial)
         private val vmRepo: AlarmRepository = if (gate == null) repo else GatedRepo(repo, gate)
         val scheduler = FakeAlarmScheduler()
@@ -44,7 +49,7 @@ class AlarmEditViewModelTest {
         val vm = AlarmEditViewModel(
             alarmId = id,
             repository = vmRepo,
-            edits = AlarmEdits(vmRepo, scheduler),
+            edits = AlarmEdits(vmRepo, schedulerOverride?.invoke(repo) ?: scheduler),
             ringtoneTitle = { titleCalls += it; "title:${it ?: "default"}" },
             importRingtone = {
                 importedRingtones += it
@@ -307,5 +312,28 @@ class AlarmEditViewModelTest {
         assertTrue(e.deletedWallpapers.isEmpty())
         e.vm.cancel()
         assertEquals(listOf("/wall-1"), e.deletedWallpapers)
+    }
+
+    @Test fun rescheduleFailingAfterCommitKeepsSavedFilesEvenIfRowChangedMeanwhile() = runTest {
+        val e = Env("a1", listOf(existing)) { repo ->
+            object : me.shawnsquire.tandem.alarm.AlarmScheduler {
+                override suspend fun rescheduleAll() {
+                    repo.setSkip("a1", Instant.parse("2026-12-01T06:30:00Z")) // a partner write lands in between
+                    error("scheduler down")
+                }
+            }
+        }
+        e.vm.onWallpaperPicked("content://img/1")
+        e.vm.onRingtoneFilePicked("content://doc/1")
+        e.vm.save()
+        // Committed: the stored row uses the new files, so nothing it references may be deleted.
+        assertEquals("/wall-1", e.repo.get("a1")!!.wallpaperPath)
+        assertFalse("/wall-1" in e.deletedWallpapers)
+        assertFalse("file:///imported-1" in e.deletedRingtones)
+        assertEquals(listOf("/old-wall"), e.deletedWallpapers)
+        e.vm.cancel()
+        e.vm.onCleared()
+        assertFalse("/wall-1" in e.deletedWallpapers)
+        assertFalse("file:///imported-1" in e.deletedRingtones)
     }
 }

@@ -16,9 +16,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.Lifecycle
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavHostController
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -43,12 +43,13 @@ private enum class Tab(val route: String, val label: String, val icon: ImageVect
 }
 
 /**
- * Runs [action] only while this entry is the settled, visible one. A second tap during the exit or
- * enter transition arrives with the entry below RESUMED and is dropped, so navigation never stacks
- * a second editor or pops the start destination.
+ * Runs [action] only while [entry] is still the top destination. Once a navigation or pop has started
+ * the top entry changes at once, so a repeat tap during the transition is dropped (no second editor, no
+ * pop of the start destination), while a legitimate action is never refused because of the lifecycle
+ * state (e.g. a save finishing while the app is stopped).
  */
-private fun NavBackStackEntry.ifResumed(action: () -> Unit) {
-    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) action()
+private fun NavHostController.ifCurrent(entry: NavBackStackEntry, action: NavHostController.() -> Unit) {
+    if (currentBackStackEntry?.id == entry.id) action()
 }
 
 @Composable
@@ -92,8 +93,8 @@ fun MainScreen() {
                     .getStateFlow<String?>(DELETED_ALARM_KEY, null)
                     .collectAsStateWithLifecycle()
                 AlarmsRoute(
-                    onAddAlarm = { entry.ifResumed { navController.navigate(EDIT_ROUTE) } },
-                    onEditAlarm = { id -> entry.ifResumed { navController.navigate("alarm/edit?id=$id") } },
+                    onAddAlarm = { navController.ifCurrent(entry) { navigate(EDIT_ROUTE) } },
+                    onEditAlarm = { id -> navController.ifCurrent(entry) { navigate("alarm/edit?id=$id") } },
                     deletedAlarmId = deletedId,
                     onDeletedConsumed = { entry.savedStateHandle[DELETED_ALARM_KEY] = null },
                     onOpenHealth = { navController.navigate(HEALTH_ROUTE) },
@@ -110,15 +111,12 @@ fun MainScreen() {
                 ),
             ) { entry ->
                 AlarmEditRoute(
-                    // Close is driven by state (also after a save finishing in the background, when the entry
-                    // is not RESUMED), so it only refuses once the entry is already leaving.
-                    onClose = {
-                        if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) navController.popBackStack()
-                    },
-                    onDelete = { id ->
-                        entry.ifResumed {
-                            navController.previousBackStackEntry?.savedStateHandle?.set(DELETED_ALARM_KEY, id)
-                            navController.popBackStack()
+                    onClose = { navController.ifCurrent(entry) { popBackStack() } },
+                    onDelete = { id, discardSession ->
+                        navController.ifCurrent(entry) {
+                            discardSession()
+                            previousBackStackEntry?.savedStateHandle?.set(DELETED_ALARM_KEY, id)
+                            popBackStack()
                         }
                     },
                 )

@@ -76,7 +76,8 @@ import java.time.DayOfWeek
 @Composable
 fun AlarmEditRoute(
     onClose: () -> Unit,
-    onDelete: (String) -> Unit,
+    /** Receives the alarm id and a callback that drops unsaved session files; call it only once the delete goes ahead. */
+    onDelete: (id: String, discardSession: () -> Unit) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: AlarmEditViewModel = viewModel(factory = alarmEditViewModelFactory),
 ) {
@@ -111,8 +112,7 @@ fun AlarmEditRoute(
         onRemoveWallpaper = viewModel::removeWallpaper,
         onDelete = {
             viewModel.existingId?.let { id ->
-                viewModel.discardSession()
-                onDelete(id)
+                onDelete(id, viewModel::discardSession)
             }
         },
         onErrorShown = viewModel::dismissError,

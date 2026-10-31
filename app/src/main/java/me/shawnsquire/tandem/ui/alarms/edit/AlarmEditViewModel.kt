@@ -202,8 +202,17 @@ class AlarmEditViewModel(
                 withContext(NonCancellable) { settleInterrupted(alarm, current) }
                 throw e
             } catch (_: Exception) {
-                saving = false
-                _state.update { it.copy(busy = false, error = EditError.Save) }
+                // The write may have committed before a later step (the reschedule) threw; then the alarm is saved and
+                // its files are in use, so close like a success rather than offer a retry or cleanup.
+                val a = alarm
+                if (a != null && storedReferencesSessionFiles(a)) {
+                    saving = false
+                    finishSaved(a, current)
+                    _state.update { it.copy(busy = false, closed = true) }
+                } else {
+                    saving = false
+                    _state.update { it.copy(busy = false, error = EditError.Save) }
+                }
                 return@launch
             }
             saving = false
@@ -220,10 +229,18 @@ class AlarmEditViewModel(
     }
 
     private suspend fun settleInterrupted(alarm: Alarm?, previous: Alarm?) {
-        val committed = alarm != null &&
-            runCatching { repository.get(alarm.id) }.getOrNull() == alarm
         saving = false
-        if (committed) finishSaved(alarm!!, previous) else dropSessionFiles()
+        if (alarm != null && storedReferencesSessionFiles(alarm)) finishSaved(alarm, previous) else dropSessionFiles()
+    }
+
+    /**
+     * Whether the write landed. Judged per file, not by row equality: the stored row may legitimately differ
+     * (an expired skip stripped on read, a partner command applied in between). Unreadable counts as
+     * not committed only when the alarm itself is unknown; files the stored row references are never dropped.
+     */
+    private suspend fun storedReferencesSessionFiles(alarm: Alarm): Boolean {
+        val stored = runCatching { repository.get(alarm.id) }.getOrNull() ?: return false
+        return stored.ringtoneUri == alarm.ringtoneUri && stored.wallpaperPath == alarm.wallpaperPath
     }
 
     fun cancel() {
