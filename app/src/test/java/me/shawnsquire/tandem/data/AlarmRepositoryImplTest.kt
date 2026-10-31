@@ -7,7 +7,9 @@ import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId
 import kotlinx.coroutines.test.runTest
+import kotlin.time.toJavaDuration
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -143,7 +145,7 @@ class AlarmRepositoryImplTest {
     @Test
     fun expiredSkipIsMappedToNullAndClearedInDbViaAlarms() = runTest {
         repo.upsert(alarm(skip = clock.now.plusSeconds(60)))
-        clock.now = clock.now.plusSeconds(61)
+        clock.now = clock.now.plusSeconds(61).plus(FIRE_GRACE.toJavaDuration())
         repo.alarms.test {
             assertNull(awaitItem().single().skippedOccurrenceAt)
             cancelAndIgnoreRemainingEvents()
@@ -155,14 +157,56 @@ class AlarmRepositoryImplTest {
     fun expiredSkipIsMappedToNullAndClearedInDbViaGet() = runTest {
         repo.upsert(alarm(skip = clock.now.plusSeconds(60)))
         assertEquals(clock.now.plusSeconds(60), repo.get("a")!!.skippedOccurrenceAt)
-        clock.now = clock.now.plusSeconds(61)
+        clock.now = clock.now.plusSeconds(61).plus(FIRE_GRACE.toJavaDuration())
         assertNull(repo.get("a")!!.skippedOccurrenceAt)
         assertNull(dao.get("a")!!.skippedOccurrenceAt)
     }
 
     @Test
-    fun skipEqualToNowIsExpired() = runTest {
+    fun skipEqualToNowIsKeptWithinGrace() = runTest {
         repo.upsert(alarm(skip = clock.now))
+        assertEquals(clock.now, repo.get("a")!!.skippedOccurrenceAt)
+    }
+
+    @Test
+    fun skipJustAfterFireIsKeptByGetAndAlarmsAndInDb() = runTest {
+        val t = clock.now
+        repo.upsert(alarm(skip = t))
+        clock.now = t.plusSeconds(1)
+        assertEquals(t, repo.get("a")!!.skippedOccurrenceAt)
+        repo.alarms.test {
+            assertEquals(t, awaitItem().single().skippedOccurrenceAt)
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertEquals(t.toEpochMilli(), dao.get("a")!!.skippedOccurrenceAt)
+    }
+
+    @Test
+    fun skipPastGraceIsNullViaGetAndClearedInDb() = runTest {
+        val t = clock.now
+        repo.upsert(alarm(skip = t))
+        clock.now = t.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(1)
+        assertNull(repo.get("a")!!.skippedOccurrenceAt)
+        assertNull(dao.get("a")!!.skippedOccurrenceAt)
+    }
+
+    @Test
+    fun skipPastGraceIsNullViaAlarmsAndClearedInDb() = runTest {
+        val t = clock.now
+        repo.upsert(alarm(skip = t))
+        clock.now = t.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(1)
+        repo.alarms.test {
+            assertNull(awaitItem().single().skippedOccurrenceAt)
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertNull(dao.get("a")!!.skippedOccurrenceAt)
+    }
+
+    @Test
+    fun skipExactlyAtGraceBoundaryIsExpired() = runTest {
+        val t = clock.now
+        repo.upsert(alarm(skip = t))
+        clock.now = t.plus(FIRE_GRACE.toJavaDuration())
         assertNull(repo.get("a")!!.skippedOccurrenceAt)
     }
 
@@ -171,7 +215,7 @@ class AlarmRepositoryImplTest {
         repo.upsert(alarm(skip = clock.now.plusSeconds(60)))
         repo.alarms.test {
             assertEquals(clock.now.plusSeconds(60), awaitItem().single().skippedOccurrenceAt)
-            clock.now = clock.now.plusSeconds(120)
+            clock.now = clock.now.plusSeconds(120).plus(FIRE_GRACE.toJavaDuration())
             repo.setEnabled("a", false)
             assertNull(awaitItem().single().skippedOccurrenceAt)
             cancelAndIgnoreRemainingEvents()

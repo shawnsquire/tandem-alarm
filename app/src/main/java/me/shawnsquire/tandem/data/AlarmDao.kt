@@ -25,6 +25,6 @@ interface AlarmDao {
     @Query("UPDATE alarms SET skippedOccurrenceAt = :skippedAtMillis WHERE id = :id")
     suspend fun setSkip(id: String, skippedAtMillis: Long?)
 
-    @Query("UPDATE alarms SET skippedOccurrenceAt = NULL WHERE skippedOccurrenceAt IS NOT NULL AND skippedOccurrenceAt <= :nowMillis")
-    suspend fun clearExpiredSkips(nowMillis: Long)
+    @Query("UPDATE alarms SET skippedOccurrenceAt = NULL WHERE skippedOccurrenceAt IS NOT NULL AND skippedOccurrenceAt <= :cutoffMillis")
+    suspend fun clearExpiredSkips(cutoffMillis: Long)
 }
