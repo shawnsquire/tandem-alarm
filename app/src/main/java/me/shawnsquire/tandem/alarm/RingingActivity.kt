@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -74,8 +75,9 @@ class RingingActivity : ComponentActivity() {
         val container = (application as TandemApp).container
         val model = RingingScreenModel()
 
+        val userStopped = CompletableDeferred<Unit>()
         lifecycleScope.launch {
-            awaitRingEnd(container.ringStateStore.state, model, onRing = { ring = it })
+            awaitRingEnd(container.ringStateStore.state, model, userStopped = userStopped, onRing = { ring = it })
             finish()
         }
 
@@ -108,6 +110,8 @@ class RingingActivity : ComponentActivity() {
                     onStop = {
                         val id = current?.ringId ?: return@RingingScreen
                         lifecycleScope.launch { container.ringingController.dismiss(id) }
+                        // Close at once; the controller's dismiss is NonCancellable.
+                        userStopped.complete(Unit)
                     },
                     onSnooze = {
                         lifecycleScope.launch { container.ringingController.snooze() }
@@ -194,15 +198,14 @@ private fun RingingScreen(
     }
 }
 
-/** Decodes [path] downsampled to roughly [reqW]x[reqH]; null if missing or unreadable. */
+/** Decodes [path] downsampled to fit the [reqW]x[reqH] memory budget; null if missing or unreadable. */
 private fun decodeSampled(path: String, reqW: Int, reqH: Int): Bitmap? = try {
     if (!File(path).canRead()) null else {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(path, bounds)
-        var sample = 1
-        if (bounds.outWidth > 0 && bounds.outHeight > 0) {
-            while (bounds.outWidth / (sample * 2) >= reqW && bounds.outHeight / (sample * 2) >= reqH) sample *= 2
-        }
+        val sample = if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+            sampleSizeFor(bounds.outWidth, bounds.outHeight, reqW, reqH)
+        } else 1
         BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 } catch (e: Exception) {

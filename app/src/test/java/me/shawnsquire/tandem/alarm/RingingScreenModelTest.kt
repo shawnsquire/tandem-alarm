@@ -28,7 +28,8 @@ class RingingScreenModelTest {
         assertFalse(m.onState(null))
         assertFalse(m.onState(ring("X")))
         assertEquals("X", m.ringId)
-        assertTrue(m.onState(null))
+        assertFalse(m.onState(null))
+        assertTrue(m.endPending)
     }
 
     @Test fun differentRingIdIsAdopted() {
@@ -37,7 +38,8 @@ class RingingScreenModelTest {
         assertFalse(m.onState(ring("X")))
         assertFalse(m.onState(ring("Y")))
         assertEquals("Y", m.ringId)
-        assertTrue(m.onState(null))
+        assertFalse(m.onState(null))
+        assertTrue(m.endPending)
     }
 
     @Test fun adoptedRingSnoozeFinishes() {
@@ -63,6 +65,57 @@ class RingingScreenModelTest {
         assertEquals(listOf("X", "Y"), seen)
         assertFalse(done)
         flow.value = null; runCurrent()
+        assertFalse(done)
+        advanceTimeBy(END_DEBOUNCE_MS + 1); runCurrent()
+        assertTrue(done)
+    }
+
+    @Test fun supersedeWithinDebounceAdoptsAndDoesNotFinish() = runTest {
+        val flow = MutableStateFlow<RingState?>(null)
+        val seen = mutableListOf<String>()
+        var done = false
+        launch { awaitRingEnd(flow, onRing = { seen += it.ringId }); done = true }
+        flow.value = ring("X"); runCurrent()
+        flow.value = null; runCurrent()
+        advanceTimeBy(2_000)
+        flow.value = ring("Y"); runCurrent()
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(listOf("X", "Y"), seen)
+        assertFalse(done)
+        flow.value = null; runCurrent()
+        advanceTimeBy(END_DEBOUNCE_MS + 1); runCurrent()
+        assertTrue(done)
+    }
+
+    @Test fun nullWithNothingElseFinishesAtDebounce() = runTest {
+        val flow = MutableStateFlow<RingState?>(null)
+        var done = false
+        launch { awaitRingEnd(flow); done = true }
+        flow.value = ring("X"); runCurrent()
+        flow.value = null; runCurrent()
+        advanceTimeBy(END_DEBOUNCE_MS - 1); runCurrent()
+        assertFalse(done)
+        advanceTimeBy(2); runCurrent()
+        assertTrue(done)
+    }
+
+    @Test fun awaitSnoozeFinishesImmediately() = runTest {
+        val flow = MutableStateFlow<RingState?>(null)
+        var done = false
+        launch { awaitRingEnd(flow); done = true }
+        flow.value = ring("X"); runCurrent()
+        flow.value = ring("X", snoozed = true); runCurrent()
+        assertTrue(done)
+    }
+
+    @Test fun userStopFinishesImmediately() = runTest {
+        val flow = MutableStateFlow<RingState?>(null)
+        val stop = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var done = false
+        launch { awaitRingEnd(flow, userStopped = stop); done = true }
+        flow.value = ring("X"); runCurrent()
+        assertFalse(done)
+        stop.complete(Unit); runCurrent()
         assertTrue(done)
     }
 
@@ -105,6 +158,7 @@ class RingingScreenModelTest {
         advanceTimeBy(20_000); runCurrent()
         assertFalse(done)
         flow.value = null; runCurrent()
+        advanceTimeBy(END_DEBOUNCE_MS + 1); runCurrent()
         assertTrue(done)
     }
 
@@ -113,5 +167,13 @@ class RingingScreenModelTest {
         assertEquals(listOf("d"), chooseWallpaperPaths(null, "d"))
         assertEquals(listOf("d"), chooseWallpaperPaths(" ", "d"))
         assertEquals(emptyList<String>(), chooseWallpaperPaths(null, null))
+    }
+
+    @Test fun sampleSizeCapsPanoramaMemory() {
+        val sample = sampleSizeFor(12000, 3000, 1440, 3120)
+        assertEquals(4, sample)
+        assertTrue((12000L / sample) * (3000L / sample) * 4 <= 2L * 1440 * 3120 * 4)
+        assertEquals(1, sampleSizeFor(1080, 2400, 1080, 2400))
+        assertEquals(2, sampleSizeFor(4000, 5000, 1080, 2400))
     }
 }
