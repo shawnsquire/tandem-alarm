@@ -42,6 +42,7 @@ import me.shawnsquire.tandem.sync.FirestoreCommandRemote
 import me.shawnsquire.tandem.sync.FirestoreDeviceDocWriter
 import me.shawnsquire.tandem.sync.Household
 import me.shawnsquire.tandem.sync.HouseholdSource
+import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.sync.PairingRepositoryImpl
 import me.shawnsquire.tandem.sync.PartnerRepositoryImpl
 import me.shawnsquire.tandem.sync.PreFireCheckImpl
@@ -85,23 +86,23 @@ class AppContainer(private val context: Context) {
         PairingRepositoryImpl(authManager, householdFlow, partnerRepository.partner, Firebase.functions)
     val commandApplierImpl = CommandApplierImpl(
         alarmRepository, ringStateStore, alarmScheduler, ringingController, commandRemote, householdFlow,
-        partnerRepository.partner.map { it?.displayName },
-        ProcessedCommands(context.syncDataStore, Clock.systemDefaultZone()),
-        AndroidCommandNotifier(context), Clock.systemDefaultZone(),
+        partnerRepository.partner.map { it?.displayName }.stateIn(syncScope, SharingStarted.Eagerly, null),
+        ProcessedCommands(context.syncDataStore, LiveZoneClock),
+        AndroidCommandNotifier(context), LiveZoneClock, syncScope,
     )
     val commandApplier: CommandApplier = commandApplierImpl
     val preFireCheckImpl = PreFireCheckImpl(householdFlow, commandRemote, commandApplierImpl::applyPending)
     val preFireCheck: PreFireCheck = preFireCheckImpl
-    val commandSender: CommandSender = CommandSenderImpl(commandRemote, household, Clock.systemDefaultZone())
+    val commandSender: CommandSender = CommandSenderImpl(commandRemote, household, LiveZoneClock)
     val statePublisher: StatePublisher = StatePublisherImpl(
         alarmRepository, ringStateStore, householdFlow, authManager.displayName, fcmTokenStore.token,
-        FirestoreDeviceDocWriter(firestore), Clock.systemDefaultZone(), syncScope,
+        FirestoreDeviceDocWriter(firestore), LiveZoneClock, syncScope,
     )
     val ringingCommandListener =
         RingingCommandListener(ringStateStore.state, householdFlow, commandRemote, commandApplierImpl::applyPending, syncScope)
     val healthSignalsImpl = HealthSignalsImpl(context.syncDataStore, fcmTokenStore)
     val healthSignals: HealthSignals = healthSignalsImpl
     val fcmCommandHandler = FcmCommandHandler(
-        commandApplier, healthSignalsImpl::recordFcm, Clock.systemDefaultZone(), { SyncWorker.runNow(context) },
+        commandApplier, householdFlow, healthSignalsImpl::recordFcm, LiveZoneClock, { SyncWorker.runNow(context) },
     )
 }

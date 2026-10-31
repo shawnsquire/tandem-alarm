@@ -22,6 +22,9 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
     val created = mutableListOf<Created>()
     var statusCalls = 0
 
+    /** When set, [status] suspends in it (and returns its result) instead of returning [status] directly. */
+    var statusBlock: (suspend () -> CommandStatus?)? = null
+
     /** Id returned by [create]. */
     var createdId = "c1"
 
@@ -47,7 +50,7 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
         updatesFor(commandId)
     override suspend fun status(householdId: String, commandId: String): CommandStatus? {
         statusCalls++
-        return status
+        return statusBlock?.invoke() ?: status
     }
     override fun resolve(householdId: String, commandId: String, status: CommandStatus, reason: String?) {
         resolved += Resolved(householdId, commandId, status, reason)

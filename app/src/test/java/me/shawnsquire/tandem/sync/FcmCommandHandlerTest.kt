@@ -5,6 +5,9 @@ import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -36,8 +39,10 @@ class FcmCommandHandlerTest {
     private val recorded = mutableListOf<Instant>()
     private var fallbacks = 0
 
-    private fun handler(applier: CommandApplier) =
-        FcmCommandHandler(applier, { recorded += it }, clock, { fallbacks++ }, 10.seconds)
+    private val hh = Household("h1", "u2", "u1")
+
+    private fun handler(applier: CommandApplier, household: Flow<Household?> = flowOf(hh)) =
+        FcmCommandHandler(applier, household, { recorded += it }, clock, { fallbacks++ }, 10.seconds)
 
     @Test
     fun validPayloadAppliesAndRecords() = runTest {
@@ -92,8 +97,49 @@ class FcmCommandHandlerTest {
     @Test
     fun recorderFailureStillApplies() = runTest {
         val applier = FakeCommandApplier()
-        FcmCommandHandler(applier, { error("disk") }, clock, { fallbacks++ }, 10.seconds).handle(payload)
+        FcmCommandHandler(applier, flowOf(hh), { error("disk") }, clock, { fallbacks++ }, 10.seconds).handle(payload)
         assertEquals(1, applier.applied.size)
         assertFalse(fallbacks > 0)
+    }
+
+    @Test
+    fun householdMismatchIsDroppedWithoutApplyOrFallback() = runTest {
+        val applier = FakeCommandApplier()
+        handler(applier).handle(payload + ("householdId" to "other"))
+        assertTrue(applier.applied.isEmpty())
+        assertEquals(0, fallbacks)
+        assertEquals(listOf(now), recorded)
+    }
+
+    @Test
+    fun missingHouseholdIdInPayloadIsDropped() = runTest {
+        val applier = FakeCommandApplier()
+        handler(applier).handle(payload - "householdId")
+        assertTrue(applier.applied.isEmpty())
+        assertEquals(0, fallbacks)
+    }
+
+    @Test
+    fun unknownHouseholdFallsBackWithoutApply() = runTest {
+        val applier = FakeCommandApplier()
+        handler(applier, flowOf(null)).handle(payload)
+        assertTrue(applier.applied.isEmpty())
+        assertEquals(1, fallbacks)
+    }
+
+    @Test
+    fun householdNeverEmittingFallsBackAfterWait() = runTest {
+        val applier = FakeCommandApplier()
+        handler(applier, emptyFlow()).handle(payload)
+        assertTrue(applier.applied.isEmpty())
+        assertEquals(1, fallbacks)
+    }
+
+    @Test
+    fun notVerifiedFallsBack() = runTest {
+        handler(object : CommandApplier {
+            override suspend fun apply(cmd: Command) = throw CommandNotVerifiedException("status unknown")
+        }).handle(payload)
+        assertEquals(1, fallbacks)
     }
 }

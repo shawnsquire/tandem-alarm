@@ -6,6 +6,8 @@ import java.time.Instant
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -15,6 +17,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class FcmCommandHandler(
     private val applier: CommandApplier,
+    private val household: Flow<Household?>,
     private val recordFcm: suspend (Instant) -> Unit,
     private val clock: Clock,
     private val fallback: () -> Unit,
@@ -33,6 +36,23 @@ class FcmCommandHandler(
             Log.w(TAG, "ignoring malformed FCM payload")
             return
         }
+        val hh = try {
+            withTimeoutOrNull(2.seconds) { household.first() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Log.w(TAG, "could not read household", e)
+            null
+        }
+        if (hh == null) {
+            Log.w(TAG, "household unknown; falling back to pull")
+            runFallback()
+            return
+        }
+        if (householdIdFromFcm(data) != hh.id) {
+            Log.w(TAG, "dropping command for another household")
+            return
+        }
         val completed = try {
             withTimeoutOrNull(budget) { applier.apply(cmd) } != null
         } catch (e: CancellationException) {
@@ -43,11 +63,15 @@ class FcmCommandHandler(
         }
         if (!completed) {
             Log.w(TAG, "command not applied in time; falling back to pull")
-            try {
-                fallback()
-            } catch (e: Throwable) {
-                Log.w(TAG, "fallback failed", e)
-            }
+            runFallback()
+        }
+    }
+
+    private fun runFallback() {
+        try {
+            fallback()
+        } catch (e: Throwable) {
+            Log.w(TAG, "fallback failed", e)
         }
     }
 

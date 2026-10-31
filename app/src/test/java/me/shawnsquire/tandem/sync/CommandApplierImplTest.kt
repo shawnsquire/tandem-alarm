@@ -1,7 +1,15 @@
 package me.shawnsquire.tandem.sync
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.withTimeoutOrNull
+import me.shawnsquire.tandem.data.AlarmRepository
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -61,6 +69,7 @@ class CommandApplierImplTest {
         ring: RingState? = null,
         household: Flow<Household?> = flowOf(hh),
         name: String? = "Sam",
+        wrapAlarms: (AlarmRepository) -> AlarmRepository = { it },
     ): Env {
         val a = FakeAlarmRepository(alarms)
         val r = FakeRingStateStore(ring)
@@ -73,7 +82,10 @@ class CommandApplierImplTest {
             produceFile = { File(tmp.root, "t${n.hashCode()}.preferences_pb") },
         )
         val p = ProcessedCommands(ds, clock)
-        return Env(a, r, s, rc, remote, n, p, CommandApplierImpl(a, r, s, rc, remote, household, flowOf(name), p, n, clock))
+        val applier = CommandApplierImpl(
+            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), p, n, clock, backgroundScope,
+        )
+        return Env(a, r, s, rc, remote, n, p, applier)
     }
 
     private fun cmd(
@@ -187,11 +199,17 @@ class CommandApplierImplTest {
         assertTrue(e.notifier.calls.isEmpty())
     }
 
-    @Test fun `unknown doc status still applies`() = runTest {
+    @Test fun `unknown doc status is not applied and not verified`() = runTest {
         val e = env()
         e.remote.status = null
-        e.applier.apply(cmd(CommandType.DISABLE))
-        assertFalse(e.alarms.get("a1")!!.enabled)
+        try {
+            e.applier.apply(cmd(CommandType.DISABLE))
+            org.junit.Assert.fail("expected CommandNotVerifiedException")
+        } catch (_: CommandNotVerifiedException) {
+        }
+        assertTrue(e.alarms.get("a1")!!.enabled)
+        assertTrue(e.remote.resolved.isEmpty())
+        assertTrue(e.notifier.calls.isEmpty())
     }
 
     @Test fun `applyPending skips the status read`() = runTest {
@@ -217,11 +235,56 @@ class CommandApplierImplTest {
         assertTrue(e.remote.resolved.isEmpty())
     }
 
-    @Test fun `unknown household applies locally without resolving`() = runTest {
+    @Test fun `unknown household is not applied and not verified`() = runTest {
         val e = env(household = flowOf(null))
-        e.applier.apply(cmd(CommandType.DISABLE))
-        assertFalse(e.alarms.get("a1")!!.enabled)
+        try {
+            e.applier.apply(cmd(CommandType.DISABLE))
+            org.junit.Assert.fail("expected CommandNotVerifiedException")
+        } catch (_: CommandNotVerifiedException) {
+        }
+        assertTrue(e.alarms.get("a1")!!.enabled)
         assertTrue(e.remote.resolved.isEmpty())
+        assertEquals(0, e.remote.statusCalls)
+    }
+
+    private class SlowSkipAlarms(private val inner: AlarmRepository, private val ms: Long) : AlarmRepository by inner {
+        override suspend fun setSkip(id: String, occurrence: Instant?) {
+            delay(ms)
+            inner.setSkip(id, occurrence)
+        }
+    }
+
+    @Test fun `caller timeout does not tear the command`() = runTest {
+        val e = env(wrapAlarms = { SlowSkipAlarms(it, 5_000) })
+        val c = cmd(CommandType.SKIP_NEXT)
+        val result = withTimeoutOrNull(1_000) { e.applier.applyPending(hh, c) }
+        assertNull(result)
+        assertTrue(e.remote.resolved.isEmpty())
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(c.occurrenceAt, e.alarms.get("a1")!!.skippedOccurrenceAt)
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        assertEquals(1, e.notifier.calls.size)
+        assertEquals(1, e.scheduler.rescheduleCount)
+        // Recorded: a repeat is a duplicate and is not reapplied.
+        e.alarms.setSkip("a1", null)
+        e.applier.applyPending(hh, c)
+        assertNull(e.alarms.get("a1")!!.skippedOccurrenceAt)
+    }
+
+    @Test fun `status read does not hold the lock`() = runTest {
+        val e = env()
+        val gate = CompletableDeferred<CommandStatus?>()
+        e.remote.statusBlock = { gate.await() }
+        val slow = launch { e.applier.apply(cmd(CommandType.DISABLE, id = "slow")) }
+        runCurrent()
+        assertEquals(1, e.remote.statusCalls)
+        e.applier.applyPending(hh, cmd(CommandType.UNSKIP, id = "fast", occurrenceAt = null))
+        assertEquals(listOf("fast"), e.remote.resolved.map { it.id })
+        assertTrue(slow.isActive)
+        gate.complete(CommandStatus.PENDING)
+        runCurrent()
+        assertEquals(listOf("fast", "slow"), e.remote.resolved.map { it.id })
     }
 
     @Test fun `notifier failure does not fail apply`() = runTest {

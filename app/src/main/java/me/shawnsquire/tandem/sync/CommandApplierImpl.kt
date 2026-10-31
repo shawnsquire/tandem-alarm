@@ -2,7 +2,10 @@ package me.shawnsquire.tandem.sync
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -11,6 +14,7 @@ import me.shawnsquire.tandem.alarm.AlarmScheduler
 import me.shawnsquire.tandem.alarm.RingingController
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
+import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandDecision
 import me.shawnsquire.tandem.schedule.CommandStatus
@@ -32,36 +36,51 @@ class CommandApplierImpl(
     private val ringing: RingingController,
     private val remote: CommandRemote,
     private val household: Flow<Household?>,
-    private val partnerName: Flow<String?>,
+    private val partnerName: StateFlow<String?>,
     private val processed: ProcessedCommands,
     private val notifier: CommandNotifier,
     private val clock: Clock,
+    private val scope: CoroutineScope,
 ) : CommandApplier {
     private val lock = Mutex()
 
+    /**
+     * The FCM path: applies only if the household is known and the server doc is still pending.
+     * Otherwise throws [CommandNotVerifiedException] so the caller falls back to a household-bound pull.
+     */
     override suspend fun apply(cmd: Command) {
         val hh = withTimeoutOrNull(2.seconds) { household.first() }
-        process(cmd, hh, checkDocStatus = true)
+            ?: throw CommandNotVerifiedException("household unknown for ${cmd.id}")
+        if (cmd.to != hh.myUid) {
+            Log.w(TAG, "ignoring ${cmd.id}: addressed to someone else")
+            return
+        }
+        // Network read stays outside the lock so a slow read never blocks other commands.
+        val status = remote.status(hh.id, cmd.id)
+            ?: throw CommandNotVerifiedException("status unknown for ${cmd.id}")
+        if (status != CommandStatus.PENDING) return
+        process(cmd, hh)
     }
 
     /** For callers that just read [cmd]'s doc as pending for [household]: skips the status read and the household wait. */
-    internal suspend fun applyPending(household: Household, cmd: Command) =
-        process(cmd, household, checkDocStatus = false)
+    internal suspend fun applyPending(household: Household, cmd: Command) = process(cmd, household)
 
-    private suspend fun process(cmd: Command, hh: Household?, checkDocStatus: Boolean) =
+    /** Runs in [scope] so cancelling the caller's wait (pre-fire/FCM timeouts) never tears a half-applied command. */
+    private suspend fun process(cmd: Command, hh: Household) {
+        scope.async { processLocked(cmd, hh) }.await()
+    }
+
+    private suspend fun processLocked(cmd: Command, hh: Household) {
+        val hid = hh.id
+        var notify: Triple<Command, Alarm?, Boolean>? = null
         lock.withLock {
-            val hid = hh?.id
-            if (hh != null && cmd.to != hh.myUid) {
+            if (cmd.to != hh.myUid) {
                 Log.w(TAG, "ignoring ${cmd.id}: addressed to someone else")
-                return@withLock
+                return
             }
             processed.outcome(cmd.id)?.let { prior ->
-                if (hid != null) resolve(hid, cmd.id, prior)
-                return@withLock
-            }
-            if (checkDocStatus && hid != null) {
-                val status = remote.status(hid, cmd.id)
-                if (status != null && status != CommandStatus.PENDING) return@withLock
+                resolve(hid, cmd.id, prior)
+                return
             }
 
             val alarm = alarms.get(cmd.alarmId)
@@ -94,18 +113,20 @@ class CommandApplierImpl(
                     Log.w(TAG, "reschedule after ${cmd.id} failed", e)
                 }
             }
-            if (hid != null) resolve(hid, cmd.id, outcome)
-            if (outcome == Outcome.Applied) {
-                try {
-                    val name = withTimeoutOrNull(1.seconds) { partnerName.first() }
-                    notifier.notifyApplied(cmd, alarm, name?.takeIf { it.isNotBlank() } ?: FALLBACK_NAME, turnedOff)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "notifying ${cmd.id} failed", e)
-                }
+            resolve(hid, cmd.id, outcome)
+            if (outcome == Outcome.Applied) notify = Triple(cmd, alarm, turnedOff)
+        }
+        notify?.let { (c, alarm, turnedOff) ->
+            try {
+                val name = partnerName.value
+                notifier.notifyApplied(c, alarm, name?.takeIf { it.isNotBlank() } ?: FALLBACK_NAME, turnedOff)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "notifying ${c.id} failed", e)
             }
         }
+    }
 
     private suspend fun applyLocally(cmd: Command, turnedOff: Boolean) {
         when (cmd.type) {
@@ -128,3 +149,6 @@ class CommandApplierImpl(
         const val FALLBACK_NAME = "Your partner"
     }
 }
+
+/** The household or the command doc couldn't be verified, so the command was not applied. */
+class CommandNotVerifiedException(message: String) : Exception(message)
