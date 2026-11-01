@@ -115,7 +115,8 @@ fun isArmed(alarm: Alarm): Boolean {
  * its merged members and the snooze ledger. Live state is matched on `alarm.id` plus X, never
  * on X alone or `cmd.alarmId`, so on a joiner [alarm] is the resolved linked row. With a null
  * [context], SNOOZE is "not supported yet" and STOP_RINGING needs a `ringId`. A SNOOZE missing
- * X or T is rejected "not supported yet":
+ * X or T is rejected "incomplete snooze". Merged members come from [RingContext.merged] and the
+ * slot ring's own `merged`:
  * 1. Expired or duplicate: reject (I3).
  * 2. Not ringing here ("skipped here"): this phone's own state says X wouldn't ring: its
  *    `skippedOccurrenceAt` or `soloSkippedOccurrenceAt`, `link.ownerSkippedOccurrenceAt`, a
@@ -212,12 +213,12 @@ private fun validateRingOccurrence(
     val x = cmd.occurrenceAt
     val until = cmd.snoozedUntil
     if (x == null || (cmd.type == CommandType.SNOOZE && until == null)) {
-        return CommandDecision.Reject("not supported yet")
+        return CommandDecision.Reject("incomplete snooze")
     }
     if (!isArmed(alarm) || x in alarm.skippedOccurrences()) return CommandDecision.Reject("skipped here")
 
     val ring = context.ring?.takeIf { it.alarmId == alarm.id && it.occurrenceAt == x }
-    val merged = context.merged.any { it.alarmId == alarm.id && it.occurrenceAt == x }
+    val merged = (context.merged + context.ring?.merged.orEmpty()).any { it.alarmId == alarm.id && it.occurrenceAt == x }
     val parked = context.snoozes.filter { it.alarmId == alarm.id && it.occurrenceAt == x }
     if (ring == null && !merged && parked.isEmpty()) {
         if (context.lastRang == x) return CommandDecision.Reject("already rang or changed")

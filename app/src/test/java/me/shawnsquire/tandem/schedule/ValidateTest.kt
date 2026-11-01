@@ -409,12 +409,16 @@ class ValidateTest {
     }
 
     @Test
-    fun snoozeAndInviteLinkAreNotSupportedYet() {
+    fun snoozeAndInviteLinkAreNotSupportedWithoutContext() {
         for (type in listOf(CommandType.SNOOZE, CommandType.INVITE_LINK)) {
-            val c = cmd(type, todayRing)
-            assertEquals(reject("not supported yet"), check(c, alarm()))
-            assertEquals(reject("not supported yet"), validate(c, alarm(), null, now, newYork, context))
+            assertEquals(reject("not supported yet"), check(cmd(type, todayRing), alarm()))
         }
+    }
+
+    @Test
+    fun inviteLinkIsNotSupportedYetWithContext() {
+        val c = cmd(CommandType.INVITE_LINK, todayRing)
+        assertEquals(reject("not supported yet"), validate(c, alarm(), null, now, newYork, context))
     }
 
     @Test
@@ -539,6 +543,13 @@ class ValidateTest {
     }
 
     @Test
+    fun memberOnlyOnRingMergedListApplies() {
+        val c = ctx(ring = ringState(alarmId = "other", occurrenceAt = x).copy(merged = listOf(RingMember("a1", x))))
+        assertEquals(apply, run(stop(), alarm(), c))
+        assertEquals(apply, run(snooze(), alarm(), c))
+    }
+
+    @Test
     fun parkedSnoozeApplies() {
         val c = ctx(snoozes = listOf(ParkedSnooze("a1", x, x.plusSeconds(60))))
         assertEquals(apply, run(stop(), alarm(), c))
@@ -628,7 +639,7 @@ class ValidateTest {
     @Test
     fun malformedSnoozeRejectsCleanly() {
         val live = ctx(ring = ringState(occurrenceAt = x))
-        assertEquals(reject("not supported yet"), run(cmd(CommandType.SNOOZE, x), alarm(), live))
-        assertEquals(reject("not supported yet"), run(cmd(CommandType.SNOOZE, snoozedUntil = t0), alarm(), live))
+        assertEquals(reject("incomplete snooze"), run(cmd(CommandType.SNOOZE, x), alarm(), live))
+        assertEquals(reject("incomplete snooze"), run(cmd(CommandType.SNOOZE, snoozedUntil = t0), alarm(), live))
     }
 }
