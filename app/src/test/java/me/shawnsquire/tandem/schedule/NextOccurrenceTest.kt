@@ -21,6 +21,8 @@ class NextOccurrenceTest {
         days: Set<DayOfWeek> = emptySet(),
         enabled: Boolean = true,
         skippedOccurrenceAt: Instant? = null,
+        soloSkippedOccurrenceAt: Instant? = null,
+        link: AlarmLink? = null,
     ) = Alarm(
         id = "a1",
         label = "",
@@ -31,7 +33,28 @@ class NextOccurrenceTest {
         skippedOccurrenceAt = skippedOccurrenceAt,
         ringtoneUri = null,
         wallpaperPath = null,
+        link = link,
+        soloSkippedOccurrenceAt = soloSkippedOccurrenceAt,
     )
+
+    private fun link(
+        ownerSkippedOccurrenceAt: Instant? = null,
+        joinerEnabled: Boolean = true,
+        pendingBoth: PendingBoth? = null,
+    ) = AlarmLink(
+        ownerUid = "owner",
+        ownerAlarmId = "o1",
+        mode = LinkMode.RING,
+        ownerSkippedOccurrenceAt = ownerSkippedOccurrenceAt,
+        joinerEnabled = joinerEnabled,
+        pendingBoth = pendingBoth,
+        overrideLabel = null,
+        overrideRingtoneUri = null,
+        overrideWallpaperPath = null,
+    )
+
+    private fun pending(type: CommandType, occurrenceAt: Instant? = null) =
+        PendingBoth(type, occurrenceAt, "c1")
 
     private fun next(alarm: Alarm, now: Instant, zone: ZoneId = newYork) =
         nextOccurrence(alarm, now, zone)
@@ -168,5 +191,290 @@ class NextOccurrenceTest {
         val daily = alarm(8, days = allDays)
         val result = next(daily, Instant.parse("2026-11-07T13:00:01Z"))
         assertEquals(Instant.parse("2026-11-08T13:00:00Z"), result)
+    }
+
+    // Linked rows and the solo skip.
+
+    private val satEight = Instant.parse("2026-11-07T13:00:00Z")
+    private val monEight = Instant.parse("2026-11-09T13:00:00Z")
+    private val satMonDays = setOf(DayOfWeek.SATURDAY, DayOfWeek.MONDAY)
+
+    @Test
+    fun ownRowSoloSkipSkipsThatOccurrence() {
+        val alarm = alarm(8, days = satMonDays, soloSkippedOccurrenceAt = satEight)
+        assertEquals(monEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun ownRowSoloAndSharedSkipsBothApply() {
+        val alarm = alarm(8, days = satMonDays, skippedOccurrenceAt = satEight, soloSkippedOccurrenceAt = monEight)
+        assertEquals(Instant.parse("2026-11-14T13:00:00Z"), next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun soloSkippedOneShotReturnsNull() {
+        assertNull(next(alarm(8, soloSkippedOccurrenceAt = satEight), saturdayMorning))
+    }
+
+    @Test
+    fun soloSkippedOneShotStaysNullAfterXUntilSkipExpiryTurnsItOff() {
+        val a = alarm(8, soloSkippedOccurrenceAt = satEight)
+        assertNull(next(a, satEight.plusSeconds(60)))
+        assertNull(next(a, satEight.plusSeconds(119)))
+        // Never tomorrow's time, at any point while the solo skip is still present.
+        assertNull(next(a, satEight.plusSeconds(3600)))
+    }
+
+    @Test
+    fun linkedRowWithNoSkipsSchedulesNormally() {
+        assertEquals(satEight, next(alarm(8, days = satMonDays, link = link()), saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowIgnoresSoloSkip() {
+        val alarm = alarm(8, days = satMonDays, soloSkippedOccurrenceAt = satEight, link = link())
+        assertEquals(satEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowOwnSkipApplies() {
+        val alarm = alarm(8, days = satMonDays, skippedOccurrenceAt = satEight, link = link())
+        assertEquals(monEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowOwnerSkipApplies() {
+        val alarm = alarm(8, days = satMonDays, link = link(ownerSkippedOccurrenceAt = satEight))
+        assertEquals(monEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowPendingSkipNextAppliesAtItsOccurrence() {
+        val pb = pending(CommandType.SKIP_NEXT, satEight)
+        val alarm = alarm(8, days = satMonDays, link = link(pendingBoth = pb))
+        assertEquals(monEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowPendingSkipNextWithoutOccurrenceSkipsNothing() {
+        val alarm = alarm(8, days = satMonDays, link = link(pendingBoth = pending(CommandType.SKIP_NEXT)))
+        assertEquals(satEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowAllThreeSkipsOnConsecutiveOccurrences() {
+        val fri = Instant.parse("2026-11-13T13:00:00Z")
+        val alarm = alarm(
+            8,
+            days = setOf(DayOfWeek.FRIDAY),
+            skippedOccurrenceAt = fri,
+            link = link(
+                ownerSkippedOccurrenceAt = fri.plusSeconds(7 * 86400),
+                pendingBoth = pending(CommandType.SKIP_NEXT, fri.plusSeconds(14 * 86400)),
+            ),
+        )
+        assertEquals(Instant.parse("2026-12-04T13:00:00Z"), next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun twoSkipsOnConsecutiveOccurrencesOfSingleWeekdayAlarmReachTwoWeeksOut() {
+        // Two stacked skips on a weekday alarm whose next ring is 6 days out: the answer is day 20.
+        // The true worst case for the search window is in the test below.
+        val fri = Instant.parse("2026-11-13T13:00:00Z")
+        val alarm = alarm(
+            8,
+            days = setOf(DayOfWeek.FRIDAY),
+            skippedOccurrenceAt = fri,
+            link = link(ownerSkippedOccurrenceAt = fri.plusSeconds(7 * 86400)),
+        )
+        assertEquals(Instant.parse("2026-11-27T13:00:00Z"), next(alarm, saturdayMorning))
+        val own = alarm(
+            8,
+            days = setOf(DayOfWeek.FRIDAY),
+            skippedOccurrenceAt = fri,
+            soloSkippedOccurrenceAt = fri.plusSeconds(7 * 86400),
+        )
+        assertEquals(Instant.parse("2026-11-27T13:00:00Z"), next(own, saturdayMorning))
+    }
+
+    @Test
+    fun threeStackedSkipsOnTodaysWeekdayAfterItsTimePassedReachDay28() {
+        // Worst case for the search window: today is Saturday 07:00 and the alarm is Saturday 06:00,
+        // so the first candidate is day 7. Three skips (days 7, 14, 21) put the answer on day 28.
+        val sat1 = Instant.parse("2026-11-14T11:00:00Z")
+        val alarm = alarm(
+            6,
+            days = setOf(DayOfWeek.SATURDAY),
+            skippedOccurrenceAt = sat1,
+            link = link(
+                ownerSkippedOccurrenceAt = sat1.plusSeconds(7 * 86400),
+                pendingBoth = pending(CommandType.SKIP_NEXT, sat1.plusSeconds(14 * 86400)),
+            ),
+        )
+        assertEquals(Instant.parse("2026-12-05T11:00:00Z"), next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun expiredSkipsOfEachKindAreIgnored() {
+        val past = Instant.parse("2026-11-07T11:00:00Z")
+        assertEquals(
+            satEight,
+            next(alarm(8, days = satMonDays, soloSkippedOccurrenceAt = past), saturdayMorning),
+        )
+        assertEquals(
+            satEight,
+            next(alarm(8, days = satMonDays, skippedOccurrenceAt = past, link = link()), saturdayMorning),
+        )
+        assertEquals(
+            satEight,
+            next(alarm(8, days = satMonDays, link = link(ownerSkippedOccurrenceAt = past)), saturdayMorning),
+        )
+        val pb = pending(CommandType.SKIP_NEXT, past)
+        assertEquals(satEight, next(alarm(8, days = satMonDays, link = link(pendingBoth = pb)), saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowPendingUnskipMasksOwnerSkipAtThatOccurrence() {
+        val pb = pending(CommandType.UNSKIP, satEight)
+        val alarm = alarm(8, days = satMonDays, link = link(ownerSkippedOccurrenceAt = satEight, pendingBoth = pb))
+        assertEquals(satEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowPendingUnskipDoesNotTouchJoinersOwnSkip() {
+        val pb = pending(CommandType.UNSKIP, satEight)
+        val alarm = alarm(
+            8,
+            days = satMonDays,
+            skippedOccurrenceAt = satEight,
+            link = link(ownerSkippedOccurrenceAt = satEight, pendingBoth = pb),
+        )
+        assertEquals(monEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowPendingUnskipForOtherOccurrenceKeepsOwnerSkip() {
+        val pb = pending(CommandType.UNSKIP, monEight)
+        val alarm = alarm(8, days = satMonDays, link = link(ownerSkippedOccurrenceAt = satEight, pendingBoth = pb))
+        assertEquals(monEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowPendingDisableReturnsNull() {
+        val pb = pending(CommandType.DISABLE, satEight)
+        assertNull(next(alarm(8, days = satMonDays, link = link(pendingBoth = pb)), saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowPendingEnableSchedulesEvenWhenCopiedEnabledIsFalse() {
+        val pb = pending(CommandType.ENABLE)
+        val alarm = alarm(8, days = satMonDays, enabled = false, link = link(pendingBoth = pb))
+        assertEquals(satEight, next(alarm, saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowWithCopiedEnabledFalseAndNoPendingReturnsNull() {
+        assertNull(next(alarm(8, days = satMonDays, enabled = false, link = link()), saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowJoinerDisabledReturnsNull() {
+        assertNull(next(alarm(8, days = satMonDays, link = link(joinerEnabled = false)), saturdayMorning))
+    }
+
+    @Test
+    fun linkedRowJoinerDisabledBeatsPendingEnable() {
+        val link = link(joinerEnabled = false, pendingBoth = pending(CommandType.ENABLE))
+        assertNull(next(alarm(8, days = satMonDays, enabled = false, link = link), saturdayMorning))
+    }
+
+    @Test
+    fun linkedOneShotOwnerSkipReturnsNull() {
+        assertNull(next(alarm(8, link = link(ownerSkippedOccurrenceAt = satEight)), saturdayMorning))
+    }
+
+    @Test
+    fun linkedSpringForwardNonexistentTwoThirtyRingsAtShiftedThreeThirty() {
+        val alarm = alarm(2, 30, days = allDays, link = link())
+        val now = Instant.parse("2027-03-14T05:00:00Z")
+        assertEquals(Instant.parse("2027-03-14T07:30:00Z"), next(alarm, now))
+    }
+
+    @Test
+    fun linkedSpringForwardSkipOfShiftedOccurrenceReturnsFollowingDay() {
+        val alarm = alarm(
+            2,
+            30,
+            days = allDays,
+            link = link(ownerSkippedOccurrenceAt = Instant.parse("2027-03-14T07:30:00Z")),
+        )
+        val now = Instant.parse("2027-03-14T05:00:00Z")
+        assertEquals(Instant.parse("2027-03-15T06:30:00Z"), next(alarm, now))
+    }
+
+    @Test
+    fun linkedFallBackAmbiguousOneThirtyUsesEarlierOffset() {
+        val alarm = alarm(1, 30, days = allDays, link = link())
+        val now = Instant.parse("2026-11-01T04:00:00Z")
+        assertEquals(Instant.parse("2026-11-01T05:30:00Z"), next(alarm, now))
+    }
+
+    @Test
+    fun linkedFallBackSecondPassOneThirtyDoesNotRingTwice() {
+        val alarm = alarm(1, 30, days = allDays, link = link())
+        val now = Instant.parse("2026-11-01T06:10:00Z")
+        assertEquals(Instant.parse("2026-11-02T06:30:00Z"), next(alarm, now))
+    }
+
+    @Test
+    fun linkedNonUsZoneKolkataUsesLocalDateAndHalfHourOffset() {
+        val alarm = alarm(6, days = setOf(DayOfWeek.SUNDAY), link = link())
+        val now = Instant.parse("2026-11-07T20:00:00Z")
+        assertEquals(Instant.parse("2026-11-08T00:30:00Z"), next(alarm, now, kolkata))
+    }
+
+    // isArmed
+
+    @Test
+    fun ownRowIsArmedWhenEnabled() {
+        assertEquals(true, isArmed(alarm(8)))
+        assertEquals(false, isArmed(alarm(8, enabled = false)))
+    }
+
+    @Test
+    fun linkedRowIsArmedWhenJoinerAndCopiedEnabled() {
+        assertEquals(true, isArmed(alarm(8, link = link())))
+    }
+
+    @Test
+    fun linkedRowNotArmedWhenJoinerDisabled() {
+        assertEquals(false, isArmed(alarm(8, link = link(joinerEnabled = false))))
+    }
+
+    @Test
+    fun linkedRowNotArmedWhenCopiedEnabledFalse() {
+        assertEquals(false, isArmed(alarm(8, enabled = false, link = link())))
+    }
+
+    @Test
+    fun linkedRowPendingEnableArmsDespiteCopiedEnabledFalse() {
+        val link = link(pendingBoth = pending(CommandType.ENABLE))
+        assertEquals(true, isArmed(alarm(8, enabled = false, link = link)))
+        assertEquals(false, isArmed(alarm(8, enabled = false, link = link.copy(joinerEnabled = false))))
+    }
+
+    @Test
+    fun linkedRowPendingDisableDisarms() {
+        assertEquals(false, isArmed(alarm(8, link = link(pendingBoth = pending(CommandType.DISABLE)))))
+    }
+
+    @Test
+    fun linkedRowPendingSkipAndUnskipDoNotAffectArming() {
+        assertEquals(true, isArmed(alarm(8, link = link(pendingBoth = pending(CommandType.SKIP_NEXT, satEight)))))
+        assertEquals(true, isArmed(alarm(8, link = link(pendingBoth = pending(CommandType.UNSKIP, satEight)))))
+        assertEquals(
+            false,
+            isArmed(alarm(8, enabled = false, link = link(pendingBoth = pending(CommandType.SKIP_NEXT, satEight)))),
+        )
     }
 }

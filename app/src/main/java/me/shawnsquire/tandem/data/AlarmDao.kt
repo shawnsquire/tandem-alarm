@@ -32,7 +32,26 @@ interface AlarmDao {
     @Query("UPDATE alarms SET skippedOccurrenceAt = :skippedAtMillis WHERE id = :id")
     suspend fun setSkip(id: String, skippedAtMillis: Long?)
 
-    @Query("UPDATE alarms SET skippedOccurrenceAt = NULL WHERE skippedOccurrenceAt IS NOT NULL AND skippedOccurrenceAt <= :cutoffMillis")
+    /**
+     * Persists what `withoutExpiredSkip` reads: clears each expired skip column, and turns off an
+     * own one-shot (`days = 0`, not a linked row) whose solo skip expired. Rows with nothing
+     * expired are untouched.
+     */
+    @Query(
+        """
+        UPDATE alarms SET
+            enabled = CASE WHEN (linkOwnerUid IS NULL OR linkOwnerAlarmId IS NULL) AND days = 0
+                AND soloSkippedOccurrenceAt <= :cutoffMillis THEN 0 ELSE enabled END,
+            skippedOccurrenceAt = CASE WHEN skippedOccurrenceAt <= :cutoffMillis
+                THEN NULL ELSE skippedOccurrenceAt END,
+            soloSkippedOccurrenceAt = CASE WHEN soloSkippedOccurrenceAt <= :cutoffMillis
+                THEN NULL ELSE soloSkippedOccurrenceAt END,
+            linkOwnerSkippedOccurrenceAt = CASE WHEN linkOwnerSkippedOccurrenceAt <= :cutoffMillis
+                THEN NULL ELSE linkOwnerSkippedOccurrenceAt END
+        WHERE skippedOccurrenceAt <= :cutoffMillis OR soloSkippedOccurrenceAt <= :cutoffMillis
+            OR linkOwnerSkippedOccurrenceAt <= :cutoffMillis
+        """,
+    )
     suspend fun clearExpiredSkips(cutoffMillis: Long)
 
     @Query("UPDATE alarms SET soloSkippedOccurrenceAt = :skippedAtMillis WHERE id = :id")
