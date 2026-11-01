@@ -34,7 +34,9 @@ const val REMOTE_NOTICE_MS = 3_000L
  * notice is the controller's latest [RemoteRingEnd], read with each state: it was emitted before the
  * write, so it is already there. It counts only for the shown ring, when newer than any handled
  * (the same ringId comes back after a snooze) and when the state is the change it describes (a
- * notice whose write failed explains nothing). Anything else follows the LOCAL rules.
+ * notice whose write failed explains nothing). A null state can't be told apart that way, so a
+ * whole-ring dismiss is trusted as is: the controller withdraws one whose clear threw, since no
+ * state change would ever show it stale. Anything else follows the LOCAL rules.
  */
 class RingingScreenModel {
     /** The ring currently shown, once one has been seen. */
