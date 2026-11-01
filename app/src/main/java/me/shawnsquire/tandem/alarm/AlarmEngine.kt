@@ -53,7 +53,7 @@ class AlarmEngine(context: Context, unlocked: Boolean?, private val scope: Corou
     private val notifier = AndroidRingingNotifier(context)
     /** The real mirror is attached later (after unlock) by assigning [SwitchableRingMirrorPort.delegate]; calls made before are queued on disk. */
     val ringMirrorPort = SwitchableRingMirrorPort(SharedPrefsMirrorOutbox(context))
-    /** Not used by RingingSession yet (L2); AppContainer swaps in the real cache later. */
+    /** RingingSession resolves a linked ring's sound and label through it; AppContainer swaps in the real cache later. */
     val linkedMediaCache = SwitchableLinkedMediaCache()
     private val controllerImpl =
         RingingControllerImpl(

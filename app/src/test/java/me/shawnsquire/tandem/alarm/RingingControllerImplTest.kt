@@ -31,14 +31,16 @@ import java.time.Instant
 
 class RecordingNotifier : RingingNotifier {
     val ringing = mutableListOf<String>()
+    val ringingLabels = mutableListOf<String?>()
     val snoozed = mutableListOf<Pair<String, Instant>>()
     val cancelledSnoozed = mutableListOf<String>()
     val cancelSnoozedCount get() = cancelledSnoozed.size
-    override fun showRinging(alarm: Alarm?, ringId: String) { ringing += ringId }
+    override fun showRinging(alarm: Alarm?, ringId: String, label: String?) { ringing += ringId; ringingLabels += label }
     val fallback = mutableListOf<String>()
     override fun showFallbackRinging(ringId: String) { fallback += ringId }
     val notify = mutableListOf<String>()
-    override fun showNotifyRinging(alarm: Alarm?, ringId: String) { notify += ringId }
+    val notifyLabels = mutableListOf<String?>()
+    override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) { notify += ringId; notifyLabels += label }
     val cancelledRinging = mutableListOf<String>()
     override fun cancelRinging(ringId: String) { cancelledRinging += ringId }
     override fun showSnoozed(ringId: String, until: Instant) { snoozed += ringId to until }

@@ -90,6 +90,7 @@ open class RingingService : Service() {
             now = Instant::now,
             log = { msg, t -> Log.w(TAG, msg, t) },
             firedLedger = engine.firedLedger,
+            linkedMediaCache = engine.linkedMediaCache,
             liveRings = LiveRings,
             onFinished = {
                 sessions.remove(session)

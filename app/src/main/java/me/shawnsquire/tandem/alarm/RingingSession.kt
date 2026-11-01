@@ -15,6 +15,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
+import me.shawnsquire.tandem.media.LinkedMediaCache
+import me.shawnsquire.tandem.media.RingMedia
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
@@ -52,6 +55,7 @@ class RingingSession(
     private val newRingId: () -> String = { UUID.randomUUID().toString() },
     private val log: (String, Throwable?) -> Unit = { _, _ -> },
     private val firedLedger: FiredLedger = InMemoryFiredLedger(),
+    private val linkedMediaCache: LinkedMediaCache = DefaultLinkedMediaCache,
     private val liveRings: RingRegistry = SyncRingRegistry(),
     private val isArmed: (Alarm) -> Boolean = ::isArmed,
     private val isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
@@ -73,7 +77,8 @@ class RingingSession(
     /** The surface this ring sounds on (Ring or Notify) and what restarts it after an un-silence. */
     private var fullSurface = false
     private var surfaceAlarm: Alarm? = null
-    private var surfaceDefault: String? = null
+    /** What the surface plays and shows (sound candidates, notification label); set before its first output. */
+    private var surfaceMedia: RingMedia? = null
 
     /** Whether the posted notification has Stop and Snooze (false while only the inert fallback is up). */
     private var actionsPosted = false
@@ -219,12 +224,12 @@ class RingingSession(
         silencing = false
         currentCoroutineContext().ensureActive()
         if (fullSurface) {
-            startRingOutputs(surfaceAlarm, surfaceDefault)
+            startRingOutputs(surfaceMedia?.soundCandidates.orEmpty())
             // The refusal proves the slot holds this ring, so a claim that landed while silent
             // (never adopted) gets its actions now.
             if (!wasFull || !actionsPosted) showRinging(surfaceAlarm, ringId)
         } else {
-            guarded("notifier", Unit) { notifier.showNotifyRinging(surfaceAlarm, ringId) }
+            guarded("notifier", Unit) { notifier.showNotifyRinging(surfaceAlarm, ringId, surfaceMedia?.label) }
         }
         // Before observing: on an immediate dispatcher the first look runs inside observe(), and a
         // re-arm there must replace this timer, not one this line would then orphan.
@@ -475,19 +480,20 @@ class RingingSession(
     private suspend fun ring(alarm: Alarm?, ringId: String, observe: Boolean, fire: Pair<String, Instant>? = null) {
         val notify = observe && isNotifyLink(alarm)
         val default = if (notify) null else readDefaultRingtone()
+        val media = resolveMedia(alarm, default)
         currentCoroutineContext().ensureActive() // never start sound after the session was cancelled
         ringStarted = true
         surfaceAlarm = alarm
-        surfaceDefault = default
+        surfaceMedia = media
         fullSurface = !notify
-        if (!notify) startRingOutputs(alarm, default)
+        if (!notify) startRingOutputs(media.soundCandidates)
         // Marked after the ring has begun, so a process death before this point still gets a boot replay.
         if (fire != null) markRang(fire.first, fire.second)
         // Without a stored RingState, Stop and Snooze would be silently ignored: post no actions.
         val claimed = observe || lateClaimed
         when {
             notify -> {
-                val shown = guarded("notifier", false) { notifier.showNotifyRinging(alarm, ringId); true }
+                val shown = guarded("notifier", false) { notifier.showNotifyRinging(alarm, ringId, media.label); true }
                 actionsPosted = shown
                 // I1: a Notify ring nobody can see must still be heard.
                 if (shown) watchMembers(alarm, ringId) else ringInFull(alarm, ringId)
@@ -506,10 +512,18 @@ class RingingSession(
     private suspend fun readDefaultRingtone(): String? =
         guarded("settings read", null as String?) { settingsRepository.defaultRingtoneUri.first() }
 
+    /**
+     * A linked ring's media comes from the cache (an unreadable override falls to the next candidate
+     * in the sound adapter); bounded, so a slow cache never delays sound. The wallpaper is only for
+     * the screen, so it isn't resolved here.
+     */
+    private suspend fun resolveMedia(alarm: Alarm?, default: String?): RingMedia =
+        resolveRingMedia(alarm, linkedMediaCache, default, null)
+
     /** The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it. */
-    private suspend fun startRingOutputs(alarm: Alarm?, default: String?) {
+    private suspend fun startRingOutputs(candidates: List<String>) {
         startVibration("vibration")
-        guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
+        guarded("sound", Unit) { sound.start(candidates) }
     }
 
     /**
@@ -517,21 +531,21 @@ class RingingSession(
      * notification, whose fresh post launches the full-screen intent and replaces the Notify one.
      */
     private suspend fun ringInFull(primary: Alarm?, ringId: String) {
-        val default = readDefaultRingtone()
+        val media = resolveMedia(primary, readDefaultRingtone())
         if (finished) return
         // Recorded even while silencing: an un-silence then restarts the full surface.
         fullSurface = true
         surfaceAlarm = primary
-        surfaceDefault = default
+        surfaceMedia = media
         if (silencing) return
         currentCoroutineContext().ensureActive()
-        startRingOutputs(primary, default)
+        startRingOutputs(media.soundCandidates)
         showRinging(primary, ringId)
     }
 
     /** The full ringing notification, with Stop and Snooze: only for a ring whose state is stored. */
     private suspend fun showRinging(primary: Alarm?, ringId: String) {
-        guarded("notifier", Unit) { notifier.showRinging(primary, ringId) }
+        guarded("notifier", Unit) { notifier.showRinging(primary, ringId, surfaceMedia?.label ?: primary?.label) }
         actionsPosted = true
     }
 
@@ -560,6 +574,10 @@ class RingingSession(
             } catch (e: Throwable) {
                 currentCoroutineContext().ensureActive()
                 log("ring member observation failed", e)
+                // I1: an unreadable ring state is unknown, and unknown counts as Ring.
+                // ringInFull only records the surface while silencing, for an un-silence to restart.
+                if (!finished) ringInFull(primary, ringId)
+                return@launch
             }
             full?.let { ringInFull(members[it.alarmId], ringId) }
         }

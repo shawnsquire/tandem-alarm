@@ -26,8 +26,12 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
+import me.shawnsquire.tandem.fakes.FakeLinkedMediaCache
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
+import me.shawnsquire.tandem.media.LinkedMediaCache
+import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
@@ -79,6 +83,27 @@ private class ThrowingSetStore(private val inner: FakeRingStateStore) : RingStat
 
 private class ThrowingReadStore(inner: FakeRingStateStore) : RingStateStore by inner {
     override val state: Flow<RingState?> = flow { throw IllegalStateException("read") }
+}
+
+/** Emits the stored state once per collector, then throws when it changes (or on any later emission). */
+private class ThrowingAfterFirstStore(private val inner: FakeRingStateStore) : RingStateStore by inner {
+    override val state: Flow<RingState?> = flow {
+        var n = 0
+        inner.state.collect { if (n++ >= 1) throw IllegalStateException("read"); emit(it) }
+    }
+}
+
+/** A linked-media cache that returns [media], or waits [hang]/throws [fail]. */
+private class StubMediaCache(
+    private val media: RingMedia? = null,
+    private val hang: Boolean = false,
+    private val fail: Boolean = false,
+) : LinkedMediaCache by FakeLinkedMediaCache() {
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?): RingMedia {
+        if (hang) awaitCancellation()
+        if (fail) throw IllegalStateException("cache")
+        return media!!
+    }
 }
 
 /** Reads and writes suspend first, so two sessions' claims interleave unless the slot is locked. */
@@ -147,6 +172,7 @@ class RingingSessionTest {
         val live: RingRegistry = SyncRingRegistry(),
         isArmed: (Alarm) -> Boolean = ::isArmed,
         isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
+        cache: LinkedMediaCache = DefaultLinkedMediaCache,
     ) {
         val repo = FakeAlarmRepository(alarms)
         val rawStore = FakeRingStateStore(state)
@@ -168,7 +194,7 @@ class RingingSessionTest {
         val session = RingingSession(
             repo, store, settings, preFire, scheduler, controller, controller, sound, vibration, notifier,
             scope.backgroundScope, dispatcher, { clock }, { ids.next() },
-            firedLedger = fired, liveRings = live, isArmed = isArmed, isSkipped = isSkipped,
+            firedLedger = fired, linkedMediaCache = cache, liveRings = live, isArmed = isArmed, isSkipped = isSkipped,
             onFinished = { finished++ },
         )
         fun fire(id: String = "a", occ: Instant) = session.start(id, occ, false, null)
@@ -194,7 +220,8 @@ class RingingSessionTest {
         settings: SettingsRepository = FakeSettingsRepository(),
         storeWrap: ((FakeRingStateStore) -> RingStateStore)? = null,
         isArmed: (Alarm) -> Boolean = ::isArmed,
-    ) = Harness(this, alarms, state, preFire, clockNow, ioDispatcher, settings, storeWrap, isArmed = isArmed)
+        cache: LinkedMediaCache = DefaultLinkedMediaCache,
+    ) = Harness(this, alarms, state, preFire, clockNow, ioDispatcher, settings, storeWrap, isArmed = isArmed, cache = cache)
 
     // ---- I1 ----
 
@@ -309,7 +336,7 @@ class RingingSessionTest {
 
     @Test fun notifierErrorStillRingsAndKeepsRinging() = runTest {
         val bad = object : RingingNotifier by RecordingNotifier() {
-            override fun showRinging(alarm: Alarm?, ringId: String) { throw NoClassDefFoundError("x") }
+            override fun showRinging(alarm: Alarm?, ringId: String, label: String?) { throw NoClassDefFoundError("x") }
         }
         val (h, session) = errorHarness(notifier = bad)
         assertKeepsRingingThenAutoSilences(h, session, this)
@@ -1851,7 +1878,7 @@ class RingingSessionTest {
     @Test fun notifyNotifierFailureRingsInFull() = runTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
         val throwing = object : RingingNotifier by h.notifier {
-            override fun showNotifyRinging(alarm: Alarm?, ringId: String) = throw IllegalStateException("notification")
+            override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) = throw IllegalStateException("notification")
         }
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
@@ -1872,5 +1899,74 @@ class RingingSessionTest {
         assertEquals(1, h.vibration.starts)
         assertEquals(listOf("ring-1"), h.notifier.fallback)
         assertTrue(h.notifier.notify.isEmpty())
+    }
+
+    // ---- Linked media ----
+
+    @Test fun linkedRingSoundsTheCacheCandidatesInOrder() = runTest {
+        val media = RingMedia("Owner", listOf("/override/unreadable", "/owner/good"), emptyList())
+        val h = harness(alarms = listOf(linkedAs(LinkMode.RING)), cache = StubMediaCache(media))
+        h.fire(occ = occurrence)
+        runCurrent()
+        // The sound adapter walks these in order, so an unreadable override falls to the owner's media.
+        assertEquals(listOf(listOf("/override/unreadable", "/owner/good")), h.sound.starts)
+        assertEquals(listOf<String?>("Owner"), h.notifier.ringingLabels)
+    }
+
+    @Test fun neverReturningCacheStillStartsSoundFromTheFallbackWithinTheTimeout() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.RING)), cache = StubMediaCache(hang = true))
+        h.fire(occ = occurrence)
+        runCurrent()
+        advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds + 1); runCurrent()
+        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts)
+        assertTrue(h.sound.startTimes.single() <= RING_MEDIA_TIMEOUT.inWholeMilliseconds + 3_000)
+        assertEquals(1, h.vibration.starts)
+    }
+
+    @Test fun throwingCacheStillRingsFromTheFallback() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.RING)), cache = StubMediaCache(fail = true))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts)
+    }
+
+    @Test fun ringingNotificationShowsTheOverrideLabelOfALinkedRing() = runTest {
+        val a = linkedAs(LinkMode.RING).let { it.copy(link = it.link!!.copy(overrideLabel = "Gym")) }
+        val h = harness(alarms = listOf(a))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf<String?>("Gym"), h.notifier.ringingLabels)
+    }
+
+    @Test fun notifyNotificationShowsTheResolvedLabel() = runTest {
+        val media = RingMedia("Owner label", emptyList(), emptyList())
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)), cache = StubMediaCache(media))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf<String?>("Owner label"), h.notifier.notifyLabels)
+    }
+
+    @Test fun upgradedNotifyRingSoundsTheCacheCandidatesAndLabelOfThePrimary() = runTest {
+        val media = RingMedia("Owner label", listOf("/owner/tone"), emptyList())
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), alarm("b")), cache = StubMediaCache(media))
+        h.fire(occ = occurrence)
+        runCurrent()
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("/owner/tone")), h.sound.starts)
+        assertEquals(listOf<String?>("Owner label"), h.notifier.ringingLabels)
+    }
+
+    @Test fun notifyRingWhoseStateReadFailsUpgradesToRing() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")), storeWrap = { ThrowingAfterFirstStore(it) })
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        // A change makes the member watch's flow throw: unknown counts as Ring.
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
     }
 }

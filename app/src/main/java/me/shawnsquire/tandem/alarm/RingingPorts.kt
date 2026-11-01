@@ -105,8 +105,8 @@ interface AlarmVibration {
 
 /** UI side effects of ringing. Implemented with NotificationManager in the Android layer. */
 interface RingingNotifier {
-    /** Update the foreground notification: label plus Stop and Snooze actions. */
-    fun showRinging(alarm: Alarm?, ringId: String)
+    /** Update the foreground notification: [label] (the resolved one, which a linked ring takes from its override or owner) plus Stop and Snooze actions. */
+    fun showRinging(alarm: Alarm?, ringId: String, label: String?)
 
     /**
      * Ringing notification for a fallback ring with no stored RingState: full-screen and content
@@ -118,7 +118,7 @@ interface RingingNotifier {
      * Foreground notification for a Notify-mode ring: heads-up with Stop and Snooze, no full-screen
      * intent. A later [showRinging] for the same [ringId] replaces it with the full ringing notification.
      */
-    fun showNotifyRinging(alarm: Alarm?, ringId: String) {}
+    fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) {}
 
     /** Removes [ringId]'s ringing notification (a stale ring cleared without a session to do it). */
     fun cancelRinging(ringId: String) {}

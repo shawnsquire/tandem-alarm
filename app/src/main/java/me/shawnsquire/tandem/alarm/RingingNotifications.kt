@@ -84,8 +84,8 @@ class AndroidRingingNotifier(
      * it launches the full-screen intent), it becomes the foreground one through [onRinging], and
      * only then is the Notify one cancelled (the system won't remove the current foreground notification).
      */
-    override fun showRinging(alarm: Alarm?, ringId: String) {
-        post(alarm, ringId, withActions = true)
+    override fun showRinging(alarm: Alarm?, ringId: String, label: String?) {
+        post(label, ringId, withActions = true)
         manager.cancel(notifyNotificationId(ringId))
     }
 
@@ -99,9 +99,9 @@ class AndroidRingingNotifier(
      * https://developer.android.com/reference/android/app/Notification#CATEGORY_ALARM
      * https://developer.android.com/reference/android/app/NotificationManager#INTERRUPTION_FILTER_ALARMS
      */
-    override fun showNotifyRinging(alarm: Alarm?, ringId: String) {
+    override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) {
         ensureChannels()
-        val notification = builder(NOTIFY_CHANNEL, alarm, AlarmIntents.showPendingIntent(context))
+        val notification = builder(NOTIFY_CHANNEL, label, AlarmIntents.showPendingIntent(context))
             .addAction(stopAction(ringId))
             .addAction(snoozeAction())
             .build()
@@ -110,7 +110,7 @@ class AndroidRingingNotifier(
         onRinging(ringId, id, notification)
     }
 
-    private fun post(alarm: Alarm?, ringId: String, withActions: Boolean) {
+    private fun post(label: String?, ringId: String, withActions: Boolean) {
         ensureChannels()
         val activity = AlarmIntents.ringingActivityPendingIntent(context)
         // A fresh post (new id, IMPORTANCE_HIGH channel) is what launches the full-screen intent; the
@@ -118,7 +118,7 @@ class AndroidRingingNotifier(
         // notification to the status bar", and an update of an existing notification isn't guaranteed to
         // trigger it. So this is posted only once the session has decided to ring, never at service start.
         // https://developer.android.com/reference/android/app/Notification.Builder#setFullScreenIntent(android.app.PendingIntent,%20boolean)
-        val notification = builder(ALARM_CHANNEL, alarm, activity)
+        val notification = builder(ALARM_CHANNEL, label, activity)
             .setFullScreenIntent(activity, true)
             .apply { if (withActions) { addAction(stopAction(ringId)); addAction(snoozeAction()) } }
             .build()
@@ -128,8 +128,7 @@ class AndroidRingingNotifier(
     }
 
     /** What both ringing surfaces share; only-alert-once so the foreground re-post doesn't alert again. */
-    private fun builder(channel: String, alarm: Alarm?, contentIntent: android.app.PendingIntent): Notification.Builder {
-        val label = alarm?.label
+    private fun builder(channel: String, label: String?, contentIntent: android.app.PendingIntent): Notification.Builder {
         return Notification.Builder(context, channel)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(context.getString(R.string.alarm_notification_title))
