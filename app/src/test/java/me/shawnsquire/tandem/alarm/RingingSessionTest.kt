@@ -192,7 +192,7 @@ class RingingSessionTest {
         val controller = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror, firedLedger = fired) { clock }
         private val dispatcher = ioDispatcher ?: StandardTestDispatcher(scope.testScheduler)
         val session = RingingSession(
-            repo, store, settings, preFire, scheduler, controller, controller, sound, vibration, notifier,
+            repo, store, settings, preFire, scheduler, controller, sound, vibration, notifier,
             scope.backgroundScope, dispatcher, { clock }, { ids.next() },
             firedLedger = fired, linkedMediaCache = cache, liveRings = live, isArmed = isArmed, isSkipped = isSkipped,
             onFinished = { finished++ },
@@ -288,7 +288,7 @@ class RingingSessionTest {
         val h = harness()
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { throw IllegalStateException("uuid") },
             onFinished = {},
         )
@@ -306,7 +306,7 @@ class RingingSessionTest {
         var finished = 0
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
-            scheduler ?: h.scheduler, h.controller, h.controller, h.sound, h.vibration, notifier ?: h.notifier,
+            scheduler ?: h.scheduler, h.controller, h.sound, h.vibration, notifier ?: h.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
             onFinished = { h.finished++ },
         )
@@ -375,7 +375,7 @@ class RingingSessionTest {
         val job = Job()
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { awaitCancellation() },
-            h.scheduler, h.controller, h.controller, h.sound, h.vibration, h.notifier,
+            h.scheduler, h.controller, h.sound, h.vibration, h.notifier,
             CoroutineScope(StandardTestDispatcher(testScheduler) + job),
             StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = {},
         )
@@ -392,7 +392,7 @@ class RingingSessionTest {
         val slot = AutoSilenceSlot(h.controller) { _, _ -> throw CancellationException("foreign") }
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
-            h.scheduler, h.controller, slot, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.scheduler, slot, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = { h.finished++ },
         )
         session.start("a", occurrence, false, null)
@@ -741,7 +741,7 @@ class RingingSessionTest {
         val bOccurrence = occurrence.plusSeconds(60)
         val sessionB = RingingSession(
             shared.repo, shared.store, FakeSettingsRepository(), LambdaPreFire { true },
-            shared.scheduler, shared.controller, shared.controller, bSound, bVibration, shared.notifier,
+            shared.scheduler, shared.controller, bSound, bVibration, shared.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { clockNow },
             { "ring-2" }, firedLedger = shared.fired, onFinished = { bFinished++ },
         )
@@ -818,7 +818,7 @@ class RingingSessionTest {
         }
         val session = RingingSession(
             failingRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "ring-9" }, onFinished = {},
         )
         session.start("a", occurrence, false, null)
@@ -836,7 +836,7 @@ class RingingSessionTest {
         }
         val session = RingingSession(
             flakyRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = { h.finished++ },
         )
         session.start("a", occurrence, false, null)
@@ -856,7 +856,7 @@ class RingingSessionTest {
         onFinished: () -> Unit,
     ) = RingingSession(
         h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-        h.controller, h.controller, sound, RecordingVibration(), h.notifier, backgroundScope,
+        h.controller, sound, RecordingVibration(), h.notifier, backgroundScope,
         StandardTestDispatcher(testScheduler), { h.clock }, { ringId }, onFinished = onFinished,
     )
 
@@ -1052,7 +1052,7 @@ class RingingSessionTest {
         val h = harness()
         val vib = RecordingVibration()
         val session = RingingSession(
-            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler, h.controller, h.controller,
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler, h.controller,
             object : AlarmSound { override fun start(candidates: List<String>) = throw IllegalStateException("audio"); override fun stop() {} },
             vib, h.notifier, backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
             onFinished = {},
@@ -1102,12 +1102,11 @@ class RingingSessionTest {
     private fun TestScope.slotSession(
         h: Harness,
         slot: RingSlot,
-        controller: RingingController = h.controller,
         ringId: String = "ring-1",
         isArmed: (Alarm) -> Boolean = ::isArmed,
     ) = RingingSession(
         h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-        controller, slot, h.sound, h.vibration, h.notifier, backgroundScope,
+        slot, h.sound, h.vibration, h.notifier, backgroundScope,
         StandardTestDispatcher(testScheduler), { h.clock }, { ringId },
         firedLedger = h.fired, liveRings = h.live, isArmed = isArmed, onFinished = { h.finished++ },
     )
@@ -1155,7 +1154,7 @@ class RingingSessionTest {
         runCurrent()
         assertNull(h.rawStore.state.first()) // B cleared; the dismiss is still inside the lock
 
-        slotSession(h, ctl, controller = ctl).start("a", occurrence, false, null)
+        slotSession(h, ctl).start("a", occurrence, false, null)
         advanceTimeBy(2_001); runCurrent()
         assertEquals(1, h.sound.starts.size) // rang on timeout
         assertEquals(listOf("ring-1"), h.notifier.fallback)
@@ -1437,7 +1436,7 @@ class RingingSessionTest {
         val immediate = UnconfinedTestDispatcher(testScheduler)
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, slot, h.sound, h.vibration, h.notifier, CoroutineScope(backgroundScope.coroutineContext + immediate),
+            slot, h.sound, h.vibration, h.notifier, CoroutineScope(backgroundScope.coroutineContext + immediate),
             immediate, { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
         ).start("a", occurrence, false, null)
         runCurrent()
@@ -1540,7 +1539,7 @@ class RingingSessionTest {
         backgroundScope.launch { ctl.dismiss("ring-B") }
         runCurrent()
 
-        slotSession(h, ctl, controller = ctl).start("a", occurrence, false, null)
+        slotSession(h, ctl).start("a", occurrence, false, null)
         advanceTimeBy(2_001); runCurrent()
         assertEquals(listOf("ring-1"), h.notifier.fallback) // claim timed out, ringing inertly
         advanceTimeBy(10.minutes + 5.seconds); runCurrent()
@@ -1579,7 +1578,7 @@ class RingingSessionTest {
         var replayFinished = 0
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.controller, replaySound, RecordingVibration(), h.notifier, backgroundScope,
+            h.controller, replaySound, RecordingVibration(), h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "ring-R" },
             firedLedger = h.fired, liveRings = h.live, onFinished = { replayFinished++ },
         ).start("a", occurrence, false, null)
@@ -1720,7 +1719,7 @@ class RingingSessionTest {
         val j = Joiner(RecordingSound { currentTime }, RecordingVibration())
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
-            h.scheduler, h.controller, h.controller, j.sound, j.vibration, h.notifier,
+            h.scheduler, h.controller, j.sound, j.vibration, h.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { h.clock },
             { "ring-2" }, firedLedger = h.fired, onFinished = { j.finished++ },
         ).start(alarmId, occ, false, null)
@@ -1865,7 +1864,7 @@ class RingingSessionTest {
         }
         RingingSession(
             failingRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = {},
         ).start("a", occurrence, false, null)
         runCurrent()
@@ -1882,7 +1881,7 @@ class RingingSessionTest {
         }
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
-            h.controller, h.controller, h.sound, h.vibration, throwing, backgroundScope,
+            h.controller, h.sound, h.vibration, throwing, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = {},
         ).start("a", occurrence, false, null)
         runCurrent()

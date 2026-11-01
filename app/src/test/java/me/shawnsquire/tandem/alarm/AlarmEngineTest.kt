@@ -137,7 +137,7 @@ class AlarmEngineTest {
         val finished = CompletableDeferred<Unit>()
         val session = RingingSession(
             engine.alarmRepository, engine.ringStateStore, engine.settings, preFire, engine.scheduler,
-            engine.controller, engine.ringSlot, sound, vibration, RecordingNotifier(), scope, Dispatchers.IO, Instant::now,
+            engine.ringSlot, sound, vibration, RecordingNotifier(), scope, Dispatchers.IO, Instant::now,
             firedLedger = engine.firedLedger, liveRings = SyncRingRegistry(), onFinished = { finished.complete(Unit) },
         )
     }

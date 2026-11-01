@@ -80,7 +80,6 @@ open class RingingService : Service() {
             settingsRepository = engine.settings,
             preFireCheck = engine.preFireCheck,
             alarmScheduler = engine.scheduler,
-            controller = engine.controller,
             ringSlot = engine.ringSlot,
             sound = sound,
             vibration = vibration,

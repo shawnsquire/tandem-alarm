@@ -43,8 +43,6 @@ class RingingSession(
     private val settingsRepository: SettingsRepository,
     private val preFireCheck: PreFireCheck,
     private val alarmScheduler: AlarmScheduler,
-    // Unused since auto-silence ends the ring through [ringSlot]; kept for the service's wiring.
-    @Suppress("unused") private val controller: RingingController,
     private val ringSlot: RingSlot,
     private val sound: AlarmSound,
     private val vibration: AlarmVibration,
