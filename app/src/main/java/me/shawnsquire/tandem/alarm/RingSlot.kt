@@ -39,7 +39,8 @@ interface RingSlot {
 
     /**
      * Snooze-fire path. Returns [SlotClaim.NotDue] when the snooze is no longer live (dismissed
-     * while snoozed). Otherwise drops the ledger entry and snoozed notification. A different
+     * while snoozed). Otherwise drops the ledger entry and snoozed notification once the merge or
+     * state write has succeeded (a throw leaves the snooze in place). A different
      * sounding ring takes the snooze into its `merged` ([SlotClaim.Merged]); an entry without an
      * occurrence (written before occurrences were stored) supersedes it instead. A snoozed ring is
      * parked. Unless merged, writes [ringId] as sounding (same ringId, I3) and returns [SlotClaim.Claimed].

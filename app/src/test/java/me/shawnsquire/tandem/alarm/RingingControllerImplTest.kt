@@ -569,6 +569,35 @@ class RingingControllerImplTest {
         assertEquals(0, h.scheduler.rescheduleCount)
     }
 
+    @Test fun snoozeResumeStateWriteFailureLeavesTheSnoozeInPlace() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        val failing = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) { throw IllegalStateException("disk full") }
+        }
+        val c = RingingControllerImpl(h.repo, failing, h.settings, h.scheduler, h.armer, h.notifier, h.ledger) { now }
+        assertTrue(runCatching { c.claimSnoozeResume("ring-A", "a") }.exceptionOrNull() is IllegalStateException)
+        // Nothing written: the snooze is still there for the scheduler and a later dismiss.
+        assertEquals(SnoozeEntry("ring-A", "a", sevenTen, occurrenceX), h.ledger.get("ring-A"))
+        assertTrue(h.armer.cancelled.isEmpty())
+        assertTrue(h.notifier.cancelledSnoozed.isEmpty())
+    }
+
+    @Test fun snoozeResumeMergeWriteFailureLeavesTheSnoozeInPlace() = runTest {
+        val soundingB = ringB.copy(occurrenceAt = occurrenceY)
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        val failing = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) { throw IllegalStateException("disk full") }
+        }
+        val c = RingingControllerImpl(h.repo, failing, h.settings, h.scheduler, h.armer, h.notifier, h.ledger) { now }
+        assertTrue(runCatching { c.claimSnoozeResume("ring-A", "a") }.exceptionOrNull() is IllegalStateException)
+        assertEquals(soundingB, h.store.state.first())
+        assertNotNull(h.ledger.get("ring-A"))
+        assertTrue(h.armer.cancelled.isEmpty())
+        assertTrue(h.notifier.cancelledSnoozed.isEmpty())
+    }
+
     @Test fun snoozeResumeWithOccurrenceStillParksSnoozedRing() = runTest {
         val bSnoozed = ringB.copy(snoozedUntil = sevenTen.plusSeconds(60), occurrenceAt = occurrenceY)
         val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), bSnoozed)

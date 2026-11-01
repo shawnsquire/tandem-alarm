@@ -314,22 +314,34 @@ class RingingControllerImpl(
                 return@withLock SlotClaim.NotDue
             }
 
-            bestEffort("ledger remove") { ledger.remove(ringId) }
-            bestEffort("cancel fired snooze") { snoozeArmer.cancelSnooze(ringId) }
-            bestEffort("cancel snoozed notification") { notifier.cancelSnoozed(ringId) }
             // Never merge into or supersede itself: if the slot already holds this ring, just overwrite it.
             if (!sameRing) {
                 // A pre-upgrade entry has no occurrence: it supersedes, since a member needs its real X.
                 val member = entry?.occurrenceAt?.let { RingMember(entry.alarmId, it) }
-                if (mergeLocked(current, ringId, member)) return@withLock SlotClaim.Merged
+                if (mergeLocked(current, ringId, member)) {
+                    dropFiredSnoozeLocked(ringId)
+                    return@withLock SlotClaim.Merged
+                }
                 supersedeLocked(current, ringId)
             }
             val startedAt = if (sameRing) current.startedAt else now()
             val occurrenceAt = entry?.occurrenceAt ?: current?.takeIf { sameRing }?.occurrenceAt
             val merged = if (sameRing) current.merged else emptyList()
             ringStateStore.set(RingState(alarmId, ringId, startedAt, null, occurrenceAt, merged))
+            dropFiredSnoozeLocked(ringId)
             SlotClaim.Claimed
         } }
+
+    /**
+     * The snooze [ringId] has fired and its ring is written (or merged): drop its ledger entry,
+     * PendingIntent and snoozed notification. Only after that write, so a throwing write leaves the
+     * snooze in place. Ledger before the PendingIntent: the scheduler arms from the ledger.
+     */
+    private fun dropFiredSnoozeLocked(ringId: String) {
+        bestEffort("ledger remove") { ledger.remove(ringId) }
+        bestEffort("cancel fired snooze") { snoozeArmer.cancelSnooze(ringId) }
+        bestEffort("cancel snoozed notification") { notifier.cancelSnoozed(ringId) }
+    }
 
     override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = withContext(NonCancellable) {
         mutex.withLock {
