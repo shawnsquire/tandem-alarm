@@ -7,6 +7,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.net.Uri
 import android.provider.Settings
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.schedule.Alarm
@@ -166,7 +167,8 @@ class AndroidRingingNotifier(
         if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
         if (!manager.areNotificationsEnabled()) return false
         val channel = manager.getNotificationChannel(NOTIFY_CHANNEL) ?: return false
-        return channel.importance >= NotificationManager.IMPORTANCE_DEFAULT && channel.sound != null
+        // An empty Uri plays nothing either; the system treats it as no sound.
+        return channel.importance >= NotificationManager.IMPORTANCE_DEFAULT && channel.sound.let { it != null && it != Uri.EMPTY }
     }
 
     /** [fullScreen] is false for a relabel: an update of the notification already up must not launch the screen again. */
