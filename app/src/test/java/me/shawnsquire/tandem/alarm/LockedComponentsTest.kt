@@ -134,7 +134,7 @@ class LockedComponentsTest {
 
     private class CountingPreFire : PreFireCheck {
         val calls = AtomicInteger()
-        override suspend fun pullAndApply(timeout: Duration): Boolean { calls.incrementAndGet(); return false }
+        override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean { calls.incrementAndGet(); return false }
     }
 
     @Test

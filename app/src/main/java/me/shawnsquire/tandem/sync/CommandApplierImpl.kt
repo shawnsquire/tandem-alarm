@@ -19,6 +19,7 @@ import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandDecision
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.isOneShot
 import me.shawnsquire.tandem.schedule.validate
 import java.time.Clock
@@ -37,6 +38,11 @@ class CommandApplierImpl(
     private val remote: CommandRemote,
     private val household: Flow<Household?>,
     private val partnerName: StateFlow<String?>,
+    /**
+     * The partner's published state, including their alarms. Unused until L4, which uses it to call
+     * CommandNotifier.notifyInvite(cmd, partnerAlarm, name) for INVITE_LINK and to check owner commands.
+     */
+    private val partner: Flow<PartnerState?>,
     private val processed: ProcessedCommands,
     private val notifier: CommandNotifier,
     private val clock: Clock,
@@ -153,7 +159,8 @@ class CommandApplierImpl(
             CommandType.UNSKIP -> alarms.setSkip(cmd.alarmId, null)
             CommandType.DISABLE -> alarms.setEnabled(cmd.alarmId, false)
             CommandType.ENABLE -> alarms.setEnabled(cmd.alarmId, true)
-            CommandType.STOP_RINGING -> ringing.dismiss(requireNotNull(cmd.ringId))
+            CommandType.STOP_RINGING -> ringing.dismiss(requireNotNull(cmd.ringId), RingOrigin.REMOTE)
+            CommandType.SNOOZE, CommandType.INVITE_LINK -> Unit // validate() rejects these until linked alarms land
         }
     }
 

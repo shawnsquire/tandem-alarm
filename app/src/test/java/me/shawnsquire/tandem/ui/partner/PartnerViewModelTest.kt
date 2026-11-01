@@ -37,7 +37,7 @@ private data class Sent(val type: CommandType, val alarmId: String, val occurren
 private class RecordingSender(var result: () -> Flow<Pair<CommandStatus, String?>> = { flowOf(CommandStatus.PENDING to null) }) :
     CommandSender {
     val sent = mutableListOf<Sent>()
-    override fun send(type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?): Flow<Pair<CommandStatus, String?>> {
+    override fun send(type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?): Flow<Pair<CommandStatus, String?>> {
         sent += Sent(type, alarmId, occurrenceAt, ringId)
         return result()
     }
@@ -57,6 +57,7 @@ private class FakePairing : PairingRepository {
 private class FakePartnerRepo(initial: PartnerState?) : PartnerRepository {
     val flow = MutableStateFlow(initial)
     override val partner: Flow<PartnerState?> = flow
+    override suspend fun readFromServer(): PartnerState? = null
 }
 
 class PartnerViewModelTest {

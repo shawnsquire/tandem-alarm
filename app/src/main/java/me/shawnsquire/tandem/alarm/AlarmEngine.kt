@@ -14,6 +14,7 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.RingStateStoreImpl
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.data.ringStateDataStore
+import me.shawnsquire.tandem.media.SwitchableLinkedMediaCache
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 
@@ -50,8 +51,14 @@ class AlarmEngine(context: Context, unlocked: Boolean?, private val scope: Corou
         onScheduled = MirrorUpdater(mirror, { switchableAlarms.isAttached }, settings)::onScheduled,
     )
     private val notifier = AndroidRingingNotifier(context)
+    /** The real mirror is attached later (after unlock) by assigning [SwitchableRingMirrorPort.delegate]; calls made before are queued on disk. */
+    val ringMirrorPort = SwitchableRingMirrorPort(SharedPrefsMirrorOutbox(context))
+    /** Not used by RingingSession yet (L2); AppContainer swaps in the real cache later. */
+    val linkedMediaCache = SwitchableLinkedMediaCache()
     private val controllerImpl =
-        RingingControllerImpl(alarmRepository, ringStateStore, settings, scheduler, scheduler, notifier, snoozeLedger)
+        RingingControllerImpl(
+            alarmRepository, ringStateStore, settings, scheduler, scheduler, notifier, snoozeLedger, ringMirrorPort, firedLedger,
+        )
     val controller: RingingController = controllerImpl
     val ringSlot: RingSlot = controllerImpl
 

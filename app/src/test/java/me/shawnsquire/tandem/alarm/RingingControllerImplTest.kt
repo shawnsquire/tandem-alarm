@@ -14,6 +14,9 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.ParkedSnooze
+import me.shawnsquire.tandem.schedule.RingMember
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -71,7 +74,15 @@ class RingingControllerImplTest {
         val ledger = InMemorySnoozeLedger()
     }
 
-    private fun H.controller() = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger) { now }
+    private fun H.controller(mirror: RingMirrorPort = NoOpRingMirrorPort) =
+        RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror) { now }
+
+    private class RecordingMirror : RingMirrorPort {
+        val calls = mutableListOf<Triple<MirrorKind, List<RingMember>, Instant?>>()
+        override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) {
+            calls += Triple(kind, members, snoozedUntil)
+        }
+    }
 
     private val ringing = RingState("a", "ring-1", Instant.parse("2026-03-02T09:59:00Z"), null)
 
@@ -114,6 +125,27 @@ class RingingControllerImplTest {
         assertEquals(ringing.copy(snoozedUntil = until), h.store.state.first())
         assertEquals(1, h.scheduler.rescheduleCount)
         assertEquals(listOf("ring-1" to until), h.notifier.snoozed)
+    }
+
+    @Test fun remoteSnoozeBehavesLikeLocalAndMirrorIsNotCalled() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val mirror = RecordingMirror()
+        h.settings.setSnoozeMinutes(7)
+        h.controller(mirror).snooze(RingOrigin.REMOTE)
+        val until = Instant.parse("2026-03-02T10:07:00Z")
+        assertEquals(ringing.copy(snoozedUntil = until), h.store.state.first())
+        assertEquals(listOf("ring-1" to until), h.notifier.snoozed)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun remoteDismissBehavesLikeLocalAndMirrorIsNotCalled() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-1", RingOrigin.REMOTE)
+        assertNull(h.store.state.first())
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertTrue(mirror.calls.isEmpty())
     }
 
     @Test fun snoozeWithNothingRingingIsNoOp() = runTest {
@@ -449,9 +481,9 @@ class RingingControllerImplTest {
     @Test fun snoozeWritesLedgerBetweenArmAndState() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         val recordingLedger = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant) {
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) {
                 h.events += "ledger"
-                h.ledger.put(ringId, alarmId, until)
+                h.ledger.put(ringId, alarmId, until, occurrenceAt)
             }
         }
         val recordingStore = object : RingStateStore by h.store {
@@ -467,7 +499,7 @@ class RingingControllerImplTest {
     @Test fun snoozeLedgerFailureWritesNothingAndCancelsArm() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         val failingLedger = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant) { throw IllegalStateException("prefs") }
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) { throw IllegalStateException("prefs") }
         }
         val c = RingingControllerImpl(h.repo, h.store, h.settings, h.scheduler, h.armer, h.notifier, failingLedger) { now }
         var thrown = false
@@ -651,5 +683,36 @@ class RingingControllerImplTest {
         claim.join()
         assertEquals(true, sawSkip)
         assertNull(h.store.state.first())
+    }
+
+    @Test fun ringContextReadsRingMergedSnoozesAndLastRang() = runTest {
+        val member = RingMember("b", now.minusSeconds(60))
+        val ring = RingState("a", "ring-1", now, null, occurrenceAt = now, merged = listOf(member))
+        val h = H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), ring)
+        val occ = Instant.parse("2026-03-02T09:00:00Z")
+        val until = Instant.parse("2026-03-02T10:05:00Z")
+        h.ledger.put("ring-1", "a", until, now)
+        h.ledger.put("ring-0", "c", until.plusSeconds(60))
+        val fired = InMemoryFiredLedger().apply { markRang("a", occ) }
+        val c = RingingControllerImpl(h.repo, h.store, h.settings, h.scheduler, h.armer, h.notifier, h.ledger, NoOpRingMirrorPort, fired) { now }
+
+        val ctx = c.ringContext("a")
+        assertEquals(ring, ctx.ring)
+        assertEquals(listOf(member), ctx.merged)
+        assertEquals(
+            listOf(ParkedSnooze("a", now, until), ParkedSnooze("c", null, until.plusSeconds(60))),
+            ctx.snoozes,
+        )
+        assertEquals(occ, ctx.lastRang)
+        assertNull(c.ringContext("zzz").lastRang)
+    }
+
+    @Test fun ringContextIsEmptyWithNoRing() = runTest {
+        val h = H(emptyList(), null)
+        val ctx = h.controller().ringContext("a")
+        assertNull(ctx.ring)
+        assertTrue(ctx.merged.isEmpty())
+        assertTrue(ctx.snoozes.isEmpty())
+        assertNull(ctx.lastRang)
     }
 }

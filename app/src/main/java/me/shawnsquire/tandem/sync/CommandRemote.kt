@@ -27,6 +27,7 @@ interface CommandRemote {
         occurrenceAt: Instant?,
         ringId: String?,
         now: Instant,
+        snoozedUntil: Instant? = null,
     ): String
 
     /** (status, reason) updates for one command doc. */
@@ -58,9 +59,10 @@ class FirestoreCommandRemote(private val db: FirebaseFirestore) : CommandRemote 
         occurrenceAt: Instant?,
         ringId: String?,
         now: Instant,
+        snoozedUntil: Instant?,
     ): String {
         val ref = commands(householdId).document()
-        ref.set(commandCreateMap(from, to, type, alarmId, occurrenceAt, ringId, now))
+        ref.set(commandCreateMap(from, to, type, alarmId, occurrenceAt, ringId, now, snoozedUntil))
             .addOnFailureListener { Log.w(TAG, "create ${ref.id} failed", it) }
         return ref.id
     }

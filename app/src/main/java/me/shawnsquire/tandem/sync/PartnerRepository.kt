@@ -1,5 +1,7 @@
 package me.shawnsquire.tandem.sync
 
+import me.shawnsquire.tandem.media.AlarmMedia
+import me.shawnsquire.tandem.media.MediaRef
 import kotlinx.coroutines.flow.Flow
 import me.shawnsquire.tandem.schedule.RingState
 import java.time.DayOfWeek
@@ -15,6 +17,8 @@ data class PartnerAlarm(
     val enabled: Boolean,
     val nextOccurrenceAt: Instant?,
     val skippedOccurrenceAt: Instant?,
+    val media: AlarmMedia? = null,
+    val soloSkippedOccurrenceAt: Instant? = null,
 )
 
 /** Read-only mirror of the partner's state; commands target [PartnerAlarm.nextOccurrenceAt] / [ringing] (I3). */
@@ -23,9 +27,14 @@ data class PartnerState(
     val alarms: List<PartnerAlarm>,
     val ringing: RingState?,
     val lastSeen: Instant?,
+    val links: List<PublishedLink> = emptyList(),
+    val defaultWallpaper: MediaRef? = null,
 )
 
 interface PartnerRepository {
     /** Null when unpaired or nothing has been received yet. */
     val partner: Flow<PartnerState?>
+
+    /** Source.SERVER, never the cache; null on any failure, so the caller rings (I1). L4 implements. */
+    suspend fun readFromServer(): PartnerState?
 }

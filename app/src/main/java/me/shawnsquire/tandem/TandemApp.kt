@@ -14,6 +14,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.functions
+import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -157,6 +158,7 @@ class TandemApp : Application() {
         Firebase.auth.useEmulator(host, 9099)
         Firebase.firestore.useEmulator(host, 8080)
         Firebase.functions.useEmulator(host, 5001)
+        Firebase.storage.useEmulator(host, 9199)
     }
 
     private companion object {

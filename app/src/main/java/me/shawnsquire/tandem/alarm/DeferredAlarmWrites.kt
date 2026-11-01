@@ -12,6 +12,8 @@ sealed interface DeferredWrite {
 
     data class SetEnabled(override val id: String, val enabled: Boolean) : DeferredWrite
     data class SetSkip(override val id: String, val occurrence: Instant?) : DeferredWrite
+    data class SetSoloSkip(override val id: String, val occurrence: Instant?) : DeferredWrite
+    data class SetJoinerEnabled(override val id: String, val enabled: Boolean) : DeferredWrite
 }
 
 /** A queued [write] and its [seq]: unique and increasing, never reused even once the queue empties. */
@@ -62,6 +64,11 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
 
     private fun encode(q: QueuedWrite): JSONObject = JSONObject().put("seq", q.seq).put("id", q.write.id).apply {
         when (val w = q.write) {
+            is DeferredWrite.SetSoloSkip -> {
+                put("op", OP_SOLO_SKIP)
+                w.occurrence?.let { put("occurrence", it.toEpochMilli()) }
+            }
+            is DeferredWrite.SetJoinerEnabled -> put("op", OP_JOINER_ENABLED).put("enabled", w.enabled)
             is DeferredWrite.SetEnabled -> put("op", OP_ENABLED).put("enabled", w.enabled)
             is DeferredWrite.SetSkip -> {
                 put("op", OP_SKIP)
@@ -78,6 +85,8 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
             val write = when (val op = o.getString("op")) {
                 OP_ENABLED -> DeferredWrite.SetEnabled(id, o.getBoolean("enabled"))
                 OP_SKIP -> DeferredWrite.SetSkip(id, if (o.isNull("occurrence")) null else Instant.ofEpochMilli(o.getLong("occurrence")))
+                OP_SOLO_SKIP -> DeferredWrite.SetSoloSkip(id, if (o.isNull("occurrence")) null else Instant.ofEpochMilli(o.getLong("occurrence")))
+                OP_JOINER_ENABLED -> DeferredWrite.SetJoinerEnabled(id, o.getBoolean("enabled"))
                 else -> throw IllegalArgumentException("unknown op $op")
             }
             // Written before seqs existed: by position, which keeps their order.
@@ -92,6 +101,8 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
         const val KEY_NEXT_SEQ = "next_seq"
         const val OP_ENABLED = "setEnabled"
         const val OP_SKIP = "setSkip"
+        const val OP_SOLO_SKIP = "setSoloSkip"
+        const val OP_JOINER_ENABLED = "setJoinerEnabled"
     }
 }
 

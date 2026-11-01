@@ -10,6 +10,9 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.DEFAULT_SNOOZE_MINUTES
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.schedule.ParkedSnooze
+import me.shawnsquire.tandem.schedule.RingContext
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isOneShot
 import java.time.Duration
@@ -23,6 +26,8 @@ import java.time.temporal.ChronoUnit
  *
  * Every public entry point takes [mutex] exactly once; the `*Locked` helpers assume it is held
  * (the Mutex is not reentrant).
+ *
+ * [mirror] is not called yet: L2 calls it on LOCAL snooze and dismiss resolutions, never on REMOTE (I4).
  */
 class RingingControllerImpl(
     private val alarmRepository: AlarmRepository,
@@ -32,11 +37,24 @@ class RingingControllerImpl(
     private val snoozeArmer: SnoozeArmer,
     private val notifier: RingingNotifier,
     private val ledger: SnoozeLedger,
+    @Suppress("unused") private val mirror: RingMirrorPort = NoOpRingMirrorPort,
+    private val firedLedger: FiredLedger = InMemoryFiredLedger(),
     private val now: () -> Instant = Instant::now,
 ) : RingingController, RingSlot {
     private val mutex = Mutex()
 
-    override suspend fun dismiss(ringId: String) = withContext(NonCancellable) { mutex.withLock {
+    override suspend fun ringContext(alarmId: String): RingContext = mutex.withLock {
+        val ring = ringStateStore.state.first()
+        RingContext(
+            ring = ring,
+            merged = ring?.merged.orEmpty(),
+            snoozes = ledger.all().map { ParkedSnooze(it.alarmId, it.occurrenceAt, it.until) },
+            lastRang = firedLedger.lastRang(alarmId),
+        )
+    }
+
+    /** [origin] is ignored until L2; see [RingingController.dismiss]. */
+    override suspend fun dismiss(ringId: String, origin: RingOrigin) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         when {
             state != null && state.ringId == ringId -> dismissCurrentLocked(state)
@@ -55,6 +73,12 @@ class RingingControllerImpl(
         Unit
     } }
 
+    /** Stub until L2; see [RingingController.dismissOccurrence]. */
+    override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: Instant, origin: RingOrigin) = Unit
+
+    /** Stub until L2; see [RingingController.snoozeOccurrence]. */
+    override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: Instant, until: Instant, origin: RingOrigin) = Unit
+
     override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: Instant?, write: suspend () -> Unit): Boolean =
         withContext(NonCancellable) { mutex.withLock {
             // A failed read throws before anything is written: the command is not applied.
@@ -64,7 +88,8 @@ class RingingControllerImpl(
             true
         } }
 
-    override suspend fun snooze() = withContext(NonCancellable) { mutex.withLock {
+    /** [origin] and [until] are ignored until L2; see [RingingController.snooze]. */
+    override suspend fun snooze(origin: RingOrigin, until: Instant?) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         if (state == null || state.snoozedUntil != null) return@withLock
         val minutes = try {
@@ -72,17 +97,17 @@ class RingingControllerImpl(
         } catch (e: Exception) {
             DEFAULT_SNOOZE_MINUTES
         }
-        val until = now().plus(minutes.toLong(), ChronoUnit.MINUTES)
+        val end = now().plus(minutes.toLong(), ChronoUnit.MINUTES)
         // Arm first: if this throws nothing is written and the ring continues.
-        snoozeArmer.armSnooze(state.alarmId, state.ringId, until)
+        snoozeArmer.armSnooze(state.alarmId, state.ringId, end)
         try {
-            ledger.put(state.ringId, state.alarmId, until)
+            ledger.put(state.ringId, state.alarmId, end)
         } catch (e: Throwable) {
             runCatching { snoozeArmer.cancelSnooze(state.ringId) }
             throw e
         }
         try {
-            ringStateStore.set(state.copy(snoozedUntil = until))
+            ringStateStore.set(state.copy(snoozedUntil = end))
         } catch (e: Throwable) {
             // Not snoozed after all: the ring keeps sounding, so take the snooze back.
             runCatching { ledger.remove(state.ringId) }
@@ -95,7 +120,7 @@ class RingingControllerImpl(
             // The snooze is already armed; the rest of the schedule is best effort.
             log("rescheduleAll failed after arming snooze", e)
         }
-        runCatching { notifier.showSnoozed(state.ringId, until) }
+        runCatching { notifier.showSnoozed(state.ringId, end) }
         Unit
     } }
 

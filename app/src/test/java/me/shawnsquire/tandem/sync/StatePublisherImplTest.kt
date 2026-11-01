@@ -13,6 +13,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.flow.flowOf
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
@@ -78,7 +79,7 @@ class StatePublisherImplTest {
         val ring = FakeRingStateStore()
         val household = MutableStateFlow(if (paired) hh else null)
         val publisher = StatePublisherImpl(
-            alarms, ring, household, MutableStateFlow("Pixel"), fcmToken, writer, clock, backgroundScope,
+            alarms, ring, household, MutableStateFlow("Pixel"), fcmToken, flowOf(emptyList()), flowOf(null), writer, clock, backgroundScope,
         )
         return Env(alarms, ring, household, writer, publisher)
     }

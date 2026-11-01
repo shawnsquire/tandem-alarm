@@ -28,10 +28,11 @@ class CommandSenderImpl(
         alarmId: String,
         occurrenceAt: Instant?,
         ringId: String?,
+        snoozedUntil: Instant?,
     ): Flow<Pair<CommandStatus, String?>> {
         val h = household.value ?: return flowOf(CommandStatus.REJECTED to "not paired")
         val id = try {
-            remote.create(h.id, h.myUid, h.partnerUid, type, alarmId, occurrenceAt, ringId, clock.instant())
+            remote.create(h.id, h.myUid, h.partnerUid, type, alarmId, occurrenceAt, ringId, clock.instant(), snoozedUntil)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

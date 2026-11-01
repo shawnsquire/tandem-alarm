@@ -1,5 +1,7 @@
 package me.shawnsquire.tandem.sync
 
+import me.shawnsquire.tandem.media.AlarmMedia
+import me.shawnsquire.tandem.media.MediaRef
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FieldValue
 import java.time.DayOfWeek
@@ -10,6 +12,8 @@ import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.nextOccurrence
 
@@ -36,8 +40,9 @@ internal fun Instant.toTimestamp(): Timestamp = Timestamp(epochSecond, nano)
 internal fun Timestamp.toInstantCompat(): Instant = Instant.ofEpochSecond(seconds, nanoseconds.toLong())
 
 /**
- * Fields for a new command doc. Keys match the create rule's `hasOnly(...)` exactly; the command
- * id is the doc id, so there is no `id` field, and `reason` is only written by the owner's resolve.
+ * Fields for a new command doc. Keys are a subset of the create rule's `hasOnly(...)` (`snoozedUntil` is
+ * added only when non-null, pending L3); the command id is the doc id, so there is no `id` field,
+ * and `reason` is only written by the owner's resolve.
  */
 fun commandCreateMap(
     from: String,
@@ -47,17 +52,22 @@ fun commandCreateMap(
     occurrenceAt: Instant?,
     ringId: String?,
     now: Instant,
-): Map<String, Any?> = mapOf(
-    "from" to from,
-    "to" to to,
-    "type" to type.name,
-    "alarmId" to alarmId,
-    "createdAt" to now.toTimestamp(),
-    "expiresAt" to now.plus(COMMAND_TTL).toTimestamp(),
-    "status" to commandStatusToString(CommandStatus.PENDING),
-    "occurrenceAt" to occurrenceAt?.toTimestamp(),
-    "ringId" to ringId,
-)
+    snoozedUntil: Instant? = null,
+): Map<String, Any?> = buildMap {
+    putAll(mapOf(
+        "from" to from,
+        "to" to to,
+        "type" to type.name,
+        "alarmId" to alarmId,
+        "createdAt" to now.toTimestamp(),
+        "expiresAt" to now.plus(COMMAND_TTL).toTimestamp(),
+        "status" to commandStatusToString(CommandStatus.PENDING),
+        "occurrenceAt" to occurrenceAt?.toTimestamp(),
+        "ringId" to ringId,
+    ))
+    // Only when set: the create rule's hasOnly(...) denies unknown keys until the rules allow it.
+    if (snoozedUntil != null) put("snoozedUntil", snoozedUntil.toTimestamp())
+}
 
 /** Parses a command doc; null when a required field is missing or invalid. */
 fun commandFromDoc(id: String, data: Map<String, Any?>): Command? {
@@ -77,12 +87,13 @@ fun commandFromDoc(id: String, data: Map<String, Any?>): Command? {
         ringId = data["ringId"] as? String,
         createdAt = createdAt,
         expiresAt = expiresAt,
+        snoozedUntil = (data["snoozedUntil"] as? Timestamp)?.toInstantCompat(),
     )
 }
 
 /**
  * Parses an FCM command payload (keys: householdId, commandId, fromUid, to, type, alarmId,
- * occurrenceAt?, ringId?, createdAt, expiresAt, status, reason?; times are epoch-millis strings).
+ * occurrenceAt?, snoozedUntil?, ringId?, createdAt, expiresAt, status, reason?; times are epoch-millis strings).
  * `fromUid` becomes [Command.from] because FCM reserves "from". Null when malformed.
  */
 fun commandFromFcm(data: Map<String, String>): Command? {
@@ -94,7 +105,8 @@ fun commandFromFcm(data: Map<String, String>): Command? {
     val createdAt = data["createdAt"]?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: return null
     val expiresAt = data["expiresAt"]?.toLongOrNull()?.let(Instant::ofEpochMilli) ?: return null
     val occurrenceAt = data["occurrenceAt"]?.let { s -> (s.toLongOrNull() ?: return null).let(Instant::ofEpochMilli) }
-    return Command(id, from, to, type, alarmId, occurrenceAt, data["ringId"]?.takeIf(String::isNotEmpty), createdAt, expiresAt)
+    val snoozedUntil = data["snoozedUntil"]?.let { s -> (s.toLongOrNull() ?: return null).let(Instant::ofEpochMilli) }
+    return Command(id, from, to, type, alarmId, occurrenceAt, data["ringId"]?.takeIf(String::isNotEmpty), createdAt, expiresAt, snoozedUntil)
 }
 
 /** `householdId` of an FCM command payload, or null if absent/blank. */
@@ -107,9 +119,21 @@ fun statusFromFcm(data: Map<String, String>): CommandStatus? = data["status"]?.l
 fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(String::isNotEmpty)
 
 /**
- * Body of `households/{hid}/devices/{uid}`. Never includes ringtone or wallpaper data.
+ * Body of `households/{hid}/devices/{uid}`. Never includes ringtone or wallpaper data (only
+ * content-addressed [MediaRef]s when [media] is passed).
  * `fcmToken` is omitted when unknown; `updatedAt` is a server timestamp. A skip that is not after
  * [now] is written as null: it is meaningless to the partner, who would send an UNSKIP that is always rejected.
+ * A solo skip that is not after [now] is omitted likewise.
+ *
+ * Top-level newer keys are emitted only when there is something to say: `links` when [links] is
+ * non-null (even empty), `defaultWallpaper` when [media] is non-null, `alarms[].media` for alarms
+ * with an entry in [PublishedMedia.alarms]. Inside a non-null `ringing` map every key is always
+ * written: `snoozedUntil`, `occurrenceAt` (Timestamp or null) and `merged` (possibly empty).
+ *
+ * The writer merges (SetOptions.merge), which merges nested maps deeply: an omitted key inside
+ * `ringing` would keep the previous ring's value, hence the always-written keys above. An omitted
+ * top-level key (`links`, `defaultWallpaper`) keeps its stored value, but `alarms` is an array and
+ * is replaced whole, so `alarms[].media` survives only if [media] is passed every time.
  */
 fun deviceDocMap(
     displayName: String,
@@ -118,6 +142,8 @@ fun deviceDocMap(
     ring: RingState?,
     now: Instant,
     zone: ZoneId,
+    links: List<PublishedLink>? = null,
+    media: PublishedMedia? = null,
 ): Map<String, Any?> = buildMap {
     put("displayName", displayName)
     if (fcmToken != null) put("fcmToken", fcmToken)
@@ -125,29 +151,65 @@ fun deviceDocMap(
     put(
         "alarms",
         alarms.map { a ->
-            mapOf(
-                "id" to a.id,
-                "label" to a.label,
-                "hour" to a.hour,
-                "minute" to a.minute,
-                "days" to a.days.sorted().map { it.name },
-                "enabled" to a.enabled,
-                "nextOccurrenceAt" to nextOccurrence(a, now, zone)?.toTimestamp(),
-                "skippedOccurrenceAt" to a.skippedOccurrenceAt?.takeIf { it > now }?.toTimestamp(),
-            )
+            buildMap {
+                put("id", a.id)
+                put("label", a.label)
+                put("hour", a.hour)
+                put("minute", a.minute)
+                put("days", a.days.sorted().map { it.name })
+                put("enabled", a.enabled)
+                put("nextOccurrenceAt", nextOccurrence(a, now, zone)?.toTimestamp())
+                put("skippedOccurrenceAt", a.skippedOccurrenceAt?.takeIf { it > now }?.toTimestamp())
+                a.soloSkippedOccurrenceAt?.takeIf { it > now }?.let { put("soloSkippedOccurrenceAt", it.toTimestamp()) }
+                media?.alarms?.get(a.id)?.let { m ->
+                    put("media", mapOf("wallpaper" to m.wallpaper?.toMap(), "ringtone" to m.ringtone?.toMap(withTitle = true)))
+                }
+            }
         },
     )
     put(
         "ringing",
         ring?.let {
-            mapOf(
-                "alarmId" to it.alarmId,
-                "ringId" to it.ringId,
-                "startedAt" to it.startedAt.toTimestamp(),
-                "snoozedUntil" to it.snoozedUntil?.toTimestamp(),
-            )
+            buildMap {
+                put("alarmId", it.alarmId)
+                put("ringId", it.ringId)
+                put("startedAt", it.startedAt.toTimestamp())
+                put("snoozedUntil", it.snoozedUntil?.toTimestamp())
+                put("occurrenceAt", it.occurrenceAt?.toTimestamp())
+                put("merged", it.merged.map { m -> mapOf("alarmId" to m.alarmId, "occurrenceAt" to m.occurrenceAt.toTimestamp()) })
+            }
         },
     )
+    if (links != null) put("links", links.map { mapOf("ownerAlarmId" to it.ownerAlarmId, "mode" to it.mode.name) })
+    if (media != null) put("defaultWallpaper", media.defaultWallpaper?.toMap())
+}
+
+private fun MediaRef.toMap(withTitle: Boolean = false): Map<String, Any?> {
+    val ref = this
+    return buildMap {
+        put("sha", ref.sha)
+        put("size", ref.size)
+        if (withTitle) put("title", ref.title)
+    }
+}
+
+private fun mediaRefFrom(v: Any?): MediaRef? {
+    val m = v as? Map<*, *> ?: return null
+    val sha = (m["sha"] as? String)?.takeIf(String::isNotEmpty) ?: return null
+    val size = (m["size"] as? Number)?.toLong() ?: return null
+    return MediaRef(sha, size, m["title"] as? String)
+}
+
+private fun alarmMediaFrom(v: Any?): AlarmMedia? {
+    val m = v as? Map<*, *> ?: return null
+    return AlarmMedia(mediaRefFrom(m["wallpaper"]), mediaRefFrom(m["ringtone"]))
+}
+
+private fun linkFrom(v: Any?): PublishedLink? {
+    val m = v as? Map<*, *> ?: return null
+    val id = m["ownerAlarmId"] as? String ?: return null
+    val mode = LinkMode.entries.firstOrNull { it.name == m["mode"] } ?: return null
+    return PublishedLink(id, mode)
 }
 
 /** Inverse of [deviceDocMap] for a partner's doc; malformed alarm entries are skipped. Null when unusable. */
@@ -159,6 +221,8 @@ fun partnerStateFromDoc(data: Map<String, Any?>): PartnerState? {
         alarms = alarms,
         ringing = (data["ringing"] as? Map<*, *>)?.let(::ringStateFrom),
         lastSeen = (data["updatedAt"] as? Timestamp)?.toInstantCompat(),
+        links = (data["links"] as? List<*>).orEmpty().mapNotNull(::linkFrom),
+        defaultWallpaper = mediaRefFrom(data["defaultWallpaper"]),
     )
 }
 
@@ -180,6 +244,8 @@ private fun partnerAlarmFrom(m: Map<*, *>): PartnerAlarm? {
         enabled = enabled,
         nextOccurrenceAt = (m["nextOccurrenceAt"] as? Timestamp)?.toInstantCompat(),
         skippedOccurrenceAt = (m["skippedOccurrenceAt"] as? Timestamp)?.toInstantCompat(),
+        media = alarmMediaFrom(m["media"]),
+        soloSkippedOccurrenceAt = (m["soloSkippedOccurrenceAt"] as? Timestamp)?.toInstantCompat(),
     )
 }
 
@@ -187,5 +253,15 @@ private fun ringStateFrom(m: Map<*, *>): RingState? {
     val alarmId = m["alarmId"] as? String ?: return null
     val ringId = m["ringId"] as? String ?: return null
     val startedAt = (m["startedAt"] as? Timestamp)?.toInstantCompat() ?: return null
-    return RingState(alarmId, ringId, startedAt, (m["snoozedUntil"] as? Timestamp)?.toInstantCompat())
+    val merged = (m["merged"] as? List<*>).orEmpty().mapNotNull { e ->
+        val em = e as? Map<*, *> ?: return@mapNotNull null
+        val id = em["alarmId"] as? String ?: return@mapNotNull null
+        val at = (em["occurrenceAt"] as? Timestamp)?.toInstantCompat() ?: return@mapNotNull null
+        RingMember(id, at)
+    }
+    return RingState(
+        alarmId, ringId, startedAt, (m["snoozedUntil"] as? Timestamp)?.toInstantCompat(),
+        occurrenceAt = (m["occurrenceAt"] as? Timestamp)?.toInstantCompat(),
+        merged = merged,
+    )
 }

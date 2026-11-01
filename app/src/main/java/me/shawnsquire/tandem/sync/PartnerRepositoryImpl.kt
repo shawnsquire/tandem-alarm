@@ -24,6 +24,9 @@ class PartnerRepositoryImpl internal constructor(
 
     constructor(household: Flow<Household?>, db: FirebaseFirestore) : this(household, firestoreDocSource(db))
 
+    /** Stub until L4: always null, so a caller that needs a server-confirmed read rings (I1). */
+    override suspend fun readFromServer(): PartnerState? = null
+
     @OptIn(ExperimentalCoroutinesApi::class)
     override val partner: Flow<PartnerState?> = household
         .flatMapLatest { h ->

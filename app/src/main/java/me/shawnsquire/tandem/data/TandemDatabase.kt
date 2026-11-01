@@ -4,14 +4,38 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [AlarmEntity::class], version = 1, exportSchema = true)
+@Database(entities = [AlarmEntity::class], version = 2, exportSchema = true)
 abstract class TandemDatabase : RoomDatabase() {
     abstract fun alarmDao(): AlarmDao
 
     companion object {
         /** Room opens the file lazily, so this does no I/O. */
         fun build(context: Context): TandemDatabase =
-            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").build()
+            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2).build()
+
+        private val LINK_COLUMNS = listOf(
+            "linkOwnerUid" to "TEXT",
+            "linkOwnerAlarmId" to "TEXT",
+            "linkMode" to "TEXT",
+            "linkOwnerSkippedOccurrenceAt" to "INTEGER",
+            "linkJoinerEnabled" to "INTEGER",
+            "linkPendingBothType" to "TEXT",
+            "linkPendingBothOccurrenceAt" to "INTEGER",
+            "linkPendingBothCommandId" to "TEXT",
+            "linkOverrideLabel" to "TEXT",
+            "linkOverrideRingtoneUri" to "TEXT",
+            "linkOverrideWallpaperPath" to "TEXT",
+            "soloSkippedOccurrenceAt" to "INTEGER",
+        )
+
+        /** Adds the linked-alarm columns; every one is nullable with no default, matching Room's schema. */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                LINK_COLUMNS.forEach { (name, type) -> db.execSQL("ALTER TABLE alarms ADD COLUMN `$name` $type") }
+            }
+        }
     }
 }

@@ -19,11 +19,15 @@ class PreFireCheckImpl(
     private val household: Flow<Household?>,
     private val remote: CommandRemote,
     private val applyPending: suspend (Household, Command) -> Unit,
+    /** Unused until L4, which reads the owner's doc with [PartnerRepository.readFromServer] for a linked row. */
+    private val partnerRepository: PartnerRepository,
+    /** Unused until L4, which applies the owner doc it read to the linked rows through [LinkSync]. */
+    private val linkSync: LinkSync,
     /** Invoked after a successful pre-fire pull; must not block (the caller's 3 s budget is spent). */
     private val onSuccess: () -> Unit = {},
 ) : PreFireCheck {
 
-    override suspend fun pullAndApply(timeout: Duration): Boolean {
+    override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean {
         val ok = pull(minOf(timeout, MAX_TIMEOUT))
         if (ok) {
             try {

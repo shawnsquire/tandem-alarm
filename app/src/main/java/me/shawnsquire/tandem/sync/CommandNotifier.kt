@@ -21,6 +21,18 @@ import java.time.format.FormatStyle
 interface CommandNotifier {
     /** [turnedOff] is true when a skip on a one-shot alarm turned it off instead. */
     fun notifyApplied(cmd: Command, alarm: Alarm?, partnerName: String, turnedOff: Boolean)
+
+    /** INVITE_LINK from the owner: Join / Decline. [alarm] is the owner's published alarm, if known. */
+    fun notifyInvite(cmd: Command, alarm: PartnerAlarm?, partnerName: String)
+
+    /** The owner deleted a joined alarm; [alarm] is the removed linked row. */
+    fun notifyOwnerDeleted(alarm: Alarm, partnerName: String)
+
+    /** The owner turned off a joined alarm ("so it's off for you too"); [alarm] is the linked row. */
+    fun notifyOwnerTurnedOff(alarm: Alarm, partnerName: String)
+
+    /** A "both of us" command for linked row [alarm] was rejected. */
+    fun notifyRejected(alarm: Alarm, type: CommandType, reason: String?, partnerName: String)
 }
 
 class AndroidCommandNotifier(private val context: Context) : CommandNotifier {
@@ -54,6 +66,15 @@ class AndroidCommandNotifier(private val context: Context) : CommandNotifier {
             .build()
         NotificationManagerCompat.from(context).notify(cmd.id.hashCode(), notification)
     }
+
+    // L6 writes the texts.
+    override fun notifyInvite(cmd: Command, alarm: PartnerAlarm?, partnerName: String) = Unit
+
+    override fun notifyOwnerDeleted(alarm: Alarm, partnerName: String) = Unit
+
+    override fun notifyOwnerTurnedOff(alarm: Alarm, partnerName: String) = Unit
+
+    override fun notifyRejected(alarm: Alarm, type: CommandType, reason: String?, partnerName: String) = Unit
 
     private fun ensureChannel() {
         val channel = NotificationChannel(
