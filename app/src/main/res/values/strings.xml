@@ -1,3 +1,34 @@
 <resources>
     <string name="app_name">Tandem Alarm</string>
+
+    <!-- Linked alarms UI (L6) -->
+    <string name="link_partner_possessive">%1$s\'s</string>
+    <string name="link_icon_description">Joined alarm</string>
+    <string name="link_mode_ring">Ring</string>
+    <string name="link_mode_notify">Notify</string>
+    <string name="link_state_owner_skipped">%1$s skipped</string>
+    <string name="link_state_skipped_for_you">Skipped for you</string>
+    <string name="link_state_owner_skipping_solo">%1$s\'s skipping, you\'re still on</string>
+    <string name="link_waiting_for_partner">Waiting for %1$s…</string>
+    <string name="link_just_me_or_both">Just me or both of us?</string>
+    <string name="link_just_me">Just me</string>
+    <string name="link_both_of_us">Both of us</string>
+    <string name="link_use_partners">Use %1$s\'s</string>
+    <string name="link_mode_title">When it goes off</string>
+    <string name="link_override_message">Message</string>
+    <string name="link_override_sound">Sound</string>
+    <string name="link_override_photo">Photo</string>
+    <string name="link_photo_custom">Custom image</string>
+    <string name="link_unskip_just_me">Unskip (just me)</string>
+    <string name="link_leave">Leave</string>
+    <string name="link_leave_confirm">Leave %1$s\'s %2$s?</string>
+    <string name="link_cancel">Cancel</string>
+    <string name="link_error_save">Couldn\'t save that change</string>
+    <string name="link_both_rejected">That didn\'t go through for both of you</string>
+    <string name="link_joined">%1$s joined</string>
+    <string name="link_invite">Invite %1$s</string>
+    <string name="link_invited">Invited</string>
+    <string name="link_invite_failed">That invite didn\'t go through</string>
+    <string name="link_join">Join</string>
+    <string name="link_joined_state">Joined</string>
 </resources>

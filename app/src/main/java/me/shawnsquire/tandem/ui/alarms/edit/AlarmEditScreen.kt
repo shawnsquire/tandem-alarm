@@ -70,6 +70,8 @@ import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
 import me.shawnsquire.tandem.ui.alarmEditViewModelFactory
 import me.shawnsquire.tandem.ui.formatDays
+import me.shawnsquire.tandem.ui.partner.CommandStatusLine
+import me.shawnsquire.tandem.ui.partner.CommandUiStatus
 import me.shawnsquire.tandem.ui.theme.TandemTheme
 import java.time.DayOfWeek
 
@@ -116,6 +118,7 @@ fun AlarmEditRoute(
             }
         },
         onErrorShown = viewModel::dismissError,
+        onInvite = viewModel::invite,
         modifier = modifier,
     )
 }
@@ -136,6 +139,7 @@ fun AlarmEditScreen(
     onDelete: () -> Unit,
     onErrorShown: () -> Unit,
     modifier: Modifier = Modifier,
+    onInvite: () -> Unit = {},
 ) {
     // Busy covers imports and saves; none of the controls may act while one is in flight.
     val locked = state.busy
@@ -271,6 +275,8 @@ fun AlarmEditScreen(
                 trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path) } },
             )
 
+            InviteSection(state, locked, onInvite)
+
             if (!state.isNew) {
                 OutlinedButton(
                     onClick = onDelete,
@@ -282,6 +288,32 @@ fun AlarmEditScreen(
                 }
             }
         }
+    }
+}
+
+/** Invite, Invited or "joined" for a saved own alarm while paired; nothing otherwise. */
+@Composable
+private fun InviteSection(state: AlarmEditUiState, locked: Boolean, onInvite: () -> Unit) {
+    if (state.invite == EditInvite.Hidden) return
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        when (state.invite) {
+            EditInvite.Invite -> OutlinedButton(onClick = onInvite, enabled = !locked) {
+                Text(stringResource(R.string.link_invite, state.partnerName))
+            }
+            EditInvite.Invited -> OutlinedButton(onClick = {}, enabled = false) {
+                Text(stringResource(R.string.link_invited))
+            }
+            EditInvite.Joined -> Text(
+                stringResource(R.string.link_joined, state.partnerName),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            EditInvite.Hidden -> Unit
+        }
+        CommandStatusLine(state.inviteStatus, state.partnerName, onContainer = false)
     }
 }
 
@@ -362,5 +394,53 @@ private fun AlarmEditFromFakesPreview() {
     )
     TandemTheme {
         AlarmEditScreen(state, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {})
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun AlarmEditInvitePreview() {
+    TandemTheme {
+        AlarmEditScreen(
+            previewExisting.copy(invite = EditInvite.Invite, partnerName = "Shawn"),
+            {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun AlarmEditInvitedPreview() {
+    TandemTheme {
+        AlarmEditScreen(
+            previewExisting.copy(invite = EditInvite.Invited, partnerName = "Shawn"),
+            {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun AlarmEditJoinedPreview() {
+    TandemTheme {
+        AlarmEditScreen(
+            previewExisting.copy(invite = EditInvite.Joined, partnerName = "Shawn"),
+            {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {},
+        )
+    }
+}
+
+/** A declined invite: back to Invite, with the reason. */
+@Preview(showBackground = true)
+@Composable
+private fun AlarmEditInviteRejectedPreview() {
+    TandemTheme {
+        AlarmEditScreen(
+            previewExisting.copy(
+                invite = EditInvite.Invite, partnerName = "Shawn",
+                inviteStatus = CommandUiStatus.Rejected("Shawn declined"),
+            ),
+            {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {},
+        )
     }
 }

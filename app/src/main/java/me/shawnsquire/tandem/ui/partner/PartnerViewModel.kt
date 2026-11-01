@@ -9,12 +9,20 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.alarm.RingingController
+import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.RingContext
+import me.shawnsquire.tandem.schedule.RingOrigin
+import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.sync.CommandSender
+import me.shawnsquire.tandem.sync.LinkRepository
+import me.shawnsquire.tandem.sync.LinkResult
 import me.shawnsquire.tandem.sync.PairingException
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PairingStatus
@@ -22,6 +30,7 @@ import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.ui.formatDays
+import me.shawnsquire.tandem.ui.resolvePartnerName
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -50,6 +59,14 @@ data class PartnerAlarmRow(
     val commandStatus: CommandUiStatus?,
     /** The action whose command is still in flight; only its button is disabled. */
     val pendingAction: PartnerAction? = null,
+    /** The local linked row that joined this alarm, or null while it is not joined. */
+    val linkedAlarmId: String? = null,
+    /** True while a join is in flight; only the Join button is disabled. */
+    val joining: Boolean = false,
+    /** Why the last join failed, or null. */
+    val joinError: String? = null,
+    /** The partner skips their next ring "just me" while this phone's copy still rings. */
+    val soloSkipping: Boolean = false,
 )
 
 data class RingingBanner(
@@ -103,6 +120,8 @@ internal fun partnerAlarmRow(
     now: Instant,
     status: CommandUiStatus?,
     sentAction: PartnerAction? = null,
+    linkedAlarmId: String? = null,
+    join: JoinUi? = null,
 ): PartnerAlarmRow {
     val skipped = a.enabled && a.skippedOccurrenceAt?.let { it > now } == true
     val chip = when {
@@ -124,7 +143,30 @@ internal fun partnerAlarmRow(
         id = a.id, label = a.label, hour = a.hour, minute = a.minute, daysText = formatDays(a.days),
         chip = chip, actions = actions, commandStatus = status,
         pendingAction = sentAction.takeIf { status == CommandUiStatus.Pending },
+        linkedAlarmId = linkedAlarmId,
+        joining = join == JoinUi.Joining,
+        joinError = (join as? JoinUi.Failed)?.reason,
+        soloSkipping = a.enabled && a.soloSkippedOccurrenceAt?.let { it > now } == true,
     )
+}
+
+/** Progress of a Join tap on a partner alarm. */
+internal sealed interface JoinUi {
+    data object Joining : JoinUi
+    data class Failed(val reason: String) : JoinUi
+}
+
+/**
+ * Whether this phone's copy of the partner's ring `(rowId, x)` is still live: the slot ring
+ * (sounding or snoozed), folded into it, or a parked snooze. Then stopping it locally lets the
+ * mirror send the one STOP_RINGING.
+ */
+internal fun isLocalCopyLive(context: RingContext, rowId: String, x: Instant): Boolean {
+    val ring = context.ring
+    return (ring != null && ring.alarmId == rowId && ring.occurrenceAt == x) ||
+        ring?.merged.orEmpty().any { it.alarmId == rowId && it.occurrenceAt == x } ||
+        context.merged.any { it.alarmId == rowId && it.occurrenceAt == x } ||
+        context.snoozes.any { it.alarmId == rowId && it.occurrenceAt == x }
 }
 
 private data class UnpairedLocal(
@@ -141,6 +183,9 @@ class PartnerViewModel(
     private val pairing: PairingRepository,
     partnerRepository: PartnerRepository,
     private val sender: CommandSender,
+    alarmRepository: AlarmRepository,
+    private val linkRepository: LinkRepository,
+    private val ringingController: RingingController,
     private val clock: Clock,
     /** Must emit once immediately, then on each refresh (see tickerFlow). */
     ticker: Flow<Unit>,
@@ -151,20 +196,35 @@ class PartnerViewModel(
     private val stopStatuses = MutableStateFlow<Map<String, CommandUiStatus>>(emptyMap())
     private val jobs = HashMap<String, Job>()
 
+    /** Rings stopped through [RingingController.dismissOccurrence]; they never get a STOP_RINGING command. */
+    private val dismissedLocally = HashSet<String>()
+
+    /** Rings a Stop tap already sent as STOP_RINGING; they never get a local dismiss. */
+    private val sentStops = HashSet<String>()
+
     /** Which action each alarm's latest command carried; written before the Pending status is published. */
     private val sentActions = MutableStateFlow<Map<String, PartnerAction>>(emptyMap())
+
+    private val joins = MutableStateFlow<Map<String, JoinUi>>(emptyMap())
 
     private val partner: StateFlow<PartnerState?> =
         partnerRepository.partner.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /** Partner alarm id to the local linked row that joined it. */
+    private val linkedRows: StateFlow<Map<String, String>> =
+        alarmRepository.linkedAlarms
+            .map { rows -> rows.mapNotNull { r -> r.link?.let { it.ownerAlarmId to r.id } }.toMap() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
     val state: StateFlow<PartnerUiState> = combine(
-        pairing.status, partner, local, alarmStatuses, stopStatuses, sentActions, ticker,
+        pairing.status, partner, local, alarmStatuses, stopStatuses, sentActions, linkedRows, joins, ticker,
     ) { values ->
         @Suppress("UNCHECKED_CAST")
         build(
             values[0] as PairingStatus, values[1] as PartnerState?, values[2] as UnpairedLocal,
             values[3] as Map<String, CommandUiStatus>, values[4] as Map<String, CommandUiStatus>,
-            values[5] as Map<String, PartnerAction>,
+            values[5] as Map<String, PartnerAction>, values[6] as Map<String, String>,
+            values[7] as Map<String, JoinUi>,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PartnerUiState())
 
@@ -175,6 +235,9 @@ class PartnerViewModel(
                 if (s is PairingStatus.Paired) local.update { UnpairedLocal() }
             }
         }
+        viewModelScope.launch {
+            linkedRows.collect { rows -> joins.update { j -> j.filterNot { (id, ui) -> ui == JoinUi.Joining && id in rows } } }
+        }
     }
 
     private fun build(
@@ -184,6 +247,8 @@ class PartnerViewModel(
         alarmStatuses: Map<String, CommandUiStatus>,
         stopStatuses: Map<String, CommandUiStatus>,
         sentActions: Map<String, PartnerAction>,
+        linkedRows: Map<String, String>,
+        joins: Map<String, JoinUi>,
     ): PartnerUiState {
         if (status !is PairingStatus.Paired) {
             return PartnerUiState(
@@ -192,9 +257,7 @@ class PartnerViewModel(
             )
         }
         val now = clock.instant()
-        val name = status.partnerName?.takeIf { it.isNotBlank() }
-            ?: partner?.displayName?.takeIf { it.isNotBlank() }
-            ?: FALLBACK_NAME
+        val name = resolvePartnerName(status, partner)
         val lastSeen = partner?.lastSeen
         val age = lastSeen?.let { Duration.between(it, now) }
         val ringing = partner?.ringing?.let { r ->
@@ -207,7 +270,7 @@ class PartnerViewModel(
         }
         val rows = partner?.alarms.orEmpty()
             .sortedWith(compareBy<PartnerAlarm>({ it.hour }, { it.minute }, { it.label.lowercase() }, { it.id }))
-            .map { a -> partnerAlarmRow(a, now, alarmStatuses[a.id], sentActions[a.id]) }
+            .map { a -> partnerAlarmRow(a, now, alarmStatuses[a.id], sentActions[a.id], linkedRows[a.id], joins[a.id]) }
         return PartnerUiState(
             loading = false, paired = true, partnerName = name, partnerLoaded = partner != null,
             lastSeenText = age?.let { formatLastSeen(it) },
@@ -281,7 +344,63 @@ class PartnerViewModel(
 
     fun stopRinging() {
         val ring = partner.value?.ringing ?: return
+        // One decision per ring: a repeat tap while it runs, or after the local dismiss (the mirror
+        // already sent the one STOP_RINGING), must not read the context again and fall through to a send.
+        val jobKey = "stoplocal:${ring.ringId}"
+        if (ring.ringId in dismissedLocally || jobs[jobKey]?.isActive == true) return
+        val x = ring.occurrenceAt
+        val rowId = linkedRows.value[ring.alarmId]
+        // A command already sent for this ring is the one STOP; never dismiss locally on top of it.
+        if (x == null || rowId == null || ring.ringId in sentStops) {
+            sendStop(ring)
+            return
+        }
+        stopStatuses.update { it + (ring.ringId to CommandUiStatus.Pending) }
+        jobs[jobKey] = viewModelScope.launch {
+            try {
+                if (isLocalCopyLive(ringingController.ringContext(rowId), rowId, x)) {
+                    // The mirror sends the one STOP_RINGING; sending it here too would double it.
+                    dismissLocally(ring.ringId, rowId, x)
+                } else {
+                    sendStop(ring)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                stopStatuses.update { it + (ring.ringId to CommandUiStatus.Unknown) }
+            }
+        }
+    }
+
+    private fun sendStop(ring: RingState) {
+        sentStops += ring.ringId
         run(stopStatuses, ring.ringId, CommandType.STOP_RINGING, ring.alarmId, null, ring.ringId)
+    }
+
+    private suspend fun dismissLocally(ringId: String, rowId: String, x: Instant) {
+        jobs.remove("stop:$ringId")?.cancel()
+        ringingController.dismissOccurrence(rowId, x, RingOrigin.LOCAL)
+        dismissedLocally += ringId
+        stopStatuses.update { it + (ringId to CommandUiStatus.Applied) }
+    }
+
+    fun joinAlarm(ownerAlarmId: String) {
+        if (joins.value[ownerAlarmId] == JoinUi.Joining || ownerAlarmId in linkedRows.value) return
+        joins.update { it + (ownerAlarmId to JoinUi.Joining) }
+        viewModelScope.launch {
+            val ui = try {
+                when (val r = linkRepository.join(ownerAlarmId)) {
+                    // Stay Joining until the linked row shows up, so the row never flashes back to Join.
+                    is LinkResult.Joined -> return@launch joins.update { if (ownerAlarmId in linkedRows.value) it - ownerAlarmId else it }
+                    is LinkResult.Failed -> JoinUi.Failed(r.reason)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                JoinUi.Failed(GENERIC_ERROR)
+            }
+            joins.update { if (ui == null) it - ownerAlarmId else it + (ownerAlarmId to ui) }
+        }
     }
 
     private fun alarm(id: String): PartnerAlarm? = partner.value?.alarms?.firstOrNull { it.id == id }
