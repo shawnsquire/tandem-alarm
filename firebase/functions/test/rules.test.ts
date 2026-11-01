@@ -18,7 +18,9 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import { deleteObject, getBytes, ref, uploadBytes } from "firebase/storage";
 
+const MAX_BYTES = 15 * 1024 * 1024; // 15728640
 const HID = "h1";
 const ALICE = "alice";
 const BOB = "bob";
@@ -27,6 +29,18 @@ const CAROL = "carol"; // authenticated, but not a member of h1
 let testEnv: RulesTestEnvironment;
 
 const dbFor = (uid: string) => testEnv.authenticatedContext(uid).firestore();
+const mediaPath = (uid: string, sha: string) => `households/${HID}/media/${uid}/${sha}`;
+const storageFor = (uid: string) => testEnv.authenticatedContext(uid).storage();
+const bytes = (n: number) => new Uint8Array(n);
+
+async function seedMedia(uid: string, sha: string) {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await uploadBytes(ref(ctx.storage(), mediaPath(uid, sha)), bytes(8), {
+      contentType: "audio/mpeg",
+    });
+  });
+}
+
 const anonDb = () => testEnv.unauthenticatedContext().firestore();
 
 const inFuture = () => Timestamp.fromMillis(Date.now() + 60_000);
@@ -61,6 +75,9 @@ beforeAll(async () => {
     firestore: {
       rules: readFileSync(path.resolve(__dirname, "../../firestore.rules"), "utf8"),
     },
+    storage: {
+      rules: readFileSync(path.resolve(__dirname, "../../storage.rules"), "utf8"),
+    },
   });
 });
 
@@ -70,6 +87,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await testEnv.clearFirestore();
+  await testEnv.clearStorage();
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
     await setDoc(doc(db, `users/${ALICE}`), { householdId: HID });
@@ -463,6 +481,84 @@ describe("pairCodes", () => {
         householdId: HID,
         createdBy: ALICE,
         expiresAt: inFuture(),
+      }),
+    );
+  });
+});
+
+describe("storage media", () => {
+  const SHA = "abc123";
+
+  it("lets a member read", async () => {
+    await seedMedia(ALICE, SHA);
+    await assertSucceeds(getBytes(ref(storageFor(BOB), mediaPath(ALICE, SHA))));
+  });
+  it("denies a non-member read", async () => {
+    await seedMedia(ALICE, SHA);
+    await assertFails(getBytes(ref(storageFor(CAROL), mediaPath(ALICE, SHA))));
+  });
+  it("denies an unauthenticated read", async () => {
+    await seedMedia(ALICE, SHA);
+    await assertFails(
+      getBytes(ref(testEnv.unauthenticatedContext().storage(), mediaPath(ALICE, SHA))),
+    );
+  });
+  it("lets the owner write under its own folder", async () => {
+    await assertSucceeds(
+      uploadBytes(ref(storageFor(ALICE), mediaPath(ALICE, SHA)), bytes(8), {
+        contentType: "audio/mpeg",
+      }),
+    );
+    await assertSucceeds(
+      uploadBytes(ref(storageFor(ALICE), mediaPath(ALICE, "img")), bytes(8), {
+        contentType: "image/png",
+      }),
+    );
+  });
+  it("denies the partner writing under the owner's folder", async () => {
+    await assertFails(
+      uploadBytes(ref(storageFor(BOB), mediaPath(ALICE, SHA)), bytes(8), {
+        contentType: "audio/mpeg",
+      }),
+    );
+  });
+  it("denies a non-member writing under its own folder", async () => {
+    await assertFails(
+      uploadBytes(ref(storageFor(CAROL), mediaPath(CAROL, SHA)), bytes(8), {
+        contentType: "audio/mpeg",
+      }),
+    );
+  });
+  it("allows exactly the size cap", async () => {
+    await assertSucceeds(
+      uploadBytes(ref(storageFor(ALICE), mediaPath(ALICE, SHA)), bytes(MAX_BYTES), {
+        contentType: "audio/mpeg",
+      }),
+    );
+  });
+  it("denies one byte over the size cap", async () => {
+    await assertFails(
+      uploadBytes(ref(storageFor(ALICE), mediaPath(ALICE, SHA)), bytes(MAX_BYTES + 1), {
+        contentType: "audio/mpeg",
+      }),
+    );
+  });
+  it("denies a text/plain file", async () => {
+    await assertFails(
+      uploadBytes(ref(storageFor(ALICE), mediaPath(ALICE, SHA)), bytes(8), {
+        contentType: "text/plain",
+      }),
+    );
+  });
+  it("lets the owner delete but not the partner", async () => {
+    await seedMedia(ALICE, SHA);
+    await assertFails(deleteObject(ref(storageFor(BOB), mediaPath(ALICE, SHA))));
+    await assertSucceeds(deleteObject(ref(storageFor(ALICE), mediaPath(ALICE, SHA))));
+  });
+  it("denies paths outside the media layout", async () => {
+    await assertFails(
+      uploadBytes(ref(storageFor(ALICE), `households/${HID}/other/${SHA}`), bytes(8), {
+        contentType: "audio/mpeg",
       }),
     );
   });

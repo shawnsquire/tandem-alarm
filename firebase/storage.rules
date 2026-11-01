@@ -1,0 +1,27 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Content-addressed media: households/{hid}/media/{ownerUid}/{sha256}.
+    match /households/{hid}/media/{ownerUid}/{sha} {
+      function isMember() {
+        return request.auth != null
+          && request.auth.uid in
+            firestore.get(/databases/(default)/documents/households/$(hid)).data.members;
+      }
+
+      allow read: if isMember();
+
+      // Size and type checks live on create only: delete has no request.resource.
+      allow create: if isMember()
+        && request.auth.uid == ownerUid
+        && request.resource.size <= 15 * 1024 * 1024
+        && (request.resource.contentType.matches('audio/.*')
+            || request.resource.contentType.matches('image/.*'));
+
+      // Files are named by hash, so an existing object is never rewritten.
+      allow update: if false;
+
+      allow delete: if isMember() && request.auth.uid == ownerUid;
+    }
+  }
+}
