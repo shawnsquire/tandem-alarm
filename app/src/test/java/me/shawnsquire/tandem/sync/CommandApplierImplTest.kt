@@ -182,6 +182,24 @@ class CommandApplierImplTest {
         )
     }
 
+    @Test fun `a late ring's stop or snooze at the old time of an alarm moved earlier is rejected quietly`() = runTest {
+        // Our 5:00 moved to 4:30, which has rung. The joiner learned of the move at 5:00 and rang late
+        // (RingingSession); its mirrored commands for 5:00 are stale here.
+        val old = now // Monday 05:00Z
+        for (type in listOf(CommandType.STOP_RINGING, CommandType.SNOOZE)) {
+            val e = env(alarms = listOf(weekly.copy(hour = 4, minute = 30)))
+            e.ringing.ringContextResult = RingContext(
+                ring = null, merged = emptyList(), snoozes = emptyList(), lastRang = Instant.parse("2026-03-02T04:30:00Z"),
+            )
+            val until = now.plusSeconds(600).takeIf { type == CommandType.SNOOZE }
+            e.applier.apply(Command("c1", "them", "me", type, "a1", old, null, now.minusSeconds(1), now.plusSeconds(3600), until))
+            assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+            assertTrue(e.ringing.snoozedOccurrences.isEmpty())
+            assertTrue(e.notifier.calls.isEmpty())
+            rejection(e, "already rang or changed")
+        }
+    }
+
     @Test fun `expired is rejected`() = runTest {
         val e = env()
         e.applier.apply(cmd(CommandType.DISABLE, expiresAt = now))

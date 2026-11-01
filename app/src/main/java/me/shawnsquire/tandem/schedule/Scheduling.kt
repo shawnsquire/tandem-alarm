@@ -87,6 +87,18 @@ fun fallsOnSchedule(alarm: Alarm, occurrence: Instant, zone: ZoneId): Boolean {
 }
 
 /**
+ * Whether [alarm]'s hour and minute fall earlier than [occurrence] on [occurrence]'s own local date in
+ * [zone], on a day the alarm rings: its time was moved earlier that day, to a time already passed.
+ * Built in [zone] the way [nextOccurrence] builds a candidate, so a DST-gap time is shifted the same
+ * way. A one-shot counts on any day. Arming and skips are not consulted, as in [fallsOnSchedule].
+ */
+fun movedEarlierThatDay(alarm: Alarm, occurrence: Instant, zone: ZoneId): Boolean {
+    val date = occurrence.atZone(zone).toLocalDate()
+    return (alarm.days.isEmpty() || date.dayOfWeek in alarm.days) &&
+        ZonedDateTime.of(date, LocalTime.of(alarm.hour, alarm.minute), zone).toInstant() < occurrence
+}
+
+/**
  * Snooze-ledger view for validation; mirrors alarm.SnoozeEntry without depending on the alarm
  * package (schedule is java.time only).
  */

@@ -25,6 +25,7 @@ import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.fallsOnSchedule
 import me.shawnsquire.tandem.schedule.isArmed
+import me.shawnsquire.tandem.schedule.movedEarlierThatDay
 import me.shawnsquire.tandem.schedule.skippedOccurrences
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
@@ -471,16 +472,22 @@ class RingingSession(
     /**
      * A linked row whose copied hour, minute or days no longer put [occurrence] on its schedule: the
      * owner moved the alarm and LinkSync (often the pre-fire read) copied it, so X is not an
-     * occurrence any more and the owner would reject this ring's mirrored STOP. By the schedule alone,
-     * never `nextOccurrence`, so the owner's solo skip can't suppress. Own rows are never checked: an
-     * edit there re-arms the alarm itself, and no stored command asked to drop X (I1).
+     * occurrence any more. By the schedule alone, never `nextOccurrence`, so the owner's solo skip
+     * can't suppress. Own rows are never checked: an edit there re-arms the alarm itself, and no
+     * stored command asked to drop X (I1).
+     *
+     * A time moved earlier the same day ([movedEarlierThatDay]) is not moved off: the joiner learned
+     * of it too late, so X rings late rather than not at all that day (Shawn's call, 2026-11-01). Its
+     * mirrored STOP or SNOOZE is stale on the owner and rejected there; RingMirror only logs that.
+     * Moved later, or off that day, suppresses: a later time rings at its own fire.
      *
      * Checked in [armedZone], the zone X was computed in, so a zone change since arming never
      * suppresses (I1). A fire that carries no zone (a replay, a re-arm from the records, an intent
      * from an older build) is never treated as moved.
      */
     private fun movedOff(alarm: Alarm, occurrence: Instant, armedZone: ZoneId?): Boolean =
-        alarm.link != null && armedZone != null && !fallsOnSchedule(alarm, occurrence, armedZone)
+        alarm.link != null && armedZone != null && !fallsOnSchedule(alarm, occurrence, armedZone) &&
+            !movedEarlierThatDay(alarm, occurrence, armedZone)
 
     /**
      * Quiet end for a deleted, disabled or skipped occurrence, all of them commands already stored
