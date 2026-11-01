@@ -328,6 +328,26 @@ class LinkRepositoryImplTest {
     }
 
     @Test
+    fun sendBothWhoseCallerIsCancelledAsThePendingWriteResumesStillCreatesAndWatches() = runTest {
+        val e = env(rows = listOf(linked()))
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        // The pendingBoth write has landed, but updateLink hasn't returned when the caller is cancelled.
+        e.fake.afterUpdateLink = { e.fake.afterUpdateLink = null; gate.await() }
+        val caller = launch { e.repo.sendBoth("row1", CommandType.DISABLE, null) }
+        runCurrent()
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        caller.cancel()
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(caller.isCancelled)
+        assertEquals(CommandType.DISABLE, e.remote.created.single().type)
+        e.remote.updatesFor("c1").emit(CommandStatus.REJECTED to "no")
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals("no", e.notifier.rejected.single().reason)
+    }
+
+    @Test
     fun pendingFromBeforeARestartExpiresOnItsOriginalWindow() = runTest {
         val created = now.minusSeconds(23 * 3600)
         val e = env(rows = listOf(linked(pending = PendingBoth(CommandType.DISABLE, null, "c5", created))))
