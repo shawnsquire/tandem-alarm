@@ -127,21 +127,36 @@ class LinkedAlarmViewModelTest {
         assertNull(e.repo.get("j")!!.skippedOccurrenceAt)
     }
 
-    @Test fun skipBothPinsToThePartnerTabsOccurrence() = runTest {
+    private val rowNext = Instant.parse("2026-11-02T06:30:00Z")
+
+    @Test fun skipBothPinsToTheRowsOwnNextOccurrence() = runTest {
         val e = Env(joined())
         e.vm.skipBoth()
-        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.SKIP_NEXT, ownerNext)), e.links.calls)
+        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.SKIP_NEXT, rowNext)), e.links.calls)
     }
 
-    @Test fun bothOfUsIsUnavailableWithoutAPin() = runTest {
+    @Test fun skipBothIgnoresTheOwnersPublishedOccurrenceAfterASoloSkip() = runTest {
+        // The owner solo-skipped 06:30, so their published next is a day later; the shared skip belongs to 06:30.
+        val owner = PartnerAlarm("o1", "Gym", 6, 30, weekdays, true, ownerNext, null, soloSkippedOccurrenceAt = rowNext)
+        val e = Env(joined(), PartnerState("Shawn", listOf(owner), null, null))
+        e.vm.skipBoth()
+        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.SKIP_NEXT, rowNext)), e.links.calls)
+    }
+
+    @Test fun bothOfUsDoesNotNeedPartnerStateWhileTheRowHasANextOccurrence() = runTest {
         val e = Env(joined(), partnerState(next = null))
+        assertTrue(e.latest().bothAvailable)
+        val none = Env(joined(), partner = null)
+        assertTrue(none.latest().bothAvailable)
+        none.vm.skipBoth()
+        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.SKIP_NEXT, rowNext)), none.links.calls)
+    }
+
+    @Test fun bothOfUsIsUnavailableWithoutAnOccurrence() = runTest {
+        val e = Env(joined(enabled = false))
         assertFalse(e.latest().bothAvailable)
         e.vm.skipBoth()
         assertTrue(e.links.calls.isEmpty())
-        val none = Env(joined(), partner = null)
-        assertFalse(none.latest().bothAvailable)
-        none.vm.skipBoth()
-        assertTrue(none.links.calls.isEmpty())
     }
 
     @Test fun unskipClearsMySkipAndIsOfferedInsteadOfSkip() = runTest {
@@ -163,10 +178,10 @@ class LinkedAlarmViewModelTest {
 
     @Test fun bothOfUsStatusFollowsPendingThenTheOwnersState() = runTest {
         // The fake only records the call, so the row carries the pending command the real sendBoth would write.
-        val e = Env(joined(link = link(pending = PendingBoth(CommandType.SKIP_NEXT, ownerNext, "c1"))))
+        val e = Env(joined(link = link(pending = PendingBoth(CommandType.SKIP_NEXT, rowNext, "c1"))))
         e.vm.skipBoth()
         assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
-        e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
+        e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = rowNext) }
         assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
     }
 
@@ -302,7 +317,7 @@ class LinkedAlarmViewModelTest {
 
     // A settled outcome is latched, so later changes to the row do not rewrite it.
 
-    private val pendingSkip = PendingBoth(CommandType.SKIP_NEXT, ownerNext, "c1")
+    private val pendingSkip = PendingBoth(CommandType.SKIP_NEXT, rowNext, "c1")
 
     /** Sends "both of us" on a row already carrying the pending command (the real sendBoth writes it). */
     private suspend fun Env.sendSkipBothAndSettle(applyToRow: suspend () -> Unit) {
@@ -314,7 +329,7 @@ class LinkedAlarmViewModelTest {
     @Test fun aSettledOutcomeStaysAppliedWhenTheOwnerSkipIsLaterCleared() = runTest {
         val e = Env(joined(link = link(pending = pendingSkip)))
         e.sendSkipBothAndSettle {
-            e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
+            e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = rowNext) }
         }
         assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
         e.repo.updateLink("j") { it.copy(ownerSkippedOccurrenceAt = null) }
@@ -334,7 +349,7 @@ class LinkedAlarmViewModelTest {
     @Test fun aSettledOutcomeIsNotShownAfterTheSheetReopens() = runTest {
         val e = Env(joined(link = link(pending = pendingSkip)))
         e.sendSkipBothAndSettle {
-            e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
+            e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = rowNext) }
         }
         assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
         e.vm.onSheetOpened()
@@ -396,7 +411,7 @@ class LinkedAlarmViewModelTest {
         assertEquals(CommandUiStatus.Pending, vm.state.value.bothStatus)
         lagging.value = listOf(real.get("j")!!) // now the flow shows the pending command
         assertEquals(CommandUiStatus.Pending, vm.state.value.bothStatus)
-        real.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
+        real.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = rowNext) }
         lagging.value = listOf(real.get("j")!!)
         assertEquals(CommandUiStatus.Applied, vm.state.value.bothStatus)
         assertFalse(seen.any { it is CommandUiStatus.Rejected })

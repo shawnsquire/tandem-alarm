@@ -376,19 +376,19 @@ class AlarmsViewModelTest {
         }
     }
 
-    @Test fun linkedSwitchBothOffSendsDisablePinnedToTheOwnersOccurrence() = runTest {
+    @Test fun linkedSwitchBothOffPinsToTheRowsOwnOccurrenceEvenAfterAnOwnerSoloSkip() = runTest {
         val e = env(linkedAlarm("j"))
-        e.partner.set(partnerWith(ownerAlarm()))
+        // The owner's published next skips their solo-skipped 06:30; the row's own does not.
+        e.partner.set(partnerWith(PartnerAlarm("o-j", "x", 6, 30, weekdays, true, ownerNext, null, soloSkippedOccurrenceAt = future)))
         e.vm.setLinkedBoth("j")
         assertEquals(
-            listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.SendBoth("j", CommandType.DISABLE, ownerNext)),
+            listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.SendBoth("j", CommandType.DISABLE, future)),
             e.links.calls,
         )
     }
 
     @Test fun linkedSwitchBothOffNeedsAnOccurrence() = runTest {
-        val e = env(linkedAlarm("j"))
-        e.partner.set(partnerWith(ownerAlarm(next = null)))
+        val e = env(linkedAlarm("j", skip = future).copy(days = emptySet()))
         e.vm.setLinkedBoth("j")
         assertTrue(e.links.calls.isEmpty())
         e.vm.state.test {

@@ -6,7 +6,6 @@ import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.schedule.isOneShot
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import me.shawnsquire.tandem.sync.LinkRepository
-import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
 import java.time.Instant
 import java.time.ZoneId
@@ -21,12 +20,12 @@ internal fun ownerSideOn(alarm: Alarm): Boolean {
 }
 
 /**
- * Turning off is always possible just for me, and for both only with an occurrence to pin (I3).
- * Turning on just for me needs the owner's side on; for both it is an unpinned ENABLE.
+ * Turning off is always possible just for me, and for both only with an occurrence to pin (the row's own
+ * next one). Turning on just for me needs the owner's side on; for both it is an unpinned ENABLE.
  */
-internal fun linkedSwitchOptions(alarm: Alarm, owner: PartnerAlarm?): LinkedSwitchOptions =
+internal fun linkedSwitchOptions(alarm: Alarm, now: Instant, zone: ZoneId): LinkedSwitchOptions =
     if (isArmed(alarm)) {
-        LinkedSwitchOptions(justMe = true, both = owner?.nextOccurrenceAt != null)
+        LinkedSwitchOptions(justMe = true, both = nextOccurrence(alarm, now, zone) != null)
     } else {
         LinkedSwitchOptions(justMe = ownerSideOn(alarm), both = true)
     }
@@ -34,7 +33,9 @@ internal fun linkedSwitchOptions(alarm: Alarm, owner: PartnerAlarm?): LinkedSwit
 /**
  * The joiner's skip and on/off rules for a joined row, shared by the Alarms list and the Linked alarm
  * sheet. A joined row's `enabled` is the owner's, so nothing here writes it. "Both of us" is pinned to
- * the occurrence the Partner tab sees ([PartnerAlarm.nextOccurrenceAt], I3), never the row's own.
+ * the row's own [nextOccurrence], computed from the copied hour, minute and days. The owner's published next
+ * occurrence skips past a solo skip, which would pin the shared command to the wrong day. A stale local copy is
+ * simply rejected by the owner (I3).
  */
 class LinkedAlarmActions(
     private val links: LinkRepository,
@@ -54,9 +55,9 @@ class LinkedAlarmActions(
     }
 
     /** False when there is no occurrence to pin, so nothing was sent. */
-    suspend fun skipBoth(id: String, owner: PartnerAlarm?): Boolean {
-        val pin = owner?.nextOccurrenceAt ?: return false
-        links.sendBoth(id, CommandType.SKIP_NEXT, pin)
+    suspend fun skipBoth(alarm: Alarm, now: Instant, zone: ZoneId): Boolean {
+        val pin = nextOccurrence(alarm, now, zone) ?: return false
+        links.sendBoth(alarm.id, CommandType.SKIP_NEXT, pin)
         return true
     }
 
@@ -68,11 +69,11 @@ class LinkedAlarmActions(
     }
 
     /** False when turning off has no occurrence to pin, so nothing was sent. */
-    suspend fun setBoth(alarm: Alarm, owner: PartnerAlarm?, on: Boolean): Boolean {
+    suspend fun setBoth(alarm: Alarm, now: Instant, zone: ZoneId, on: Boolean): Boolean {
         if (on) {
             links.sendBoth(alarm.id, CommandType.ENABLE, null)
         } else {
-            val pin = owner?.nextOccurrenceAt ?: return false
+            val pin = nextOccurrence(alarm, now, zone) ?: return false
             links.sendBoth(alarm.id, CommandType.DISABLE, pin)
         }
         return true

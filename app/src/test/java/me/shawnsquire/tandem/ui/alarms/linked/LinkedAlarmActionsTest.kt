@@ -10,7 +10,6 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
-import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,7 +32,8 @@ class LinkedAlarmActionsTest {
         link = AlarmLink("u", "o", LinkMode.RING, null, joinerEnabled, pending, null, null, null),
     )
 
-    private fun owner(next: Instant? = ownerNext) = PartnerAlarm("o", "Gym", 6, 30, emptySet(), true, next, null)
+    private val rowNext = Instant.parse("2026-11-02T06:30:00Z")
+    private val zone = ZoneOffset.UTC
 
     private val repo = FakeAlarmRepository(emptyList())
     private val scheduler = FakeAlarmScheduler()
@@ -62,14 +62,13 @@ class LinkedAlarmActionsTest {
         assertEquals(1, scheduler.rescheduleCount)
     }
 
-    @Test fun skipBothPinsToTheOwnersOccurrence() = runTest {
-        assertTrue(actions.skipBoth("j", owner()))
-        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.SKIP_NEXT, ownerNext)), links.calls)
+    @Test fun skipBothPinsToTheRowsOwnNextOccurrence() = runTest {
+        assertTrue(actions.skipBoth(row(), now, zone))
+        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.SKIP_NEXT, rowNext)), links.calls)
     }
 
-    @Test fun skipBothSendsNothingWithoutAPin() = runTest {
-        assertFalse(actions.skipBoth("j", owner(next = null)))
-        assertFalse(actions.skipBoth("j", null))
+    @Test fun skipBothSendsNothingWithoutAnOccurrence() = runTest {
+        assertFalse(actions.skipBoth(row(enabled = false), now, zone))
         assertTrue(links.calls.isEmpty())
     }
 
@@ -93,35 +92,37 @@ class LinkedAlarmActionsTest {
         assertEquals(listOf<Call>(Call.SetJoinerEnabled("j", true)), links.calls)
     }
 
-    @Test fun bothOffSendsDisablePinnedToTheOwnersOccurrence() = runTest {
-        assertTrue(actions.setBoth(row(), owner(), on = false))
-        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.DISABLE, ownerNext)), links.calls)
+    @Test fun bothOffSendsDisablePinnedToTheRowsOwnNextOccurrence() = runTest {
+        assertTrue(actions.setBoth(row(), now, zone, on = false))
+        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.DISABLE, rowNext)), links.calls)
     }
 
-    @Test fun bothOffNeedsAPin() = runTest {
-        assertFalse(actions.setBoth(row(), owner(next = null), on = false))
-        assertFalse(actions.setBoth(row(), null, on = false))
+    @Test fun bothOffNeedsAnOccurrence() = runTest {
+        // A one-shot whose only candidate is skipped has nothing to pin.
+        val skipped = row(days = emptySet()).copy(skippedOccurrenceAt = rowNext)
+        assertFalse(actions.setBoth(skipped, now, zone, on = false))
         assertTrue(links.calls.isEmpty())
     }
 
     @Test fun bothOnSendsEnableWithoutAPin() = runTest {
-        assertTrue(actions.setBoth(row(enabled = false), null, on = true))
+        assertTrue(actions.setBoth(row(enabled = false), now, zone, on = true))
         assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.ENABLE, null)), links.calls)
     }
 
     @Test fun switchOptionsWhenOn() {
-        assertEquals(LinkedSwitchOptions(justMe = true, both = true), linkedSwitchOptions(row(), owner()))
-        assertEquals(LinkedSwitchOptions(justMe = true, both = false), linkedSwitchOptions(row(), owner(next = null)))
+        assertEquals(LinkedSwitchOptions(justMe = true, both = true), linkedSwitchOptions(row(), now, zone))
+        val noNext = row(days = emptySet()).copy(skippedOccurrenceAt = rowNext)
+        assertEquals(LinkedSwitchOptions(justMe = true, both = false), linkedSwitchOptions(noNext, now, zone))
     }
 
     @Test fun switchOptionsWhenOffOnlyOfferJustMeIfTheOwnerIsOn() {
         assertEquals(
             LinkedSwitchOptions(justMe = true, both = true),
-            linkedSwitchOptions(row(joinerEnabled = false), owner()),
+            linkedSwitchOptions(row(joinerEnabled = false), now, zone),
         )
         assertEquals(
             LinkedSwitchOptions(justMe = false, both = true),
-            linkedSwitchOptions(row(enabled = false), owner(next = null)),
+            linkedSwitchOptions(row(enabled = false), now, zone),
         )
     }
 }

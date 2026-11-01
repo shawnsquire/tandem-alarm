@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
@@ -111,7 +110,7 @@ internal fun buildAlarmsState(
                     ownerSkippingSolo = armed &&
                         partnerAlarms[it.ownerAlarmId]?.soloSkippedOccurrenceAt?.let { t -> t > now } == true,
                     pendingBoth = it.pendingBoth != null,
-                    switchOptions = linkedSwitchOptions(a, partnerAlarms[it.ownerAlarmId]),
+                    switchOptions = linkedSwitchOptions(a, now, zone),
                 )
             }
             AlarmRowState(
@@ -184,8 +183,7 @@ class AlarmsViewModel(
     fun setLinkedBoth(id: String) {
         viewModelScope.launch {
             val row = repository.get(id)?.takeIf { it.link != null } ?: return@launch
-            val owner = partnerRepository.partner.first()?.alarms?.firstOrNull { it.id == row.link?.ownerAlarmId }
-            quietly { actions.setBoth(row, owner, on = !isArmed(row)) }
+            quietly { actions.setBoth(row, clock.instant(), clock.zone, on = !isArmed(row)) }
         }
     }
 

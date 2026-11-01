@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -22,11 +21,10 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.isArmed
+import me.shawnsquire.tandem.schedule.nextOccurrence
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
-import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.sync.PartnerRepository
-import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.ui.formatDays
 import me.shawnsquire.tandem.ui.partner.CommandUiStatus
 import me.shawnsquire.tandem.ui.partner.FALLBACK_NAME
@@ -148,7 +146,8 @@ class LinkedAlarmViewModel(
                 overrideWallpaper = link.overrideWallpaperPath,
                 armed = isArmed(alarm),
                 skippedForYou = isArmed(alarm) && alarm.skippedOccurrenceAt?.let { it > now } == true,
-                bothAvailable = ownerAlarm(partner, link)?.nextOccurrenceAt != null,
+                // Pinned to the row's own next occurrence, so the partner's state is not needed.
+                bothAvailable = nextOccurrence(alarm, now, clock.zone) != null,
                 bothStatus = sent?.let { displayBoth(it, rejectedReason) },
                 askingSkip = local.askingSkip, confirmingLeave = local.confirmingLeave,
                 busy = local.busy, error = local.error,
@@ -160,9 +159,6 @@ class LinkedAlarmViewModel(
     private suspend fun titleOf(uri: String): String =
         lastTitle?.takeIf { it.first == uri }?.second ?: ringtoneTitle(uri).also { lastTitle = uri to it }
 
-    private fun ownerAlarm(partner: PartnerState?, link: AlarmLink): PartnerAlarm? =
-        partner?.alarms?.firstOrNull { it.id == link.ownerAlarmId }
-
     /**
      * True when the row is really gone. The retained [state] can still say `closed` from before a rejoin, so the
      * sheet confirms here before it dismisses.
@@ -170,9 +166,6 @@ class LinkedAlarmViewModel(
     suspend fun isRowGone(): Boolean = currentRow() == null
 
     private suspend fun currentRow(): Alarm? = repository.get(alarmId)?.takeIf { it.link != null }
-
-    private suspend fun currentOwnerAlarm(row: Alarm): PartnerAlarm? =
-        ownerAlarm(partnerRepository.partner.first(), row.link!!)
 
     fun setMode(mode: LinkMode) {
         viewModelScope.launch {
@@ -203,13 +196,12 @@ class LinkedAlarmViewModel(
         viewModelScope.launch {
             local.update { it.copy(askingSkip = false) }
             val row = currentRow()?.takeIf { isArmed(it) } ?: return@launch
-            val owner = currentOwnerAlarm(row)
-            val pin = owner?.nextOccurrenceAt ?: return@launch
+            val pin = nextOccurrence(row, clock.instant(), clock.zone) ?: return@launch
             // Published before the call so the row never reads as settled while the command is on its way.
             val command = SentBoth(CommandType.SKIP_NEXT, pin)
             sent.value = command
             try {
-                actions.skipBoth(alarmId, owner)
+                actions.skipBoth(row, clock.instant(), clock.zone)
                 sent.compareAndSetReturned(command)
             } catch (e: CancellationException) {
                 throw e
