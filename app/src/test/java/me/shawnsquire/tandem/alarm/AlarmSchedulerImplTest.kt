@@ -691,7 +691,9 @@ class AlarmSchedulerImplTest {
     @Test
     fun replayStillArmedWhenStoredSkipsAreForOtherInstants() = runTest {
         val other = replayAt.plusSeconds(86_400)
-        val stored = alarm("a", 5, 0).copy(
+        // Repeating, so tomorrow's skipped occurrence still leaves a next fire: an armed alarm with
+        // no next occurrence is not "scheduled" and would have its replay cancelled.
+        val stored = alarm("a", 5, 0, days = DayOfWeek.entries.toSet()).copy(
             soloSkippedOccurrenceAt = other,
             link = link.copy(ownerSkippedOccurrenceAt = other, pendingBoth = PendingBoth(CommandType.SKIP_NEXT, other, "c1")),
         )

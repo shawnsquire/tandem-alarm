@@ -475,10 +475,16 @@ class RingingSessionTest {
     }
 
     @Test fun pendingBothNonSkipDoesNotSuppress() = runTest {
-        val h = harness(alarms = listOf(linked(pendingBoth = PendingBoth(CommandType.DISABLE, occurrence, "c1"))))
+        val h = harness(alarms = listOf(linked(pendingBoth = PendingBoth(CommandType.UNSKIP, occurrence, "c1"))))
         h.fire(occ = occurrence)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun pendingBothDisableSuppressesThroughIsArmed() = runTest {
+        val h = harness(alarms = listOf(linked(pendingBoth = PendingBoth(CommandType.DISABLE, occurrence, "c1"))))
+        h.fire(occ = occurrence)
+        assertQuiet(h)
     }
 
     @Test fun ownerSkipForOtherOccurrenceRings() = runTest {
