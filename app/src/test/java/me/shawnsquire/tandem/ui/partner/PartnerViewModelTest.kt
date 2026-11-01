@@ -579,4 +579,41 @@ class PartnerViewModelTest {
         assertFalse(row.joining)
         assertEquals("L1", row.linkedAlarmId)
     }
+
+    @Test fun tapAfterLocalDismissAndRowRemovalSendsNothing() = runTest {
+        val e = joinedEnvWith { it }
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.alarms.delete("L1")
+        e.vm.stopRinging()
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun tapWhileLocalDismissInFlightAndRowRemovedSendsNothing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val e = joinedEnvWith { fake ->
+            object : RingingController by fake {
+                override suspend fun ringContext(alarmId: String): RingContext { gate.await(); return fake.ringContext(alarmId) }
+            }
+        }
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.alarms.delete("L1")
+        e.vm.stopRinging()
+        gate.complete(Unit)
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun tapAfterSentStopNeverDismissesLocallyOnceRowAppears() = runTest {
+        val e = env(partner(alarm("a"), ringing = partnerRing))
+        e.ringing.ringContextResult = ctx(ring = RingState("L1", "local", now, null, occurrenceAt = ringAt))
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.alarms.upsert(linkedRow("L1", "a"))
+        e.vm.stopRinging()
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        assertEquals(2, e.sender.sent.size)
+    }
 }

@@ -196,6 +196,9 @@ class PartnerViewModel(
     /** Rings stopped through [RingingController.dismissOccurrence]; they never get a STOP_RINGING command. */
     private val dismissedLocally = HashSet<String>()
 
+    /** Rings a Stop tap already sent as STOP_RINGING; they never get a local dismiss. */
+    private val sentStops = HashSet<String>()
+
     /** Which action each alarm's latest command carried; written before the Pending status is published. */
     private val sentActions = MutableStateFlow<Map<String, PartnerAction>>(emptyMap())
 
@@ -338,16 +341,17 @@ class PartnerViewModel(
 
     fun stopRinging() {
         val ring = partner.value?.ringing ?: return
-        val x = ring.occurrenceAt
-        val rowId = linkedRows.value[ring.alarmId]
-        if (x == null || rowId == null) {
-            sendStop(ring)
-            return
-        }
         // One decision per ring: a repeat tap while it runs, or after the local dismiss (the mirror
         // already sent the one STOP_RINGING), must not read the context again and fall through to a send.
         val jobKey = "stoplocal:${ring.ringId}"
         if (ring.ringId in dismissedLocally || jobs[jobKey]?.isActive == true) return
+        val x = ring.occurrenceAt
+        val rowId = linkedRows.value[ring.alarmId]
+        // A command already sent for this ring is the one STOP; never dismiss locally on top of it.
+        if (x == null || rowId == null || ring.ringId in sentStops) {
+            sendStop(ring)
+            return
+        }
         stopStatuses.update { it + (ring.ringId to CommandUiStatus.Pending) }
         jobs[jobKey] = viewModelScope.launch {
             try {
@@ -365,8 +369,10 @@ class PartnerViewModel(
         }
     }
 
-    private fun sendStop(ring: RingState) =
+    private fun sendStop(ring: RingState) {
+        sentStops += ring.ringId
         run(stopStatuses, ring.ringId, CommandType.STOP_RINGING, ring.alarmId, null, ring.ringId)
+    }
 
     private suspend fun dismissLocally(ringId: String, rowId: String, x: Instant) {
         jobs.remove("stop:$ringId")?.cancel()
