@@ -31,4 +31,13 @@
     <string name="link_invite_failed">That invite didn\'t go through</string>
     <string name="link_join">Join</string>
     <string name="link_joined_state">Joined</string>
+    <string name="link_decline">Decline</string>
+    <string name="link_notice_alarm">%1$s alarm</string>
+    <string name="link_notice_alarm_label">%1$s %2$s alarm</string>
+    <string name="link_notice_an_alarm">an alarm</string>
+    <string name="link_notice_invite">%1$s invited you to join %2$s</string>
+    <string name="link_notice_owner_deleted">%1$s deleted the %2$s you joined, so you\'ve left it</string>
+    <string name="link_notice_owner_turned_off">%1$s turned off the %2$s you joined, so it\'s off for you too</string>
+    <string name="link_notice_rejected">Your \"both of us\" change to %1$s\'s %2$s didn\'t go through</string>
+    <string name="link_notice_rejected_reason">Your \"both of us\" change to %1$s\'s %2$s didn\'t go through: %3$s</string>
 </resources>
