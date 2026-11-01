@@ -101,10 +101,20 @@ class LinkedAlarmViewModel(
             repository.alarms.collect { alarms ->
                 val pending = alarms.firstOrNull { it.id == alarmId }?.link?.pendingBoth ?: return@collect
                 sent.update { tracked ->
-                    if (tracked?.type == pending.type && tracked.occurrenceAt == pending.occurrenceAt) tracked
+                    // A settled outcome belongs to the earlier command, even if an identical one is pending again.
+                    if (tracked?.type == pending.type && tracked.occurrenceAt == pending.occurrenceAt && tracked.outcome == null) tracked
                     else SentBoth(pending.type, pending.occurrenceAt, returned = true)
                 }
             }
+        }
+        // Latch the outcome once, the first time the tracked command is no longer pending.
+        viewModelScope.launch {
+            combine(repository.alarms, sent) { alarms, tracked -> alarms.firstOrNull { it.id == alarmId } to tracked }
+                .collect { (alarm, tracked) ->
+                    if (alarm == null || tracked == null || tracked.outcome != null) return@collect
+                    val outcome = settleBoth(tracked, alarm, rejectedReason) ?: return@collect
+                    sent.update { if (it == tracked) tracked.copy(outcome = outcome) else it }
+                }
         }
     }
 
@@ -133,7 +143,8 @@ class LinkedAlarmViewModel(
             )
         }
             .mapLatest { s -> s.copy(ringtoneTitle = s.overrideRingtone?.let { titleOf(it) }.orEmpty()) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LinkedSheetState())
+            // The replay cache expires with the subscription, so a stale `closed` is not shown when the sheet reopens.
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), LinkedSheetState())
 
     private suspend fun titleOf(uri: String): String =
         lastTitle?.takeIf { it.first == uri }?.second ?: ringtoneTitle(uri).also { lastTitle = uri to it }
@@ -274,12 +285,25 @@ class LinkedAlarmViewModel(
 
     fun dismissError() = local.update { it.copy(error = null) }
 
-    /** The sheet went away: forget a settled "both of us" result so reopening starts clean. */
+    /** The sheet opened: a settled "both of us" result from earlier is stale now, a pending one stays. */
+    fun onSheetOpened() {
+        viewModelScope.launch { dropSettledSent() }
+    }
+
+    /** The sheet was dismissed (not just rotated): reset the in-page steps and forget a settled result. */
     fun onSheetClosed() {
         viewModelScope.launch {
-            local.update { SheetLocal() }
-            val row = currentRow()
-            if (row?.link?.pendingBoth == null) sent.value = null
+            // An import in flight owns busy, and clears it itself.
+            local.update { it.copy(askingSkip = false, confirmingLeave = false, error = null) }
+            dropSettledSent()
+        }
+    }
+
+    private suspend fun dropSettledSent() {
+        val row = currentRow()
+        sent.update { s ->
+            val settled = s != null && (s.outcome != null || s.failed || (s.returned && row?.let { isStillPending(s, it) } != true))
+            if (settled) null else s
         }
     }
 

@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -40,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -98,8 +100,21 @@ fun LinkedAlarmSheetRoute(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    LaunchedEffect(state.closed) { if (state.closed) onDismiss() }
-    DisposableEffect(viewModel) { onDispose { viewModel.onSheetClosed() } }
+    // Only a real dismiss resets the sheet; leaving composition also happens on rotation.
+    val dismiss = {
+        viewModel.onSheetClosed()
+        onDismiss()
+    }
+    val latestDismiss by rememberUpdatedState(dismiss)
+    // Survives rotation, so only a freshly opened sheet drops a settled result from earlier.
+    var opened by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!opened) {
+            opened = true
+            viewModel.onSheetOpened()
+        }
+    }
+    LaunchedEffect(state.closed) { if (state.closed) latestDismiss() }
 
     val systemPicker = rememberLauncherForActivityResult(PickSystemRingtone()) { uri ->
         if (uri != null) viewModel.onSystemRingtonePicked(uri)
@@ -125,7 +140,14 @@ fun LinkedAlarmSheetRoute(
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, modifier = modifier) {
+    ModalBottomSheet(onDismissRequest = dismiss, modifier = modifier) {
+        // The message field commits on dispose, so nothing is composed before the row's real values are known.
+        if (!state.loaded) {
+            Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return@ModalBottomSheet
+        }
         LinkedAlarmSheetContent(
             state = state,
             callbacks = LinkedSheetCallbacks(
@@ -143,7 +165,7 @@ fun LinkedAlarmSheetRoute(
                 onUnskip = viewModel::unskip,
                 onAskLeave = viewModel::askLeave,
                 onCancelLeave = viewModel::cancelLeave,
-                onLeave = { viewModel.leave(onDismiss) },
+                onLeave = { viewModel.leave(dismiss) },
             ),
         )
         SnackbarHost(snackbarHostState)
@@ -219,12 +241,14 @@ private fun MessageField(state: LinkedSheetState, onSetMessage: (String) -> Unit
     var text by remember(state.overrideLabel) { mutableStateOf(state.overrideLabel.orEmpty()) }
     var hadFocus by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    // Dismissing the sheet while typing must not lose the edit; the ViewModel ignores an unchanged value.
+    // Dismissing the sheet while typing must not lose the edit, but only an edit is committed: an untouched
+    // field would write the blank it started with over the stored override.
+    var dirty by remember { mutableStateOf(false) }
     val latest by rememberUpdatedState(text)
-    DisposableEffect(Unit) { onDispose { onSetMessage(latest) } }
+    DisposableEffect(Unit) { onDispose { if (dirty) onSetMessage(latest) } }
     OutlinedTextField(
         value = text,
-        onValueChange = { text = it },
+        onValueChange = { text = it; dirty = true },
         label = { Text(stringResource(R.string.link_override_message)) },
         placeholder = { Text(stringResource(R.string.link_use_partners, state.partnerName)) },
         singleLine = true,

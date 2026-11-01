@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.ui.alarms.linked
 
 import app.cash.turbine.test
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
@@ -158,10 +159,9 @@ class LinkedAlarmViewModelTest {
     }
 
     @Test fun bothOfUsStatusFollowsPendingThenTheOwnersState() = runTest {
-        val e = Env(joined())
+        // The fake only records the call, so the row carries the pending command the real sendBoth would write.
+        val e = Env(joined(link = link(pending = PendingBoth(CommandType.SKIP_NEXT, ownerNext, "c1"))))
         e.vm.skipBoth()
-        // The fake only records the call, so the pending command is written here like the real one would.
-        e.repo.updateLink("j") { it.copy(pendingBoth = PendingBoth(CommandType.SKIP_NEXT, ownerNext, "c1")) }
         assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
         e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
         assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
@@ -295,5 +295,67 @@ class LinkedAlarmViewModelTest {
         e.repo.upsert(joined(enabled = false))
         e.vm.onSheetClosed()
         assertNull(e.latest().bothStatus)
+    }
+
+    // A settled outcome is latched, so later changes to the row do not rewrite it.
+
+    private val pendingSkip = PendingBoth(CommandType.SKIP_NEXT, ownerNext, "c1")
+
+    /** Sends "both of us" on a row already carrying the pending command (the real sendBoth writes it). */
+    private suspend fun Env.sendSkipBothAndSettle(applyToRow: suspend () -> Unit) {
+        vm.skipBoth()
+        assertEquals(CommandUiStatus.Pending, latest().bothStatus)
+        applyToRow()
+    }
+
+    @Test fun aSettledOutcomeStaysAppliedWhenTheOwnerSkipIsLaterCleared() = runTest {
+        val e = Env(joined(link = link(pending = pendingSkip)))
+        e.sendSkipBothAndSettle {
+            e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
+        }
+        assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
+        e.repo.updateLink("j") { it.copy(ownerSkippedOccurrenceAt = null) }
+        assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
+    }
+
+    @Test fun aOneShotSkipStaysAppliedWhenTheOwnerTurnsTheAlarmBackOn() = runTest {
+        val e = Env(joined(days = emptySet(), link = link(pending = pendingSkip)))
+        e.sendSkipBothAndSettle {
+            e.repo.upsert(joined(days = emptySet(), enabled = false))
+        }
+        assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
+        e.repo.upsert(joined(days = emptySet(), enabled = true))
+        assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
+    }
+
+    @Test fun aSettledOutcomeIsNotShownAfterTheSheetReopens() = runTest {
+        val e = Env(joined(link = link(pending = pendingSkip)))
+        e.sendSkipBothAndSettle {
+            e.repo.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
+        }
+        assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
+        e.vm.onSheetOpened()
+        assertNull(e.latest().bothStatus)
+    }
+
+    @Test fun reopeningKeepsAStillPendingStatus() = runTest {
+        val e = Env(joined(link = link(pending = PendingBoth(CommandType.DISABLE, ownerNext, "c1"))))
+        assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
+        e.vm.onSheetOpened()
+        assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
+    }
+
+    @Test fun aClosedStateDoesNotSurviveTheSubscriptionForARejoinedRow() = runTest {
+        val e = Env(joined())
+        e.vm.state.test {
+            e.repo.delete("j")
+            assertTrue(expectMostRecentItem().closed)
+            cancelAndIgnoreRemainingEvents()
+        }
+        advanceTimeBy(6_000)
+        e.repo.upsert(joined())
+        assertFalse(e.vm.state.value.closed)
+        e.vm.onSheetOpened()
+        assertFalse(e.latest().closed)
     }
 }
