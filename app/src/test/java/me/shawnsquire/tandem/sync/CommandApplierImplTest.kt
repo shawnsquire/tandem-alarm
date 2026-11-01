@@ -21,6 +21,7 @@ import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import org.junit.Assert.assertEquals
@@ -153,6 +154,7 @@ class CommandApplierImplTest {
         val c = cmd(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1")
         e.applier.apply(c)
         assertEquals(listOf("r1"), e.ringing.dismissed)
+        assertEquals(listOf(RingOrigin.REMOTE), e.ringing.dismissOrigins)
         e.assertApplied(c)
     }
 
