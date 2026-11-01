@@ -532,14 +532,24 @@ class PartnerViewModelTest {
         assertTrue(e.sender.sent.isEmpty())
     }
 
-    @Test fun ownerRepeatTapAfterSentStopNeverDismissesLocally() = runTest {
+    @Test fun ownerRepeatTapAfterSentStopDismissesOwnCopyOnceLive() = runTest {
         val e = ownerEnv(ctx())
         e.collect(backgroundScope)
         e.vm.stopRinging()
+        // Our copy started sounding after the STOP{A, X} went out: O5 still applies.
         e.ringing.ringContextResult = ctx(ring = RingState("A", "own-ring", now, null, occurrenceAt = ringAt))
         e.vm.stopRinging()
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("A", ringAt, RingOrigin.LOCAL)), e.ringing.dismissedOccurrences)
+        assertEquals(1, e.sender.sent.size)
+    }
+
+    @Test fun ownerRepeatTapAfterSentStopResendsWhileOwnCopyIsNotLive() = runTest {
+        val e = ownerEnv(ctx())
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.vm.stopRinging()
         assertTrue(e.ringing.dismissedOccurrences.isEmpty())
-        assertEquals(2, e.sender.sent.size)
+        assertEquals(List(2) { Sent(CommandType.STOP_RINGING, "A", ringAt, null) }, e.sender.sent)
     }
 
     // The joiner's own alarm J is the slot ring and our A is merged into it.
@@ -565,7 +575,7 @@ class PartnerViewModelTest {
         assertEquals(listOf(Sent(CommandType.STOP_RINGING, "A", ringAt, null)), e.sender.sent)
     }
 
-    @Test fun ownerRepeatTapAfterMergedStopResendsTheSameStop() = runTest {
+    @Test fun ownerRepeatTapAfterMergedStopDismissesOwnCopyOnceLive() = runTest {
         val e = ownerEnv(ctx(), ring = mergedRing)
         e.collect(backgroundScope)
         e.vm.stopRinging()
@@ -573,8 +583,12 @@ class PartnerViewModelTest {
         e.repo.flow.value = partner(alarm("b"), ringing = joinerRing)
         e.ringing.ringContextResult = ctx(ring = RingState("A", "own-ring", now, null, occurrenceAt = ringAt))
         e.vm.stopRinging()
-        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
-        assertEquals(List(2) { Sent(CommandType.STOP_RINGING, "A", ringAt, null) }, e.sender.sent)
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("A", ringAt, RingOrigin.LOCAL)), e.ringing.dismissedOccurrences)
+        assertEquals(listOf(Sent(CommandType.STOP_RINGING, "A", ringAt, null)), e.sender.sent)
+        // Then nothing more for A.
+        e.vm.stopRinging()
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertEquals(1, e.sender.sent.size)
     }
 
     @Test fun ownerTapAfterLocalDismissOfMergedAlarm() = runTest {

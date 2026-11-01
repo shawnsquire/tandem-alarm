@@ -222,7 +222,7 @@ class PartnerViewModel(
     /** Stop targets dismissed through [RingingController.dismissOccurrence]; they never get a STOP_RINGING command. */
     private val dismissedLocally = HashSet<String>()
 
-    /** Stop targets a tap already sent as STOP_RINGING; they never get a local dismiss. */
+    /** Stop targets a tap already sent as STOP_RINGING; a ringId one never gets a local dismiss. */
     private val sentStops = HashSet<String>()
 
     /** Which action each alarm's latest command carried; written before the Pending status is published. */
@@ -383,8 +383,9 @@ class PartnerViewModel(
         if (target.key in dismissedLocally || jobs[jobKey]?.isActive == true) return
         val rowId = target.rowId
         val x = target.occurrenceAt
-        // A command already sent for this target is the one STOP; never dismiss locally on top of it.
-        if (x == null || rowId == null || target.key in sentStops) {
+        // A ringId STOP already sent is the one STOP; never dismiss locally on top of it. By occurrence, a
+        // live own copy still wins: a repeat STOP{A, X} reaches a member already resolved and is rejected.
+        if (x == null || rowId == null || (target.key in sentStops && !target.byOccurrence)) {
             sendStop(ring, target)
             return
         }
