@@ -1428,6 +1428,28 @@ class RingingSessionTest {
         assertEquals(1, h.finished)
     }
 
+    @Test fun resumedRingWhoseClaimLandedWhileSilentGetsItsActions() = runTest {
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")))
+        val gated = GatedSlot(h.controller)
+        val bAt = occurrence.plusSeconds(600)
+        val slot = AutoSilenceSlot(gated) { ringId, expected ->
+            gated.gate.complete(Unit) // the stuck claim writes ring-1 only now, while the ring is silent
+            repeat(10) { yield() }
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.fallback) // inert: no Stop or Snooze yet
+        advanceTimeBy(10.minutes); runCurrent()
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence, listOf(RingMember("b", bAt))), h.rawStore.state.first())
+        assertEquals(0, h.finished)
+        assertEquals(listOf("ring-1"), h.notifier.ringing) // resumed with its actions
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        assertEquals(1, h.finished)
+    }
+
     @Test fun resumedRingAutoSilencesTenMinutesLater() = runTest {
         val h = harness(alarms = listOf(alarm("a"), alarm("b")))
         val bAt = occurrence.plusSeconds(600)

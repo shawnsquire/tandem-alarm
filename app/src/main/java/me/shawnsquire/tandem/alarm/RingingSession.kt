@@ -74,6 +74,9 @@ class RingingSession(
     private var fullSurface = false
     private var surfaceAlarm: Alarm? = null
     private var surfaceDefault: String? = null
+
+    /** Whether the posted notification has Stop and Snooze (false while only the inert fallback is up). */
+    private var actionsPosted = false
     private var registeredRingId: String? = null
     @Volatile private var ownLedgerWrite = false
 
@@ -217,7 +220,9 @@ class RingingSession(
         currentCoroutineContext().ensureActive()
         if (fullSurface) {
             startRingOutputs(surfaceAlarm, surfaceDefault)
-            if (!wasFull) guarded("notifier", Unit) { notifier.showRinging(surfaceAlarm, ringId) }
+            // The refusal proves the slot holds this ring, so a claim that landed while silent
+            // (never adopted) gets its actions now.
+            if (!wasFull || !actionsPosted) showRinging(surfaceAlarm, ringId)
         } else {
             guarded("notifier", Unit) { notifier.showNotifyRinging(surfaceAlarm, ringId) }
         }
@@ -275,7 +280,7 @@ class RingingSession(
             return
         }
         observe(ringId)
-        guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
+        showRinging(alarm, ringId)
     }
 
     /**
@@ -483,10 +488,11 @@ class RingingSession(
         when {
             notify -> {
                 val shown = guarded("notifier", false) { notifier.showNotifyRinging(alarm, ringId); true }
+                actionsPosted = shown
                 // I1: a Notify ring nobody can see must still be heard.
                 if (shown) watchMembers(alarm, ringId) else ringInFull(alarm, ringId)
             }
-            claimed -> guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
+            claimed -> showRinging(alarm, ringId)
             else -> guarded("notifier", Unit) { notifier.showFallbackRinging(ringId) }
         }
         ringPosted = true
@@ -520,7 +526,13 @@ class RingingSession(
         if (silencing) return
         currentCoroutineContext().ensureActive()
         startRingOutputs(primary, default)
+        showRinging(primary, ringId)
+    }
+
+    /** The full ringing notification, with Stop and Snooze: only for a ring whose state is stored. */
+    private suspend fun showRinging(primary: Alarm?, ringId: String) {
         guarded("notifier", Unit) { notifier.showRinging(primary, ringId) }
+        actionsPosted = true
     }
 
     /**
