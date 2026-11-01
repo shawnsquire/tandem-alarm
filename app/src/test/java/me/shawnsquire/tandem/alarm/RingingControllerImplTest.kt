@@ -31,20 +31,30 @@ import java.time.Instant
 
 class RecordingNotifier : RingingNotifier {
     val ringing = mutableListOf<String>()
-    val ringingLabels = mutableListOf<String?>()
+    val ringingLabels = mutableListOf<List<String>>()
     val snoozed = mutableListOf<Pair<String, Instant>>()
     val cancelledSnoozed = mutableListOf<String>()
     val cancelSnoozedCount get() = cancelledSnoozed.size
-    override fun showRinging(alarm: Alarm?, ringId: String, label: String?) { ringing += ringId; ringingLabels += label }
+    override fun showRinging(alarm: Alarm?, ringId: String, labels: List<String>) { ringing += ringId; ringingLabels += labels }
     val fallback = mutableListOf<String>()
     override fun showFallbackRinging(ringId: String) { fallback += ringId }
+    /** Whether the Notify surface can alert; false and [showNotifyRinging] posts nothing, a Notify relabel reports it too. */
+    var notifyCanAlert = true
     val notify = mutableListOf<String>()
-    val notifyLabels = mutableListOf<String?>()
-    override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) { notify += ringId; notifyLabels += label }
-    /** [updateRingingLabel] calls: (ringId, label, notifySurface). */
-    val relabels = mutableListOf<Triple<String, String?, Boolean>>()
-    override fun updateRingingLabel(alarm: Alarm?, ringId: String, label: String?, notifySurface: Boolean) {
-        relabels += Triple(ringId, label, notifySurface)
+    val notifyLabels = mutableListOf<List<String>>()
+    /** The Notify posts asked to alert again (an un-silence). */
+    val notifyAlertsAgain = mutableListOf<String>()
+    override fun showNotifyRinging(alarm: Alarm?, ringId: String, labels: List<String>, alertAgain: Boolean): Boolean {
+        if (!notifyCanAlert) return false
+        notify += ringId; notifyLabels += labels
+        if (alertAgain) notifyAlertsAgain += ringId
+        return true
+    }
+    /** [updateRingingLabel] calls: (ringId, labels, notifySurface). */
+    val relabels = mutableListOf<Triple<String, List<String>, Boolean>>()
+    override fun updateRingingLabel(alarm: Alarm?, ringId: String, labels: List<String>, notifySurface: Boolean): Boolean {
+        relabels += Triple(ringId, labels, notifySurface)
+        return !notifySurface || notifyCanAlert
     }
     val cancelledRinging = mutableListOf<String>()
     override fun cancelRinging(ringId: String) { cancelledRinging += ringId }

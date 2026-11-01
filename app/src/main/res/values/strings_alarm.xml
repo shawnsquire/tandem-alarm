@@ -7,6 +7,8 @@
     <string name="snooze_channel_name">Snoozed alarms</string>
     <string name="snooze_channel_description">Shown while an alarm is snoozed</string>
     <string name="alarm_notification_title">Alarm</string>
+    <!-- Between the labels of alarms ringing together, on one line of the notification. Quoted to keep the space. -->
+    <string name="alarm_label_separator">", "</string>
     <string name="alarm_action_stop">Stop</string>
     <string name="alarm_action_snooze">Snooze</string>
     <string name="alarm_action_dismiss">Dismiss</string>

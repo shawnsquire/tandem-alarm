@@ -3,7 +3,9 @@ package me.shawnsquire.tandem.alarm
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.provider.Settings
 import me.shawnsquire.tandem.R
@@ -12,6 +14,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Notification-manager implementation of [RingingNotifier], plus the quiet prep notification.
@@ -22,6 +25,9 @@ class AndroidRingingNotifier(
     private val onRinging: (ringId: String, id: Int, notification: Notification) -> Unit = { _, _, _ -> },
 ) : RingingNotifier {
     private val manager = context.getSystemService(NotificationManager::class.java)
+
+    /** The Notify id posted for each ring this instance shows (see [showNotifyRinging]); the service's instance posts them all. */
+    private val notifyUp = ConcurrentHashMap<String, Int>()
 
     fun ensureChannels() {
         val alarm = NotificationChannel(ALARM_CHANNEL, context.getString(R.string.alarm_channel_name), NotificationManager.IMPORTANCE_HIGH).apply {
@@ -73,10 +79,16 @@ class AndroidRingingNotifier(
 
     fun cancelPrep() = manager.cancel(PREP_NOTIFICATION_ID)
 
-    /** Both surfaces' ids: a ring upgraded from Notify may have left either one. */
+    /** Every id of both surfaces, statelessly: a ring upgraded from Notify may have left any of them, and another instance may ask. */
     override fun cancelRinging(ringId: String) {
         manager.cancel(ringingNotificationId(ringId))
+        cancelNotify(ringId)
+    }
+
+    private fun cancelNotify(ringId: String) {
+        notifyUp.remove(ringId)
         manager.cancel(notifyNotificationId(ringId))
+        manager.cancel(notifyAgainNotificationId(ringId))
     }
 
     /**
@@ -84,21 +96,23 @@ class AndroidRingingNotifier(
      * it launches the full-screen intent), it becomes the foreground one through [onRinging], and
      * only then is the Notify one cancelled (the system won't remove the current foreground notification).
      */
-    override fun showRinging(alarm: Alarm?, ringId: String, label: String?) {
-        post(label, ringId, withActions = true)
-        manager.cancel(notifyNotificationId(ringId))
+    override fun showRinging(alarm: Alarm?, ringId: String, labels: List<String>) {
+        post(labels, ringId, withActions = true)
+        cancelNotify(ringId)
     }
 
-    override fun showFallbackRinging(ringId: String) = post(null, ringId, withActions = false)
+    override fun showFallbackRinging(ringId: String) = post(emptyList(), ringId, withActions = false)
 
     /**
      * Re-posts under the id already up, so it is an update of that notification: only-alert-once
-     * keeps it from alerting again, and only a fresh post launches the full-screen intent (see
-     * [post]; the activity is singleInstance besides). [onRinging] gets the new one, so the service
-     * re-promotes the current label. The other surface's notification is left alone.
+     * keeps it from alerting again, and it carries no full-screen intent (see [post]). [onRinging]
+     * gets the new one, so the service re-promotes the current label. The other surface's
+     * notification is left alone.
      */
-    override fun updateRingingLabel(alarm: Alarm?, ringId: String, label: String?, notifySurface: Boolean) {
-        if (notifySurface) showNotifyRinging(alarm, ringId, label) else post(label, ringId, withActions = true)
+    override fun updateRingingLabel(alarm: Alarm?, ringId: String, labels: List<String>, notifySurface: Boolean): Boolean {
+        if (notifySurface) return showNotifyRinging(alarm, ringId, labels)
+        post(labels, ringId, withActions = true, fullScreen = false)
+        return true
     }
 
     /**
@@ -108,28 +122,65 @@ class AndroidRingingNotifier(
      * category Notification.CATEGORY_ALARM".
      * https://developer.android.com/reference/android/app/Notification#CATEGORY_ALARM
      * https://developer.android.com/reference/android/app/NotificationManager#INTERRUPTION_FILTER_ALARMS
+     *
+     * Posts nothing and returns false when it couldn't alert ([notifyCanAlert]). Otherwise an update
+     * of the one up, except with [alertAgain]: only-alert-once plays sound "only if the notification
+     * is not already showing", so that is a fresh post under [ringId]'s other Notify id, made the
+     * foreground one through [onRinging] before the old one is cancelled (as [showRinging] upgrades).
+     * https://developer.android.com/reference/android/app/Notification.Builder#setOnlyAlertOnce(boolean)
      */
-    override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) {
+    override fun showNotifyRinging(alarm: Alarm?, ringId: String, labels: List<String>, alertAgain: Boolean): Boolean {
         ensureChannels()
-        val notification = builder(NOTIFY_CHANNEL, label, AlarmIntents.showPendingIntent(context))
+        if (!notifyCanAlert()) return false
+        val notification = builder(NOTIFY_CHANNEL, labels, AlarmIntents.showPendingIntent(context))
             .addAction(stopAction(ringId))
             .addAction(snoozeAction())
             .build()
-        val id = notifyNotificationId(ringId)
+        val up = notifyUp[ringId]
+        val first = notifyNotificationId(ringId)
+        val id = when {
+            up == null -> first
+            !alertAgain -> up
+            up == first -> notifyAgainNotificationId(ringId)
+            else -> first
+        }
         manager.notify(id, notification)
+        notifyUp[ringId] = id
         onRinging(ringId, id, notification)
+        if (up != null && up != id) manager.cancel(up)
+        return true
     }
 
-    private fun post(label: String?, ringId: String, withActions: Boolean) {
+    /**
+     * Whether a post to the Notify channel would be seen and heard; notify() doesn't throw when it
+     * wouldn't. Asks the app-level state (the POST_NOTIFICATIONS grant, and areNotificationsEnabled:
+     * "whether notifications from the calling package are enabled") and the channel as the user left
+     * it: below IMPORTANCE_DEFAULT ("makes noise") it is silent at best (IMPORTANCE_LOW "is not
+     * audibly intrusive", the system's Silent setting; IMPORTANCE_NONE "does not show in the shade"),
+     * and a channel whose sound was set to none makes none either.
+     * https://developer.android.com/reference/android/app/NotificationManager#areNotificationsEnabled()
+     * https://developer.android.com/reference/android/app/NotificationChannel#getImportance()
+     * https://developer.android.com/reference/android/app/NotificationChannel#getSound()
+     */
+    private fun notifyCanAlert(): Boolean {
+        if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
+        if (!manager.areNotificationsEnabled()) return false
+        val channel = manager.getNotificationChannel(NOTIFY_CHANNEL) ?: return false
+        return channel.importance >= NotificationManager.IMPORTANCE_DEFAULT && channel.sound != null
+    }
+
+    /** [fullScreen] is false for a relabel: an update of the notification already up must not launch the screen again. */
+    private fun post(labels: List<String>, ringId: String, withActions: Boolean, fullScreen: Boolean = true) {
         ensureChannels()
         val activity = AlarmIntents.ringingActivityPendingIntent(context)
         // A fresh post (new id, IMPORTANCE_HIGH channel) is what launches the full-screen intent; the
         // setFullScreenIntent docs describe it as "an intent to launch instead of posting the
         // notification to the status bar", and an update of an existing notification isn't guaranteed to
-        // trigger it. So this is posted only once the session has decided to ring, never at service start.
+        // trigger it, or not to. So this is posted only once the session has decided to ring, never at
+        // service start, and a relabel leaves it out.
         // https://developer.android.com/reference/android/app/Notification.Builder#setFullScreenIntent(android.app.PendingIntent,%20boolean)
-        val notification = builder(ALARM_CHANNEL, label, activity)
-            .setFullScreenIntent(activity, true)
+        val notification = builder(ALARM_CHANNEL, labels, activity)
+            .apply { if (fullScreen) setFullScreenIntent(activity, true) }
             .apply { if (withActions) { addAction(stopAction(ringId)); addAction(snoozeAction()) } }
             .build()
         val id = ringingNotificationId(ringId)
@@ -137,12 +188,26 @@ class AndroidRingingNotifier(
         onRinging(ringId, id, notification)
     }
 
-    /** What both ringing surfaces share; only-alert-once so the foreground re-post doesn't alert again. */
-    private fun builder(channel: String, label: String?, contentIntent: android.app.PendingIntent): Notification.Builder {
+    /**
+     * What both ringing surfaces share; only-alert-once so the foreground re-post doesn't alert again.
+     * Several labels are joined on the one collapsed line and listed one per line when expanded.
+     * https://developer.android.com/reference/android/app/Notification.BigTextStyle
+     */
+    private fun builder(channel: String, labels: List<String>, contentIntent: android.app.PendingIntent): Notification.Builder {
+        val shown = labels.filter { it.isNotBlank() }
         return Notification.Builder(context, channel)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(context.getString(R.string.alarm_notification_title))
-            .apply { if (!label.isNullOrBlank()) setContentText(label) }
+            .apply {
+                when (shown.size) {
+                    0 -> Unit
+                    1 -> setContentText(shown.single())
+                    else -> {
+                        setContentText(shown.joinToString(context.getString(R.string.alarm_label_separator)))
+                        setStyle(Notification.BigTextStyle().bigText(shown.joinToString("\n")))
+                    }
+                }
+            }
             .setCategory(Notification.CATEGORY_ALARM)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)
@@ -191,6 +256,14 @@ class AndroidRingingNotifier(
             val ringing = ringingNotificationId(ringId)
             var id = avoidReserved("$ringId/notify".hashCode())
             while (id == ringing) id = avoidReserved(id + 1)
+            return id
+        }
+
+        /** The Notify surface's other id, so a re-alert is a fresh post; never the ringing or the first Notify id. */
+        fun notifyAgainNotificationId(ringId: String): Int {
+            val taken = setOf(ringingNotificationId(ringId), notifyNotificationId(ringId))
+            var id = avoidReserved("$ringId/notify-again".hashCode())
+            while (id in taken) id = avoidReserved(id + 1)
             return id
         }
 

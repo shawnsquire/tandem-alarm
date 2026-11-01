@@ -336,7 +336,7 @@ class RingingSessionTest {
 
     @Test fun notifierErrorStillRingsAndKeepsRinging() = runTest {
         val bad = object : RingingNotifier by RecordingNotifier() {
-            override fun showRinging(alarm: Alarm?, ringId: String, label: String?) { throw NoClassDefFoundError("x") }
+            override fun showRinging(alarm: Alarm?, ringId: String, labels: List<String>) { throw NoClassDefFoundError("x") }
         }
         val (h, session) = errorHarness(notifier = bad)
         assertKeepsRingingThenAutoSilences(h, session, this)
@@ -1104,11 +1104,12 @@ class RingingSessionTest {
         slot: RingSlot,
         ringId: String = "ring-1",
         isArmed: (Alarm) -> Boolean = ::isArmed,
+        cache: LinkedMediaCache = DefaultLinkedMediaCache,
     ) = RingingSession(
         h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
         slot, h.sound, h.vibration, h.notifier, backgroundScope,
         StandardTestDispatcher(testScheduler), { h.clock }, { ringId },
-        firedLedger = h.fired, liveRings = h.live, isArmed = isArmed, onFinished = { h.finished++ },
+        firedLedger = h.fired, linkedMediaCache = cache, liveRings = h.live, isArmed = isArmed, onFinished = { h.finished++ },
     )
 
     @Test fun stuckClaimFireVibratesAtOnceAndRingsWithinTwoSeconds() = runTest {
@@ -1508,8 +1509,26 @@ class RingingSessionTest {
         runCurrent()
         advanceTimeBy(10.minutes + 1.seconds); runCurrent()
         assertEquals(listOf("ring-1", "ring-1"), h.notifier.notify)
+        assertEquals(listOf("ring-1"), h.notifier.notifyAlertsAgain) // the re-post alerts: the ring sounds on for b
         assertTrue(h.sound.starts.isEmpty())
         assertEquals(0, h.vibration.starts)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun notifyRingResumedWhenTheNotifySurfaceCantAlertComesBackInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        val bAt = occurrence.plusSeconds(600)
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            h.notifier.notifyCanAlert = false // notifications blocked while the ring was up
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
         assertEquals(0, h.finished)
     }
 
@@ -1877,7 +1896,7 @@ class RingingSessionTest {
     @Test fun notifyNotifierFailureRingsInFull() = runTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
         val throwing = object : RingingNotifier by h.notifier {
-            override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) = throw IllegalStateException("notification")
+            override fun showNotifyRinging(alarm: Alarm?, ringId: String, labels: List<String>, alertAgain: Boolean): Boolean = throw IllegalStateException("notification")
         }
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
@@ -1900,6 +1919,51 @@ class RingingSessionTest {
         assertTrue(h.notifier.notify.isEmpty())
     }
 
+    @Test fun notifyRingThatCantAlertRingsInFull() = runTest {
+        // Notifications off, or the channel blocked or silenced: NotificationManager.notify() doesn't
+        // throw, so only the notifier can say the post would go unseen and unheard.
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        h.notifier.notifyCanAlert = false
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertTrue(h.notifier.notify.isEmpty())
+    }
+
+    @Test fun notifyRingRelabelledWhenItCantAlertAnyMoreRingsInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        h.notifier.notifyCanAlert = false
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertEquals(listOf(listOf("a", "b")), h.notifier.ringingLabels)
+    }
+
+    @Test fun aRingRelabelledToNoLabelNeverShowsTheDismissedPrimarysLabelAgain() = runTest {
+        // a (labelled) is dismissed on the partner's phone; b, promoted, has no label. When c (Ring,
+        // no label) then upgrades the ring, the full notification must not name a.
+        val h = harness(
+            alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b").copy(label = ""), alarm("c").copy(label = "")),
+        )
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(Triple("ring-1", emptyList<String>(), true), h.notifier.relabels.last())
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("c", "ring-C", h.clock, null, bOccurrence.plusSeconds(60))))
+        runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertEquals(listOf(emptyList<String>()), h.notifier.ringingLabels)
+    }
+
     // ---- Linked media ----
 
     @Test fun linkedRingSoundsTheCacheCandidatesInOrder() = runTest {
@@ -1909,7 +1973,7 @@ class RingingSessionTest {
         runCurrent()
         // The sound adapter walks these in order, so an unreadable override falls to the owner's media.
         assertEquals(listOf(listOf("/override/unreadable", "/owner/good")), h.sound.starts)
-        assertEquals(listOf<String?>("Owner"), h.notifier.ringingLabels)
+        assertEquals(listOf(listOf("Owner")), h.notifier.ringingLabels)
     }
 
     @Test fun neverReturningCacheStillStartsSoundFromTheFallbackWithinTheTimeout() = runTest {
@@ -1934,7 +1998,7 @@ class RingingSessionTest {
         val h = harness(alarms = listOf(a))
         h.fire(occ = occurrence)
         runCurrent()
-        assertEquals(listOf<String?>("Gym"), h.notifier.ringingLabels)
+        assertEquals(listOf(listOf("Gym")), h.notifier.ringingLabels)
     }
 
     @Test fun notifyNotificationShowsTheResolvedLabel() = runTest {
@@ -1942,7 +2006,7 @@ class RingingSessionTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)), cache = StubMediaCache(media))
         h.fire(occ = occurrence)
         runCurrent()
-        assertEquals(listOf<String?>("Owner label"), h.notifier.notifyLabels)
+        assertEquals(listOf(listOf("Owner label")), h.notifier.notifyLabels)
     }
 
     @Test fun upgradedNotifyRingSoundsTheCacheCandidatesAndLabelOfThePrimary() = runTest {
@@ -1953,7 +2017,7 @@ class RingingSessionTest {
         join(h, "b", bOccurrence)
         runCurrent()
         assertEquals(listOf(listOf("/owner/tone")), h.sound.starts)
-        assertEquals(listOf<String?>("Owner label"), h.notifier.ringingLabels)
+        assertEquals(listOf(listOf("Owner label")), h.notifier.ringingLabels)
     }
 
     @Test fun notifyRingWhoseStateReadFailsUpgradesToRing() = runTest {
@@ -1973,7 +2037,7 @@ class RingingSessionTest {
 
     @Test fun aMergeRelabelsTheRingingNotificationWithoutANewPost() = runTest {
         val h = mergedRing()
-        assertEquals(listOf(Triple("ring-1", "a, b" as String?, false)), h.notifier.relabels)
+        assertEquals(listOf(Triple("ring-1", listOf("a", "b"), false)), h.notifier.relabels)
         assertEquals(listOf("ring-1"), h.notifier.ringing) // the one full-screen post
         assertEquals(0, h.finished)
     }
@@ -1982,7 +2046,7 @@ class RingingSessionTest {
         val h = mergedRing()
         h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE)
         runCurrent()
-        assertEquals(Triple("ring-1", "b" as String?, false), h.notifier.relabels.last())
+        assertEquals(Triple("ring-1", listOf("b"), false), h.notifier.relabels.last())
         assertEquals(2, h.notifier.relabels.size)
         assertEquals(listOf("ring-1"), h.notifier.ringing)
     }
@@ -2000,7 +2064,7 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
         runCurrent()
-        assertEquals(listOf(Triple("ring-1", "a, b" as String?, true)), h.notifier.relabels)
+        assertEquals(listOf(Triple("ring-1", listOf("a", "b"), true)), h.notifier.relabels)
         assertTrue(h.notifier.ringing.isEmpty()) // still Notify: no full-screen post
     }
 
@@ -2008,6 +2072,6 @@ class RingingSessionTest {
         val h = mergedRing()
         h.controller.dismissOccurrence("b", bOccurrence, RingOrigin.REMOTE)
         runCurrent()
-        assertEquals(Triple("ring-1", "a" as String?, false), h.notifier.relabels.last())
+        assertEquals(Triple("ring-1", listOf("a"), false), h.notifier.relabels.last())
     }
 }

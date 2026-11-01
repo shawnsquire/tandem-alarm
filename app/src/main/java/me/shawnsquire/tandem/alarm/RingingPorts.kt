@@ -103,10 +103,14 @@ interface AlarmVibration {
     fun stop()
 }
 
-/** UI side effects of ringing. Implemented with NotificationManager in the Android layer. */
+/**
+ * UI side effects of ringing. Implemented with NotificationManager in the Android layer. A ringing
+ * notification's [labels] are every member's resolved label (a linked ring takes it from its
+ * override or owner), primary first and none blank; the notifier joins them for display.
+ */
 interface RingingNotifier {
-    /** Update the foreground notification: [label] (the resolved one, which a linked ring takes from its override or owner) plus Stop and Snooze actions. */
-    fun showRinging(alarm: Alarm?, ringId: String, label: String?)
+    /** Update the foreground notification: [labels] plus Stop and Snooze actions. */
+    fun showRinging(alarm: Alarm?, ringId: String, labels: List<String>)
 
     /**
      * Ringing notification for a fallback ring with no stored RingState: full-screen and content
@@ -117,15 +121,21 @@ interface RingingNotifier {
     /**
      * Foreground notification for a Notify-mode ring: heads-up with Stop and Snooze, no full-screen
      * intent. A later [showRinging] for the same [ringId] replaces it with the full ringing notification.
+     * [alertAgain] (an un-silence) makes it alert again even though one is already up.
+     *
+     * Returns false, having posted nothing, when the post couldn't alert (notifications off for the
+     * app, the channel blocked or silent): the Notify surface has no sound of its own, so the caller
+     * rings in full instead (I1).
      */
-    fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) {}
+    fun showNotifyRinging(alarm: Alarm?, ringId: String, labels: List<String>, alertAgain: Boolean = false): Boolean
 
     /**
-     * Shows [label] on [ringId]'s posted notification, the Notify one when [notifySurface]: a merge
+     * Shows [labels] on [ringId]'s posted notification, the Notify one when [notifySurface]: a merge
      * or a promotion changed who rings. The same notification updated in place, never a new one: it
-     * must not alert again or launch the full-screen intent again.
+     * must not alert again or launch the full-screen intent again. False, as [showNotifyRinging],
+     * when the Notify surface can't alert any more; always true for the full one.
      */
-    fun updateRingingLabel(alarm: Alarm?, ringId: String, label: String?, notifySurface: Boolean) {}
+    fun updateRingingLabel(alarm: Alarm?, ringId: String, labels: List<String>, notifySurface: Boolean): Boolean
 
     /** Removes [ringId]'s ringing notification (a stale ring cleared without a session to do it). */
     fun cancelRinging(ringId: String) {}

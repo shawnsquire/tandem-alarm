@@ -80,8 +80,11 @@ class RingingSession(
 
     /** The alarm ids (primary first) the posted label names; null until known. See [relabelIfChanged]. */
     private var labelledIds: List<String>? = null
-    /** Every member's label, joined, once a merge or promotion changed who rings; posted in place of [surfaceMedia]'s. */
-    private var joinedLabel: String? = null
+    /**
+     * Every member's label once a merge or promotion changed who rings; posted in place of
+     * [surfaceMedia]'s. Empty when the members have none: relabelled to nothing is not "never relabelled".
+     */
+    private var relabelled: List<String>? = null
     private var relabelJob: Job? = null
 
     /** Whether the posted notification has Stop and Snooze (false while only the inert fallback is up). */
@@ -220,8 +223,9 @@ class RingingSession(
 
     /**
      * A member joined while auto-silence waited: the ring sounds on for it, on its surface (Ring:
-     * sound and vibration; Notify: the notification posted again; a Notify ring upgraded while
-     * silent comes back in full), observed again, with a fresh [AUTO_SILENCE] from now.
+     * sound and vibration; Notify: the notification posted so it alerts again, or in full if it
+     * can't; a Notify ring upgraded while silent comes back in full), observed again, with a fresh
+     * [AUTO_SILENCE] from now.
      */
     private suspend fun unsilence(ringId: String, wasFull: Boolean) {
         if (finished) return
@@ -233,7 +237,8 @@ class RingingSession(
             // (never adopted) gets its actions now.
             if (!wasFull || !actionsPosted) showRinging(surfaceAlarm, ringId)
         } else {
-            guarded("notifier", Unit) { notifier.showNotifyRinging(surfaceAlarm, ringId, surfaceLabel(surfaceAlarm)) }
+            val shown = guarded("notifier", false) { notifier.showNotifyRinging(surfaceAlarm, ringId, surfaceLabels(surfaceAlarm), alertAgain = true) }
+            if (!shown) ringInFull(surfaceAlarm, ringId) // I1, as at the first post
         }
         // Before observing: on an immediate dispatcher the first look runs inside observe(), and a
         // re-arm there must replace this timer, not one this line would then orphan.
@@ -479,7 +484,8 @@ class RingingSession(
      * Two surfaces for the same session. Ring: full-screen notification, looping sound and
      * vibration. Notify (a claimed ring whose only member is a Notify link): a heads-up notification
      * whose channel alerts once, no looping sound or vibration. A ring without a claim is always
-     * full (I1), and so is a Notify ring whose notification couldn't be posted.
+     * full (I1), and so is a Notify ring whose notification couldn't be posted or couldn't alert
+     * (notifications off, the channel blocked or silent: notify() itself never says).
      */
     private suspend fun ring(alarm: Alarm?, ringId: String, observe: Boolean, fire: Pair<String, Instant>? = null) {
         val notify = observe && isNotifyLink(alarm)
@@ -498,7 +504,7 @@ class RingingSession(
         val claimed = observe || lateClaimed
         when {
             notify -> {
-                val shown = guarded("notifier", false) { notifier.showNotifyRinging(alarm, ringId, surfaceLabel(alarm)); true }
+                val shown = guarded("notifier", false) { notifier.showNotifyRinging(alarm, ringId, surfaceLabels(alarm)) }
                 actionsPosted = shown
                 // I1: a Notify ring nobody can see must still be heard.
                 if (shown) watchMembers(alarm, ringId) else ringInFull(alarm, ringId)
@@ -537,7 +543,8 @@ class RingingSession(
      */
     private suspend fun ringInFull(primary: Alarm?, ringId: String) {
         val media = resolveMedia(primary, readDefaultRingtone())
-        if (finished) return
+        // Once only: the member watch and a relabel that can't alert may both get here, each across the resolve.
+        if (finished || fullSurface) return
         // Recorded even while silencing: an un-silence then restarts the full surface.
         fullSurface = true
         surfaceAlarm = primary
@@ -550,18 +557,20 @@ class RingingSession(
 
     /** The full ringing notification, with Stop and Snooze: only for a ring whose state is stored. */
     private suspend fun showRinging(primary: Alarm?, ringId: String) {
-        guarded("notifier", Unit) { notifier.showRinging(primary, ringId, surfaceLabel(primary)) }
+        guarded("notifier", Unit) { notifier.showRinging(primary, ringId, surfaceLabels(primary)) }
         actionsPosted = true
     }
 
     /** What the notification shows: every member's label once members changed, else the surface's own. */
-    private fun surfaceLabel(primary: Alarm?): String? = joinedLabel ?: surfaceMedia?.label ?: primary?.label
+    private fun surfaceLabels(primary: Alarm?): List<String> =
+        relabelled ?: listOfNotNull((surfaceMedia?.label ?: primary?.label)?.takeIf { it.isNotBlank() })
 
     /**
      * A merge or a promotion changed who rings ([s]'s primary or merged alarms differ from what the
      * label names): the notification is updated in place with every member's label, resolved as the
      * screen does, each guarded and all of it bounded by [RELABEL_TIMEOUT]. Latest wins. The label is
-     * kept for a later post (an un-silence, a Notify ring going full) even when not posted now.
+     * kept for a later post (an un-silence, a Notify ring going full) even when not posted now. A
+     * Notify ring that can't alert any more goes full (I1).
      */
     private fun relabelIfChanged(ringId: String, s: RingState) {
         val ids = listOf(s.alarmId) + s.merged.map { it.alarmId }
@@ -572,9 +581,11 @@ class RingingSession(
             val content = guarded("member labels", null as RingScreenContent?) {
                 withTimeoutOrNull(RELABEL_TIMEOUT) { ringScreenContent(s, { alarmRepository.get(it) }, linkedMediaCache, null, null, ioDispatcher) }
             } ?: return@launch
-            joinedLabel = content.labels.joinToString(LABEL_SEPARATOR).ifBlank { null }
+            relabelled = content.labels
             if (finished || silencing || !actionsPosted) return@launch
-            guarded("notifier", Unit) { notifier.updateRingingLabel(surfaceAlarm, ringId, joinedLabel, notifySurface = !fullSurface) }
+            val notify = !fullSurface
+            val shown = guarded("notifier", !notify) { notifier.updateRingingLabel(surfaceAlarm, ringId, content.labels, notifySurface = notify) }
+            if (notify && !shown) ringInFull(surfaceAlarm, ringId)
         }.also { jobs += it }
     }
 
@@ -671,7 +682,6 @@ class RingingSession(
         val DISMISS_TIMEOUT = 5.seconds
         /** All of a relabel's reads and resolves; past it the notification keeps its old label. */
         val RELABEL_TIMEOUT = 2.seconds
-        const val LABEL_SEPARATOR = ", "
     }
 }
 
