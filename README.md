@@ -135,16 +135,16 @@ Run on both phones. The linked-alarm items need two phones paired with each othe
 - [ ] Snooze an alarm, then stop it from the partner: the pending snooze is cancelled.
 - [ ] A one-shot alarm turns itself off after it rings.
 - [ ] A custom ringtone file plays, and the per-alarm wallpaper shows on the lock screen.
-- [ ] Merged rings at the same minute: set an alarm on B for a minute from now and join A's alarm for the same minute. Both phones ring. On each phone the ringing screen lists both labels and one sound plays. Dismiss on B: A's joined alarm stops too.
+- [ ] Merged rings at the same minute: set an alarm on B for a minute from now and join A's alarm for the same minute. Both phones ring. On B, the ringing screen lists both labels and one sound plays. A rings its one alarm. Dismiss on B: A's alarm stops too.
 - [ ] Mirrored dismiss while the other phone dozes: force-idle phone A (`adb shell dumpsys deviceidle force-idle`), ring the joined alarm, dismiss it on B. A goes quiet. A shows "B dismissed" briefly, then closes. A sends nothing back.
-- [ ] Both phones offline (airplane mode): the joined alarm still rings on both at the owner's time. Dismiss on B while offline, then turn the network back on. A's ring stops, or the command is rejected as stale if A's ring has already ended.
+- [ ] Both phones offline (airplane mode): the joined alarm still rings on both at the owner's time. Dismiss on B, then turn the network back on. A keeps ringing until it is dismissed locally or auto-silences after 10 minutes. On reconnect, B's queued stop ends A's ring if it is still sounding. If A's ring has already ended, the stop is rejected as already resolved.
 - [ ] Reboot before unlock: reboot phone B and leave it locked. The joined alarm rings. Dismiss it, then unlock. B sends the dismiss after unlock and A's ring stops, or the command is rejected as stale.
 - [ ] An 11 pm skip with the joiner dozing: the night before, set a 6:30 alarm on A and join it from B. At 11 pm skip it for both of us on A, then force-idle B. In the morning B does not ring. The pre-fire read caught the skip. If the read fails or takes more than 3 seconds, B rings.
 - [ ] Notify mode: set the link on B to Notify. The alarm shows a heads-up notification with Snooze and Stop, plays the channel's sound once and does not open the ringing screen. Stop on B stops A. It goes quiet by itself after 10 minutes.
-- [ ] Notify heads-up while locked and while unlocked: while unlocked, the notification appears as a heads-up banner. While locked, it shows on the lock screen. Android only shows a heads-up banner on an unlocked phone.
+- [ ] Notify heads-up while locked and while unlocked: while unlocked, the notification appears as a heads-up pop-up. While locked, it sits on the lock screen and never launches the ringing screen. Android shows the pop-up only on an unlocked phone.
 - [ ] Notify channel set to Silent: in system settings, set the "Linked alarm notifications" channel to Silent. The linked alarm rings in full, since a Notify alarm that cannot alert rings.
 - [ ] A Ring alarm merging into a Notify ring: while a Notify ring is sounding on B, let one of B's own Ring alarms fire. B switches to the full ringing screen and sound, with both labels listed.
-- [ ] Three alarms 5 minutes apart: set three alarms on one phone at X, X+5 and X+10 minutes, at least one of them joined. They merge into one ring. Each alarm gets 10 minutes counted from when it joined, so the ring ends 10 minutes after the last one.
+- [ ] Three alarms 5 minutes apart: set three alarms on one phone at X, X+5 and X+10 minutes. Own and joined alarms both merge into one ring. Each alarm gets 10 minutes counted from when it joined, so the ring ends 10 minutes after the last one.
 - [ ] Relabel without relaunch: while a ring is sounding, let another alarm merge in. The labels and notification update, and the ringing screen does not relaunch or flicker.
 
 ## Known limitations
@@ -154,5 +154,5 @@ Run on both phones. The linked-alarm items need two phones paired with each othe
 - If the alarm list can't be read when alarms are re-armed (for example after a reboot), each alarm is re-armed for its recorded time from a small record. A repeating alarm armed this way rings that once, and its next occurrence isn't armed until a later run that can read the alarm list, normally the next app start after unlock.
 - Daylight saving: an alarm set for a time that does not exist (02:30 on the spring-forward night) rings at 03:30. An alarm set for a time that happens twice rings at the first one.
 - A merged ring that is snoozed shows one snoozed notification for the whole group. If the group record fails to save and the process dies before a later save succeeds, a stale record can make one Dismiss end several snoozes. This needs a SharedPreferences write failure.
-- If a member joins a merged ring between an un-silence (a late member re-arming auto-silence) and the first time the ring is observed, the new member may be missing from what the ring reports at that moment.
-- After a failed snooze claim, the snoozed group notification can stay on screen until it is dismissed by hand.
+- If a member joins a Notify ring in the instant after a late member re-arms auto-silence, before the ring is first re-read, that member's alarm joins quietly: its label shows, but it gets no heads-up or chime of its own.
+- If a snooze claim fails or times out for a merged ring's member other than its first, the group's "Snoozed until" notification stays up (it is ongoing, with a Dismiss button) while the alarm rings. Tap Dismiss, or it clears when the group's first member resumes or the next cleanup runs.
