@@ -56,16 +56,18 @@ class LinkRepositoryImplTest {
         val status = MutableSharedFlow<Pair<CommandStatus, String?>>(replay = 1)
         override fun send(
             type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?,
+            onCreated: (String) -> Unit,
         ): Flow<Pair<CommandStatus, String?>> {
             sent += Triple(type, alarmId, occurrenceAt)
+            onCreated("inv${sent.size}")
             return status
         }
     }
 
     private inner class Env(
         val scope: TestScope, rows: List<Alarm>, partner: PartnerState?, household: Household?,
-        wrap: (FakeCommandRemote) -> CommandRemote = { it },
-        householdFlow: Flow<Household?>? = null,
+        private val wrap: (FakeCommandRemote) -> CommandRemote = { it },
+        private val householdFlow: Flow<Household?>? = null,
     ) {
         val fake = FakeAlarmRepository(rows)
         val partner = MutableStateFlow(partner)
@@ -84,15 +86,17 @@ class LinkRepositoryImplTest {
         )
         val removals = LinkRemovals(store())
         val processed = ProcessedCommands(store(), Clock.fixed(now, ZoneOffset.UTC))
-        val repo by lazy { LinkRepositoryImpl(
-            fake, this.partner, householdFlow ?: this.household, sender, wrap(remote), processed, removals,
+        private val inviteStore = store()
+        fun makeRepo(clock: Clock = Clock.fixed(now, ZoneOffset.UTC), repoScope: kotlinx.coroutines.CoroutineScope = scope.backgroundScope) = LinkRepositoryImpl(
+            fake, this.partner, householdFlow ?: this.household, sender, wrap(remote), processed, InviteLedger(inviteStore, clock), removals,
             { id, r -> removalCalls += id to r },
             { id -> cancelCalls += id; if (cancelResult) removals.remove(id); cancelResult },
             { row, cmd -> noteCalls += row to cmd },
             { settled },
             scheduler, notifier,
-            Clock.fixed(now, ZoneOffset.UTC), scope.backgroundScope,
-        ) }
+            clock, repoScope,
+        )
+        val repo by lazy { makeRepo() }
         suspend fun rows() = fake.linkedAlarms.first()
     }
 
@@ -483,6 +487,60 @@ class LinkRepositoryImplTest {
         advanceTimeBy(24.hours + 1.seconds)
         runCurrent()
         assertEquals(emptySet<String>(), e.repo.openInvites.first())
+    }
+
+    @Test
+    fun openInviteSurvivesARestartUntilAnswered() = runTest {
+        val e = env()
+        e.repo.invite("a1")
+        runCurrent()
+        val restarted = e.makeRepo()
+        restarted.start()
+        runCurrent()
+        assertEquals(setOf("a1"), restarted.openInvites.first())
+        e.remote.updatesFor("inv1").emit(CommandStatus.PENDING to null)
+        runCurrent()
+        assertEquals(setOf("a1"), restarted.openInvites.first())
+        e.remote.updatesFor("inv1").emit(CommandStatus.REJECTED to "declined")
+        runCurrent()
+        assertEquals(emptySet<String>(), restarted.openInvites.first())
+        // And a third start finds nothing left to restore.
+        val again = e.makeRepo()
+        again.start()
+        runCurrent()
+        assertEquals(emptySet<String>(), again.openInvites.first())
+    }
+
+    @Test
+    fun anAnsweredInviteIsNotRestored() = runTest {
+        val e = env()
+        e.repo.invite("a1")
+        runCurrent()
+        e.sender.status.emit(CommandStatus.APPLIED to null)
+        runCurrent()
+        val restarted = e.makeRepo()
+        restarted.start()
+        runCurrent()
+        assertEquals(emptySet<String>(), restarted.openInvites.first())
+    }
+
+    @Test
+    fun aRestoredInviteExpiresWithItsCommand() = runTest {
+        val e = env()
+        e.repo.invite("a1")
+        runCurrent()
+        val restarted = e.makeRepo(clock = Clock.fixed(now.plusSeconds(23 * 3600), ZoneOffset.UTC))
+        restarted.start()
+        runCurrent()
+        assertEquals(setOf("a1"), restarted.openInvites.first())
+        advanceTimeBy(1.hours + 1.seconds)
+        runCurrent()
+        assertEquals(emptySet<String>(), restarted.openInvites.first())
+        // An expired entry is not restored at all.
+        val late = e.makeRepo(clock = Clock.fixed(now.plusSeconds(25 * 3600), ZoneOffset.UTC))
+        late.start()
+        runCurrent()
+        assertEquals(emptySet<String>(), late.openInvites.first())
     }
 
     @Test

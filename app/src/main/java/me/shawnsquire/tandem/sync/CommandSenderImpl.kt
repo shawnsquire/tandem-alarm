@@ -29,6 +29,7 @@ class CommandSenderImpl(
         occurrenceAt: Instant?,
         ringId: String?,
         snoozedUntil: Instant?,
+        onCreated: (String) -> Unit,
     ): Flow<Pair<CommandStatus, String?>> {
         val h = household.value ?: return flowOf(CommandStatus.REJECTED to "not paired")
         val id = try {
@@ -39,6 +40,7 @@ class CommandSenderImpl(
             Log.w(TAG, "create command failed", e)
             return flowOf(CommandStatus.REJECTED to "couldn't send")
         }
+        onCreated(id)
         return remote.observe(h.id, id)
             .onStart { emit(CommandStatus.PENDING to null) }
             .distinctUntilChanged()

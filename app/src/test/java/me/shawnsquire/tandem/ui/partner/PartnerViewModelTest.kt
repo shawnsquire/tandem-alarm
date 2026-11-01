@@ -52,7 +52,7 @@ private data class Sent(val type: CommandType, val alarmId: String, val occurren
 private class RecordingSender(var result: () -> Flow<Pair<CommandStatus, String?>> = { flowOf(CommandStatus.PENDING to null) }) :
     CommandSender {
     val sent = mutableListOf<Sent>()
-    override fun send(type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?): Flow<Pair<CommandStatus, String?>> {
+    override fun send(type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?, onCreated: (String) -> Unit): Flow<Pair<CommandStatus, String?>> {
         sent += Sent(type, alarmId, occurrenceAt, ringId)
         return result()
     }

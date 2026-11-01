@@ -11,7 +11,7 @@ import kotlinx.coroutines.SupervisorJob
 import me.shawnsquire.tandem.data.emptyOnCorruption
 import java.io.File
 
-/** Sync-owned storage: display name, FCM token, last FCM time, processed command ids. One instance per process. */
+/** Sync-owned storage: display name, FCM token, last FCM time, processed command ids, open and notified invites. One instance per process. */
 val Context.syncDataStore: DataStore<Preferences>
     get() = SyncDataStore.get(this)
 

@@ -36,6 +36,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import java.io.File
 import java.time.Clock
 import java.time.DayOfWeek
@@ -66,6 +68,7 @@ class CommandApplierImplTest {
         val notifier: FakeCommandNotifier,
         val processed: ProcessedCommands,
         val applier: CommandApplierImpl,
+        val store: DataStore<Preferences>,
     )
 
     private fun TestScope.env(
@@ -75,6 +78,7 @@ class CommandApplierImplTest {
         name: String? = "Sam",
         wrapAlarms: (AlarmRepository) -> AlarmRepository = { it },
         partner: Flow<PartnerState?> = flowOf(null),
+        inviteStore: DataStore<Preferences>? = null,
     ): Env {
         val a = FakeAlarmRepository(alarms)
         val r = FakeRingStateStore(ring)
@@ -88,9 +92,9 @@ class CommandApplierImplTest {
         )
         val p = ProcessedCommands(ds, clock)
         val applier = CommandApplierImpl(
-            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), partner, p, n, clock, backgroundScope,
+            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), partner, p, InviteLedger(inviteStore ?: ds, clock), n, clock, backgroundScope,
         )
-        return Env(a, r, s, rc, remote, n, p, applier)
+        return Env(a, r, s, rc, remote, n, p, applier, ds)
     }
 
     private fun cmd(
@@ -619,6 +623,18 @@ class CommandApplierImplTest {
         e.applier.apply(c)
         assertEquals(1, e.notifier.invites.size)
         assertTrue(e.remote.resolved.isEmpty())
+    }
+
+    @Test fun `a notified invite is not posted again after a restart`() = runTest {
+        val ps = flowOf(partnerWith(ownerId))
+        val first = env(partner = ps)
+        val c = invite()
+        first.applier.apply(c)
+        assertEquals(1, first.notifier.invites.size)
+        val second = env(partner = ps, inviteStore = first.store)
+        second.applier.apply(c)
+        assertTrue(second.notifier.invites.isEmpty())
+        assertTrue(second.remote.resolved.isEmpty())
     }
 
     @Test fun `invite with unknown partner state stays pending`() = runTest {

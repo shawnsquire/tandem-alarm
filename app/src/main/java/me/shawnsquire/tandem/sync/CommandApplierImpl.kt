@@ -45,14 +45,12 @@ class CommandApplierImpl(
      */
     private val partner: Flow<PartnerState?>,
     private val processed: ProcessedCommands,
+    private val inviteLedger: InviteLedger,
     private val notifier: CommandNotifier,
     private val clock: Clock,
     private val scope: CoroutineScope,
 ) : CommandApplier {
     private val lock = Mutex()
-
-    /** Invite command ids already notified in this process; guarded by [lock]. */
-    private val notifiedInvites = mutableSetOf<String>()
 
     /**
      * The FCM path: applies only if the household is known and the server doc is still pending.
@@ -162,9 +160,9 @@ class CommandApplierImpl(
                             else -> {
                                 // Left pending on purpose: the owner reads APPLIED as accepted, so only
                                 // LinkRepository.acceptInvite/declineInvite record and resolve it.
-                                // Redeliveries (pull, FCM, listener) skip the notification so a swiped-away
-                                // invite isn't re-posted for the rest of its 24 h.
-                                if (notifiedInvites.add(cmd.id)) invite = cmd to ownerAlarm
+                                // Redeliveries (pull, FCM, listener), even after a restart, skip the
+                                // notification so a swiped-away invite isn't re-posted for the rest of its 24 h.
+                                if (inviteLedger.markNotified(cmd.id, cmd.expiresAt)) invite = cmd to ownerAlarm
                                 return@withLock
                             }
                         }

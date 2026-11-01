@@ -73,6 +73,7 @@ import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PartnerRepositoryImpl
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.sync.PreFireCheckImpl
+import me.shawnsquire.tandem.sync.InviteLedger
 import me.shawnsquire.tandem.sync.ProcessedCommands
 import me.shawnsquire.tandem.sync.StatePublisherImpl
 import me.shawnsquire.tandem.sync.await
@@ -298,7 +299,7 @@ private class SmokeDevice(context: Context, name: String, displayName: String) {
         alarms, ringState, scheduler, ringing, commandRemote, householdFlow,
         partnerRepository.partner.map { it?.displayName }.stateIn(scope, SharingStarted.Eagerly, null),
         partnerRepository.partner,
-        ProcessedCommands(syncStore, LiveZoneClock), notifier, LiveZoneClock, scope,
+        ProcessedCommands(syncStore, LiveZoneClock), InviteLedger(syncStore, LiveZoneClock), notifier, LiveZoneClock, scope,
     )
     val preFireCheck = PreFireCheckImpl(
         householdFlow, commandRemote, commandApplier::applyPending, partnerRepository, FakeLinkSync(),

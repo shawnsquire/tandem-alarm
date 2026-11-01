@@ -51,6 +51,7 @@ import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.sync.PairingRepositoryImpl
 import me.shawnsquire.tandem.sync.PartnerRepositoryImpl
 import me.shawnsquire.tandem.sync.PreFireCheckImpl
+import me.shawnsquire.tandem.sync.InviteLedger
 import me.shawnsquire.tandem.sync.ProcessedCommands
 import me.shawnsquire.tandem.sync.RingingCommandListener
 import me.shawnsquire.tandem.sync.StatePublisherImpl
@@ -140,7 +141,7 @@ class AppContainer private constructor(
     // L4: linkSyncImpl is declared below; the lambda runs later.
     val linkRepositoryImpl = LinkRepositoryImpl(
         alarmRepository, partnerRepository.partner, householdFlow, commandSender, commandRemote,
-        ProcessedCommands(context.syncDataStore, LiveZoneClock), linkRemovals,
+        ProcessedCommands(context.syncDataStore, LiveZoneClock), InviteLedger(context.syncDataStore, LiveZoneClock), linkRemovals,
         { id, reason -> linkSyncImpl.requestRemoval(id, reason) },
         { id -> linkSyncImpl.cancelRemoval(id) },
         { row, cmd -> linkSyncImpl.noteApplied(row, cmd) },
@@ -172,7 +173,7 @@ class AppContainer private constructor(
         alarmRepository, ringStateStore, alarmScheduler, ringingController, commandRemote, householdFlow,
         partnerRepository.partner.map { it?.displayName }.stateIn(syncScope, SharingStarted.Eagerly, null),
         partnerRepository.partner,
-        ProcessedCommands(context.syncDataStore, LiveZoneClock),
+        ProcessedCommands(context.syncDataStore, LiveZoneClock), InviteLedger(context.syncDataStore, LiveZoneClock),
         commandNotifier, LiveZoneClock, syncScope,
     )
     val commandApplier: CommandApplier = commandApplierImpl

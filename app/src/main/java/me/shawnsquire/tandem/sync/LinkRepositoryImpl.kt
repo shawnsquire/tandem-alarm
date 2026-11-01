@@ -8,6 +8,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.filterNotNull
@@ -39,7 +41,8 @@ import kotlin.time.Duration.Companion.seconds
  * Joiner and owner operations on linked alarms (see [LinkRepository]). Rows are created here and
  * changed by [LinkSync]; this class only writes through [AlarmRepository]'s linked-row methods.
  *
- * Open invites are kept in memory only, so a process death forgets them until the partner joins.
+ * Open invites are also kept in [InviteLedger] and re-watched by [start], so a process death
+ * doesn't forget one before the partner answers it or its command expires.
  */
 class LinkRepositoryImpl(
     private val alarms: AlarmRepository,
@@ -48,6 +51,7 @@ class LinkRepositoryImpl(
     private val sender: CommandSender,
     private val remote: CommandRemote,
     private val processed: ProcessedCommands,
+    private val inviteLedger: InviteLedger,
     private val removals: LinkRemovals,
     private val requestRemoval: suspend (String, RemovalReason) -> Unit,
     /** Cancels a pending removal under LinkSync's lock; false if the row is already gone. */
@@ -83,7 +87,7 @@ class LinkRepositoryImpl(
                 .sortedBy { it.ownerAlarmId }
         }.distinctUntilChanged()
 
-    /** Re-observes every both-of-us command still pending after a restart. Idempotent. */
+    /** Re-observes every both-of-us command and open invite still pending after a restart. Idempotent. */
     internal fun start() {
         synchronized(watchLock) {
             if (started) return
@@ -94,6 +98,13 @@ class LinkRepositoryImpl(
             for (row in alarms.linkedAlarms.first()) {
                 val pending = row.link?.pendingBoth ?: continue
                 watch(row.id, pending, expiryOf(pending, started))
+            }
+            try {
+                for (open in inviteLedger.open()) restoreInvite(open)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "restoring open invites failed", e)
             }
         }
     }
@@ -184,19 +195,68 @@ class LinkRepositoryImpl(
     }
 
     override fun invite(alarmId: String): Flow<Pair<CommandStatus, String?>> {
-        val status = sender.send(CommandType.INVITE_LINK, alarmId, null, null)
+        var commandId: String? = null
+        val status = sender.send(CommandType.INVITE_LINK, alarmId, null, null, onCreated = { commandId = it })
         invites.update { it + (alarmId to (it[alarmId] ?: 0) + 1) }
+        val id = commandId
+        val expiresAt = clock.instant().plus(COMMAND_TTL)
         scope.launch {
-            try {
-                withTimeoutOrNull(COMMAND_TTL.toMillis()) { status.firstOrNull { it.first != CommandStatus.PENDING } }
-            } finally {
-                invites.update { m ->
-                    val n = (m[alarmId] ?: 0) - 1
-                    if (n <= 0) m - alarmId else m + (alarmId to n)
-                }
-            }
+            // Persisted before waiting, so a process death from here on still counts it as open.
+            if (id != null) persistOpen { inviteLedger.addOpen(id, alarmId, expiresAt) }
+            settleInvite(alarmId, id, expiresAt, status)
         }
         return status
+    }
+
+    /** Counts a persisted open invite again and watches its command until it is answered or expires. */
+    private fun restoreInvite(open: InviteLedger.OpenInvite) {
+        synchronized(watchLock) { if (!watching.add(open.commandId)) return }
+        invites.update { it + (open.alarmId to (it[open.alarmId] ?: 0) + 1) }
+        scope.launch {
+            try {
+                val status = flow {
+                    val hh = household.filterNotNull().first()
+                    while (true) {
+                        emitAll(remote.observe(hh.id, open.commandId))
+                        delay(RESUBSCRIBE_DELAY)
+                    }
+                }
+                settleInvite(open.alarmId, open.commandId, open.expiresAt, status)
+            } finally {
+                synchronized(watchLock) { watching.remove(open.commandId) }
+            }
+        }
+    }
+
+    /**
+     * Holds the invite open until [status] reports an answer or [expiresAt] passes, then drops it from the
+     * count and the ledger. A cancelled wait (the process going away) leaves the ledger entry for the next start.
+     */
+    private suspend fun settleInvite(
+        alarmId: String, commandId: String?, expiresAt: Instant, status: Flow<Pair<CommandStatus, String?>>,
+    ) {
+        var settled = false
+        try {
+            val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
+            withTimeoutOrNull(remaining) { status.firstOrNull { it.first != CommandStatus.PENDING } }
+            settled = true
+        } finally {
+            invites.update { m ->
+                val n = (m[alarmId] ?: 0) - 1
+                if (n <= 0) m - alarmId else m + (alarmId to n)
+            }
+        }
+        if (settled && commandId != null) persistOpen { inviteLedger.removeOpen(commandId) }
+    }
+
+    private suspend fun persistOpen(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "saving open invites failed", e)
+        }
     }
 
     private suspend fun joinInternal(hh: Household, ownerAlarmId: String, acceptOpenInvites: Boolean): LinkResult =
