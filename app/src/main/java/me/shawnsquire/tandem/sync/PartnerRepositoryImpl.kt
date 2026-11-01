@@ -11,7 +11,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
@@ -21,7 +20,8 @@ import kotlinx.coroutines.flow.map
 
 /**
  * Mirrors the partner's device doc (`households/{h}/devices/{partnerUid}`). Emits null when unpaired,
- * before the partner has published, and on any listener error (e.g. PERMISSION_DENIED after unpair).
+ * before the partner has published, and on any listener error (e.g. PERMISSION_DENIED after unpair),
+ * which is then retried with backoff; the null is "unknown", not proof of an unpair.
  */
 class PartnerRepositoryImpl internal constructor(
     private val household: Flow<Household?>,
@@ -61,10 +61,7 @@ class PartnerRepositoryImpl internal constructor(
                 flowOf(null)
             } else {
                 flow { emitAll(docSource(h).map { it?.let(::partnerStateFromDoc) }) }
-                    .catch { e ->
-                        if (e is kotlinx.coroutines.CancellationException) throw e
-                        emit(null)
-                    }
+                    .resubscribeOnError(null)
             }
         }
         .distinctUntilChanged()
@@ -86,8 +83,11 @@ private fun firestoreDocSource(db: FirebaseFirestore): (Household) -> Flow<Map<S
     callbackFlow {
         val ref = db.collection("households").document(h.id).collection("devices").document(h.partnerUid)
         val reg = ref.addSnapshotListener { snap, err ->
-            trySend(if (err != null || snap == null || !snap.exists()) null else snap.data)
-            if (err != null) close()
+            if (err != null) {
+                close(err)
+            } else {
+                trySend(if (snap == null || !snap.exists()) null else snap.data)
+            }
         }
         awaitClose { reg.remove() }
     }
