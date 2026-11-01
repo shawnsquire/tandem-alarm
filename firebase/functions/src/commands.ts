@@ -22,6 +22,7 @@ function commandPayload(householdId: string, commandId: string, c: CommandData):
     alarmId: c.alarmId,
   };
   if (c.occurrenceAt != null) data.occurrenceAt = millis(c.occurrenceAt);
+  if (c.snoozedUntil != null) data.snoozedUntil = millis(c.snoozedUntil);
   if (c.ringId != null) data.ringId = c.ringId;
   data.createdAt = millis(c.createdAt);
   data.expiresAt = millis(c.expiresAt);
