@@ -53,7 +53,9 @@ fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
     val today = now.atZone(zone).toLocalDate()
     val skips = alarm.skippedOccurrences()
     // One-shot: only today or tomorrow. Weekly: up to three skips can stack on one weekday
-    // (own, owner, pending), so reach 4 weeks plus a day past the first candidate.
+    // (own, owner, pending). Counting from today the first candidate can be day 7 (today's
+    // weekday, time already passed), and three skipped weeks push the answer to day 28, so
+    // days 0..28 (29 days) are enough.
     val span = if (oneShot) 2L else 29L
     val upcoming = (0 until span).asSequence()
         .map { today.plusDays(it) }
@@ -114,9 +116,9 @@ fun isArmed(alarm: Alarm): Boolean {
  * [context] is non-null (design "Ring command validation"), in order, against the slot's ring,
  * its merged members and the snooze ledger. Live state is matched on `alarm.id` plus X, never
  * on X alone or `cmd.alarmId`, so on a joiner [alarm] is the resolved linked row. With a null
- * [context], SNOOZE is "not supported yet" (the only such case) and STOP_RINGING needs a `ringId`. A SNOOZE missing
- * X or T is rejected "incomplete snooze". Merged members come from [RingContext.merged] and the
- * slot ring's own `merged`:
+ * [context], SNOOZE is "not supported yet" (the only such case) and STOP_RINGING needs a
+ * `ringId`. A SNOOZE missing X or T is rejected "incomplete snooze". Merged members come from
+ * [RingContext.merged] and the slot ring's own `merged`:
  * 1. Expired or duplicate: reject (I3).
  * 2. Not ringing here ("skipped here"): this phone's own state says X wouldn't ring: its
  *    `skippedOccurrenceAt` or `soloSkippedOccurrenceAt`, `link.ownerSkippedOccurrenceAt`, a
@@ -126,7 +128,8 @@ fun isArmed(alarm: Alarm): Boolean {
  *    it holds inside [FIRE_GRACE] too and a late SNOOZE can't re-arm a dismissed ring.
  * 4. Live: X is sounding, snoozed (current or parked), or a member of a merged ring: apply. A
  *    SNOOZE whose T is not later than X's current snooze end is rejected ("already snoozed
- *    later"), so two crossing snoozes settle on the later T.
+ *    later"), so two crossing snoozes settle on the later T. For a merged member the slot ring's
+ *    `snoozedUntil` is that end.
  * 5. Early: X is the next occurrence and at most [FIRE_GRACE] away. STOP_RINGING dismisses it in
  *    advance; SNOOZE arms the snooze with no ring first.
  * 6. Otherwise reject ("already rang or changed").
@@ -135,9 +138,11 @@ fun isArmed(alarm: Alarm): Boolean {
  * (expiry) runs first for every command; duplicates are the applier's job.
  *
  * Solo skips: SKIP_NEXT while the owner has a solo skip on the same X applies (the applier
- * upgrades it to a shared skip). The pinned checks (SKIP_NEXT, DISABLE, one-shot SKIP_NEXT) run
- * against the shared view, ignoring `soloSkippedOccurrenceAt`, since the partner still sees the
- * owner ringing at X; "already skipped" looks only at the shared `skippedOccurrenceAt`. UNSKIP
+ * upgrades it to a shared skip). The pinned checks (SKIP_NEXT, DISABLE, one-shot SKIP_NEXT)
+ * accept a target matching either view: the shared view, ignoring `soloSkippedOccurrenceAt`
+ * (the linked row's copy still sees X), or the full view the owner publishes (which skips X,
+ * so the Partner tab sends X'). "already skipped" looks only at the shared
+ * `skippedOccurrenceAt`. UNSKIP
  * counts only the shared skip ("nothing to unskip" if only a solo skip exists).
  *
  * INVITE_LINK applies if the alarm exists, is an own row (`link == null`) and hasn't expired,
@@ -158,16 +163,22 @@ fun validate(
 ): CommandDecision {
     if (now >= cmd.expiresAt) return CommandDecision.Reject("expired")
     if (alarm == null) return CommandDecision.Reject("alarm not found")
-    if (alarm.link != null && cmd.type !in RING_COMMANDS) return CommandDecision.Reject("alarm not found")
+    if (alarm.link != null && cmd.type !in RING_COMMANDS) {
+        return CommandDecision.Reject("alarm not found")
+    }
     val stale = CommandDecision.Reject("already rang or changed")
     val ringing = ring != null && ring.alarmId == cmd.alarmId
     val grace = FIRE_GRACE.toJavaDuration()
     fun pinned(): Boolean {
         val target = cmd.occurrenceAt ?: return false
-        // The partner still sees this phone ringing at a solo-skipped X, so pin against the shared view.
+        // Accept both views of the next occurrence. The joiner's linked row copy still sees this
+        // phone ringing at a solo-skipped X, so SKIP_NEXT{X} must match the shared view (and
+        // upgrades the solo skip). The owner publishes the full view, which skips X, so the
+        // Partner tab targets X' and that must match too.
         val shared = alarm.copy(soloSkippedOccurrenceAt = null)
-        return target == nextOccurrence(shared, now.minus(grace), zone) ||
-            target == nextOccurrence(shared, now, zone)
+        return listOf(shared, alarm).any {
+            target == nextOccurrence(it, now.minus(grace), zone) || target == nextOccurrence(it, now, zone)
+        }
     }
     fun disableLike(): CommandDecision = when {
         !alarm.enabled -> CommandDecision.Reject("already off")
@@ -199,7 +210,9 @@ fun validate(
         CommandType.STOP_RINGING ->
             if (context != null && cmd.occurrenceAt != null) {
                 validateRingOccurrence(cmd, alarm, now, zone, context)
-            } else if (ring != null && ring.alarmId == cmd.alarmId && cmd.ringId != null && ring.ringId == cmd.ringId) {
+            } else if (
+                ring != null && ring.alarmId == cmd.alarmId && cmd.ringId != null && ring.ringId == cmd.ringId
+            ) {
                 CommandDecision.Apply
             } else {
                 CommandDecision.Reject("not ringing")
@@ -232,7 +245,8 @@ private fun validateRingOccurrence(
     if (!isArmed(alarm) || x in alarm.skippedOccurrences()) return CommandDecision.Reject("skipped here")
 
     val ring = context.ring?.takeIf { it.alarmId == alarm.id && it.occurrenceAt == x }
-    val merged = (context.merged + context.ring?.merged.orEmpty()).any { it.alarmId == alarm.id && it.occurrenceAt == x }
+    val merged = (context.merged + context.ring?.merged.orEmpty())
+        .any { it.alarmId == alarm.id && it.occurrenceAt == x }
     val parked = context.snoozes.filter { it.alarmId == alarm.id && it.occurrenceAt == x }
     if (ring == null && !merged && parked.isEmpty()) {
         if (context.lastRang == x) return CommandDecision.Reject("already rang or changed")
@@ -240,7 +254,9 @@ private fun validateRingOccurrence(
             java.time.Duration.between(now, x) <= FIRE_GRACE.toJavaDuration()
         return if (early) CommandDecision.Apply else CommandDecision.Reject("already rang or changed")
     }
-    val snoozeEnd = (listOfNotNull(ring?.snoozedUntil) + parked.map { it.until }).maxOrNull()
+    // A merged member's current snooze end is the slot ring's.
+    val slotEnd = context.ring?.takeIf { merged && it.occurrenceAt == x }?.snoozedUntil
+    val snoozeEnd = (listOfNotNull(ring?.snoozedUntil, slotEnd) + parked.map { it.until }).maxOrNull()
     if (cmd.type == CommandType.SNOOZE && until != null && snoozeEnd != null && until <= snoozeEnd) {
         return CommandDecision.Reject("already snoozed later")
     }

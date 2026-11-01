@@ -269,8 +269,8 @@ class NextOccurrenceTest {
 
     @Test
     fun twoSkipsOnConsecutiveOccurrencesOfSingleWeekdayAlarmReachTwoWeeksOut() {
-        // Worst case for the search window: next ring is 6 days out, the two after it are skipped,
-        // so the answer is day 20.
+        // Two stacked skips on a weekday alarm whose next ring is 6 days out: the answer is day 20.
+        // The true worst case for the search window is in the test below.
         val fri = Instant.parse("2026-11-13T13:00:00Z")
         val alarm = alarm(
             8,
@@ -286,6 +286,23 @@ class NextOccurrenceTest {
             soloSkippedOccurrenceAt = fri.plusSeconds(7 * 86400),
         )
         assertEquals(Instant.parse("2026-11-27T13:00:00Z"), next(own, saturdayMorning))
+    }
+
+    @Test
+    fun threeStackedSkipsOnTodaysWeekdayAfterItsTimePassedReachDay28() {
+        // Worst case for the search window: today is Saturday 07:00 and the alarm is Saturday 06:00,
+        // so the first candidate is day 7. Three skips (days 7, 14, 21) put the answer on day 28.
+        val sat1 = Instant.parse("2026-11-14T11:00:00Z")
+        val alarm = alarm(
+            6,
+            days = setOf(DayOfWeek.SATURDAY),
+            skippedOccurrenceAt = sat1,
+            link = link(
+                ownerSkippedOccurrenceAt = sat1.plusSeconds(7 * 86400),
+                pendingBoth = pending(CommandType.SKIP_NEXT, sat1.plusSeconds(14 * 86400)),
+            ),
+        )
+        assertEquals(Instant.parse("2026-12-05T11:00:00Z"), next(alarm, saturdayMorning))
     }
 
     @Test

@@ -515,6 +515,28 @@ class ValidateTest {
     }
 
     @Test
+    fun lastRangDismissedInAdvanceRejectsBeforeEarlyRule() {
+        // Only rule 3 can reject this: X is the next occurrence within FIRE_GRACE (rule 5 would apply).
+        val at = x.minusSeconds(60)
+        val c = ctx(lastRang = x)
+        assertEquals(resolved, run(stop(), alarm(), c, at))
+        assertEquals(resolved, run(snooze(), alarm(), c, at))
+    }
+
+    @Test
+    fun mergedMemberSnoozeEndIsSlotRingSnoozeEnd() {
+        val slot = ringState(alarmId = "a2", occurrenceAt = x, snoozedUntil = t0)
+        val viaContext = ctx(ring = slot, merged = listOf(RingMember("a1", x)))
+        val viaRing = ctx(ring = slot.copy(merged = listOf(RingMember("a1", x))))
+        for (c in listOf(viaContext, viaRing)) {
+            assertEquals(reject("already snoozed later"), run(snooze(until = t0.minusSeconds(1)), alarm(), c))
+            assertEquals(reject("already snoozed later"), run(snooze(until = t0), alarm(), c))
+            assertEquals(apply, run(snooze(until = t0.plusSeconds(1)), alarm(), c))
+            assertEquals(apply, run(stop(), alarm(), c))
+        }
+    }
+
+    @Test
     fun lastRangButSnoozedIsStillLive() {
         val at = x.plusSeconds(60)
         val c = ctx(lastRang = x, snoozes = listOf(ParkedSnooze("a1", x, x.plusSeconds(540))))
@@ -664,8 +686,20 @@ class ValidateTest {
     }
 
     @Test
-    fun skipNextAfterSoloSkippedOccurrenceIsStaleAgainstSharedView() {
-        assertEquals(reject("already rang or changed"), check(cmd(CommandType.SKIP_NEXT, tomorrowRing), soloAtX))
+    fun skipNextOnPublishedNextAfterSoloSkipApplies() {
+        // The owner published X' (tomorrow) because X is solo-skipped; the partner targets X'.
+        assertEquals(apply, check(cmd(CommandType.SKIP_NEXT, tomorrowRing), soloAtX))
+    }
+
+    @Test
+    fun disableOnPublishedNextAfterSoloSkipApplies() {
+        assertEquals(apply, check(cmd(CommandType.DISABLE, tomorrowRing), soloAtX))
+    }
+
+    @Test
+    fun skipNextTwoAheadOfSoloSkippedOccurrenceIsStale() {
+        assertEquals(reject("already rang or changed"), check(cmd(CommandType.SKIP_NEXT, dayAfterRing), soloAtX))
+        assertEquals(reject("already rang or changed"), check(cmd(CommandType.DISABLE, dayAfterRing), soloAtX))
     }
 
     @Test
