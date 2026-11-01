@@ -70,6 +70,12 @@ android {
             manifest.srcFile("src/debug/AndroidManifest.xml")
             res.srcDirs("src/debug/res")
         }
+        // Exported Room schemas for MigrationTestHelper in the Robolectric tests. AGP's unit-test
+        // run reads merged assets from the debug variant (the "test" source set's assets are
+        // ignored), so they are added there; this puts the small JSON files in debug APKs only.
+        getByName("debug") {
+            assets.srcDir("$projectDir/schemas")
+        }
     }
 
     compileOptions {

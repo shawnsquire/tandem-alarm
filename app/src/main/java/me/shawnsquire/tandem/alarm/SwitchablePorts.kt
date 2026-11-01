@@ -20,6 +20,7 @@ import me.shawnsquire.tandem.data.SNOOZE_RANGE
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.data.withoutExpiredSkip
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -60,20 +61,32 @@ class SwitchableAlarmRepository(
      * Locked, it throws while the mirror is unreadable: an empty list would make a reschedule cancel
      * every armed alarm, while a throw leaves them and their records untouched.
      */
+    override val alarms: Flow<List<Alarm>> = view({ it.alarms }) { true }
+
+    /**
+     * Locked, the mirrored list filtered to link == null. The mirror doesn't encode [Alarm.link]
+     * yet (unit L2 adds it), so until then locked linked rows appear here as own alarms.
+     */
+    override val ownAlarms: Flow<List<Alarm>> = view({ it.ownAlarms }) { it.link == null }
+
+    /** Locked, the mirrored list filtered to link != null; empty until the mirror encodes the link (L2). */
+    override val linkedAlarms: Flow<List<Alarm>> = view({ it.linkedAlarms }) { it.link != null }
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    override val alarms: Flow<List<Alarm>> = attachment.flatMapLatest { a ->
-        if (a == null) {
-            mirrored.map { list ->
-                val now = clock()
-                (list ?: throw mirrorUnreadable()).map { it.withoutExpiredSkip(now) }
-            }
-        } else {
-            flow {
-                a.drained.await()
-                emitAll(a.real.alarms)
+    private fun view(real: (AlarmRepository) -> Flow<List<Alarm>>, lockedFilter: (Alarm) -> Boolean): Flow<List<Alarm>> =
+        attachment.flatMapLatest { a ->
+            if (a == null) {
+                mirrored.map { list ->
+                    val now = clock()
+                    (list ?: throw mirrorUnreadable()).filter(lockedFilter).map { it.withoutExpiredSkip(now) }
+                }
+            } else {
+                flow {
+                    a.drained.await()
+                    emitAll(real(a.real))
+                }
             }
         }
-    }
 
     /**
      * Locked, it never returns null. Delete needs the user to unlock, so an id missing from the
@@ -101,6 +114,21 @@ class SwitchableAlarmRepository(
 
     override suspend fun setSkip(id: String, occurrence: Instant?) =
         write(DeferredWrite.SetSkip(id, occurrence), { it.copy(skippedOccurrenceAt = occurrence) }) { it.setSkip(id, occurrence) }
+
+    /**
+     * Deferrable like [setSkip]: queued and replayed on attach. The mirror doesn't encode
+     * soloSkippedOccurrenceAt, so a locked read doesn't show it until unlock (it matters only for
+     * the owner's own ring, which the real repository serves).
+     */
+    override suspend fun setSoloSkip(id: String, occurrence: Instant?) =
+        write(DeferredWrite.SetSoloSkip(id, occurrence), { it.copy(soloSkippedOccurrenceAt = occurrence) }) { it.setSoloSkip(id, occurrence) }
+
+    /** Not deferrable (link sync needs the CE store and the network): throws locked, like [upsert]. */
+    override suspend fun upsertLinked(alarm: Alarm) = (target() ?: throw lockedEdit()).upsertLinked(alarm)
+
+    /** Not deferrable (a lambda can't be queued): throws locked, like [upsert]. */
+    override suspend fun updateLink(id: String, transform: (AlarmLink) -> AlarmLink): Boolean =
+        (target() ?: throw lockedEdit()).updateLink(id, transform)
 
     /**
      * Non-suspending and idempotent. Calls made from now on wait for the drain. A queued op that
@@ -150,6 +178,7 @@ class SwitchableAlarmRepository(
     private suspend fun replay(real: AlarmRepository, w: DeferredWrite) = when (w) {
         is DeferredWrite.SetEnabled -> real.setEnabled(w.id, w.enabled)
         is DeferredWrite.SetSkip -> real.setSkip(w.id, w.occurrence)
+        is DeferredWrite.SetSoloSkip -> real.setSoloSkip(w.id, w.occurrence)
     }
 
     private suspend fun write(w: DeferredWrite, change: (Alarm) -> Alarm, forward: suspend (AlarmRepository) -> Unit) {

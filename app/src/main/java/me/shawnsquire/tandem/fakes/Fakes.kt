@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.fakes
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import me.shawnsquire.tandem.alarm.AlarmScheduler
 import me.shawnsquire.tandem.alarm.RingingController
@@ -10,6 +11,7 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
@@ -50,6 +52,8 @@ val SAMPLE_ALARMS: List<Alarm> = listOf(
 class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepository {
     private val state = MutableStateFlow(initial)
     override val alarms: Flow<List<Alarm>> = state
+    override val ownAlarms: Flow<List<Alarm>> = state.map { list -> list.filter { it.link == null } }
+    override val linkedAlarms: Flow<List<Alarm>> = state.map { list -> list.filter { it.link != null } }
 
     override suspend fun get(id: String): Alarm? = state.value.firstOrNull { it.id == id }
 
@@ -66,6 +70,45 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
 
     override suspend fun setSkip(id: String, occurrence: Instant?) = state.update { list ->
         list.map { if (it.id == id) it.copy(skippedOccurrenceAt = occurrence) else it }
+    }
+
+    override suspend fun setSoloSkip(id: String, occurrence: Instant?) = state.update { list ->
+        list.map { if (it.id == id) it.copy(soloSkippedOccurrenceAt = occurrence) else it }
+    }
+
+    override suspend fun upsertLinked(alarm: Alarm) {
+        val incoming = alarm.link ?: throw IllegalArgumentException("upsertLinked needs a linked alarm")
+        state.update { list ->
+            val stored = list.firstOrNull { it.id == alarm.id }
+            val storedLink = stored?.link
+            if (stored == null || storedLink == null) {
+                if (stored == null) list + alarm else list.map { if (it.id == alarm.id) alarm else it }
+            } else {
+                val merged = stored.copy(
+                    label = alarm.label,
+                    hour = alarm.hour,
+                    minute = alarm.minute,
+                    days = alarm.days,
+                    enabled = alarm.enabled,
+                    link = storedLink.copy(ownerSkippedOccurrenceAt = incoming.ownerSkippedOccurrenceAt),
+                )
+                list.map { if (it.id == alarm.id) merged else it }
+            }
+        }
+    }
+
+    override suspend fun updateLink(id: String, transform: (AlarmLink) -> AlarmLink): Boolean {
+        var found = false
+        state.update { list ->
+            list.map {
+                val link = it.link
+                if (it.id == id && link != null) {
+                    found = true
+                    it.copy(link = transform(link))
+                } else it
+            }
+        }
+        return found
     }
 }
 

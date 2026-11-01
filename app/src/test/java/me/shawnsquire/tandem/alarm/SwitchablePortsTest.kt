@@ -16,6 +16,8 @@ import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakePreFireCheck
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -150,6 +152,38 @@ class SwitchablePortsTest {
         assertFalse(repo.get("a")!!.enabled)
         assertEquals(listOf(alarm("a", enabled = false), alarm("b", skip = skip)), mirror.read().alarms.map { it.alarm })
         assertEquals(listOf(DeferredWrite.SetEnabled("a", false), DeferredWrite.SetSkip("b", skip)), queue.all())
+    }
+
+    @Test
+    fun lockedSoloSkipIsQueuedAndReplayedOnAttach() = runTest {
+        val repo = repo(mirrorOf(alarm("a")))
+        val at = now.plusSeconds(3600)
+        repo.setSoloSkip("a", at)
+        assertEquals(listOf(DeferredWrite.SetSoloSkip("a", at)), queue.all())
+        val real = FakeAlarmRepository(listOf(alarm("a")))
+        repo.attach(real)
+        runCurrent()
+        assertEquals(at, real.get("a")!!.soloSkippedOccurrenceAt)
+        assertTrue(queue.all().isEmpty())
+    }
+
+    @Test
+    fun lockedUpsertLinkedAndUpdateLinkThrow() = runTest {
+        val repo = repo(mirrorOf(alarm("a")))
+        val link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null)
+        assertIllegalState { repo.upsertLinked(alarm("b").copy(link = link)) }
+        assertIllegalState { repo.updateLink("a") { it } }
+    }
+
+    @Test
+    fun lockedOwnAndLinkedViewsFilterTheMirrorByLink() = runTest {
+        val link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null)
+        val linked = alarm("l").copy(link = link)
+        val repo = repo(mirrorOf(alarm("a"), linked))
+        // The in-memory mirror keeps the link; the on-disk mirror doesn't encode it until L2.
+        assertEquals(listOf("a"), repo.ownAlarms.first().map { it.id })
+        assertEquals(listOf("l"), repo.linkedAlarms.first().map { it.id })
+        assertEquals(listOf("a", "l"), repo.alarms.first().map { it.id })
     }
 
     @Test
