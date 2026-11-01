@@ -15,32 +15,54 @@ val FIRE_GRACE: Duration = 2.minutes
 fun Alarm.isOneShot(): Boolean = days.isEmpty()
 
 /**
+ * Every occurrence this alarm will not ring at, as a set of scheduled instants (no expiry
+ * applied; a past skip simply never matches a future candidate). Answers for any occurrence,
+ * so [nextOccurrence] and later "would X ring here" checks share one rule.
+ *
+ * - Own row (`link == null`): [Alarm.skippedOccurrenceAt] and [Alarm.soloSkippedOccurrenceAt].
+ * - Linked row: [Alarm.skippedOccurrenceAt] (the joiner's own skip), `link.ownerSkippedOccurrenceAt`,
+ *   and a pending SKIP_NEXT's `occurrenceAt`. The owner's solo skip never applies to a linked
+ *   row, so [Alarm.soloSkippedOccurrenceAt] is ignored there. A pending UNSKIP at the same
+ *   occurrence as the owner's skip cancels that owner skip (a pending "both" choice takes effect
+ *   on the joiner at once); it leaves the joiner's own skip alone.
+ */
+internal fun Alarm.skippedOccurrences(): Set<Instant> {
+    val link = link ?: return setOfNotNull(skippedOccurrenceAt, soloSkippedOccurrenceAt)
+    val pending = link.pendingBoth
+    val ownerSkip = link.ownerSkippedOccurrenceAt
+        ?.takeUnless { pending?.type == CommandType.UNSKIP && pending.occurrenceAt == it }
+    val pendingSkip = pending?.takeIf { it.type == CommandType.SKIP_NEXT }?.occurrenceAt
+    return setOfNotNull(skippedOccurrenceAt, ownerSkip, pendingSkip)
+}
+
+/**
  * Next time [alarm] should ring strictly after [now] in [zone], or null if none.
  *
  * - Honors [Alarm.days] weekdays; empty days is a one-shot (next time the clock hits hour:minute).
- * - Returns null when the alarm is disabled.
- * - [Alarm.skippedOccurrenceAt] skips exactly that occurrence (the following one is returned);
- *   a skip that has already passed is ignored.
- *
- * L1 extends this (design "Data model") to also skip the joiner's own skip,
- * `link.ownerSkippedOccurrenceAt`, a pending "both" skip, and on the owner the solo skip
- * ([Alarm.soloSkippedOccurrenceAt]).
+ * - Returns null when the alarm is not [isArmed].
+ * - Occurrences in [skippedOccurrences] are skipped (the following one is returned); a skip that
+ *   has already passed is ignored. Own rows skip [Alarm.skippedOccurrenceAt] and
+ *   [Alarm.soloSkippedOccurrenceAt]; linked rows skip their own [Alarm.skippedOccurrenceAt],
+ *   `link.ownerSkippedOccurrenceAt` and a pending "both" SKIP_NEXT, and never the solo skip.
+ * - A one-shot whose single candidate is skipped returns null (the engine then turns it off).
  */
 fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
-    if (!alarm.enabled) return null
+    if (!isArmed(alarm)) return null
     val oneShot = alarm.days.isEmpty()
     val time = LocalTime.of(alarm.hour, alarm.minute)
     val today = now.atZone(zone).toLocalDate()
-    // One-shot: only today or tomorrow. Weekly: enough days to find the occurrence after a skipped one.
-    val span = if (oneShot) 2L else 15L
+    val skips = alarm.skippedOccurrences()
+    // One-shot: only today or tomorrow. Weekly: up to three skips can stack on one weekday
+    // (own, owner, pending), so reach 4 weeks plus a day past the first candidate.
+    val span = if (oneShot) 2L else 29L
     val upcoming = (0 until span).asSequence()
         .map { today.plusDays(it) }
         .filter { oneShot || it.dayOfWeek in alarm.days }
         .map { ZonedDateTime.of(it, time, zone).toInstant() }
         .filter { it > now }
     // A skip at or before now can never equal a candidate, so it is ignored implicitly.
-    if (oneShot) return upcoming.firstOrNull()?.takeIf { it != alarm.skippedOccurrenceAt }
-    return upcoming.firstOrNull { it != alarm.skippedOccurrenceAt }
+    if (oneShot) return upcoming.firstOrNull()?.takeIf { it !in skips }
+    return upcoming.firstOrNull { it !in skips }
 }
 
 /**
@@ -64,12 +86,17 @@ data class RingContext(
 /**
  * Whether [alarm] can ring at all.
  *
- * L1 rule (design "Data model"): for a linked row (`link != null`) armed only when
+ * An own row (`link == null`) is armed when `enabled`. A linked row is armed only when
  * `link.joinerEnabled` is true and the owner side is on: the copied `enabled` is true (or a
  * "both on" ENABLE is pending in `link.pendingBoth`) and no "both off" DISABLE is pending.
- * For an own row: `enabled`. Today it returns `enabled` for every row.
  */
-fun isArmed(alarm: Alarm): Boolean = alarm.enabled
+fun isArmed(alarm: Alarm): Boolean {
+    val link = alarm.link ?: return alarm.enabled
+    val pending = link.pendingBoth?.type
+    return link.joinerEnabled &&
+        (alarm.enabled || pending == CommandType.ENABLE) &&
+        pending != CommandType.DISABLE
+}
 
 /**
  * Owner-side validation of a partner [cmd] against local state (I2, I3).
