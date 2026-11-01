@@ -119,6 +119,32 @@ class AlarmEditViewModelTest {
         assertEquals(skip, e.repo.get("a1")!!.skippedOccurrenceAt)
     }
 
+    @Test fun labelEditKeepsSoloSkipAndLink() = runTest {
+        val link = me.shawnsquire.tandem.schedule.AlarmLink(
+            "owner", "owner-alarm", me.shawnsquire.tandem.schedule.LinkMode.RING, null, true, null, null, null, null,
+        )
+        val solo = Instant.parse("2026-11-04T06:30:00Z")
+        val e = Env("a1", listOf(existing.copy(soloSkippedOccurrenceAt = solo, link = link)))
+        e.vm.setLabel("x")
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertEquals("x", saved.label)
+        assertEquals(solo, saved.soloSkippedOccurrenceAt)
+        assertEquals(link, saved.link)
+    }
+
+    @Test fun timeEditClearsSoloSkipButKeepsLink() = runTest {
+        val link = me.shawnsquire.tandem.schedule.AlarmLink(
+            "owner", "owner-alarm", me.shawnsquire.tandem.schedule.LinkMode.RING, null, true, null, null, null, null,
+        )
+        val e = Env("a1", listOf(existing.copy(soloSkippedOccurrenceAt = Instant.parse("2026-11-04T06:30:00Z"), link = link)))
+        e.vm.setTime(7, 0)
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertNull(saved.soloSkippedOccurrenceAt)
+        assertEquals(link, saved.link)
+    }
+
     @Test fun titleIsLookedUpForCurrentUri() = runTest {
         val e = edit()
         assertEquals(listOf<String?>("file:///old-ring"), e.titleCalls)
