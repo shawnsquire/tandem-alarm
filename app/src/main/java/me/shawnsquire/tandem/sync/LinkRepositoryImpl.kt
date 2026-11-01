@@ -196,6 +196,8 @@ class LinkRepositoryImpl(
             // The command is out, so a failed reschedule is not a failed send: the caller would report it as one.
             try {
                 scheduler.rescheduleAll()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "rescheduling after sending $id failed", e)
             }
