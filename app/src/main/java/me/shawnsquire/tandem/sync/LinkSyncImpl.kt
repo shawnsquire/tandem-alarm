@@ -82,6 +82,12 @@ class LinkSyncImpl(
     private var lastName = FALLBACK_NAME
     private var lastMedia: MediaArgs? = null
 
+    /** `updatedAt` of the latest partner doc a pass processed; the baseline [noteApplied] records. */
+    private var lastDocSeen: Instant? = null
+
+    /** Both-of-us commands the owner reported APPLIED, to the [lastDocSeen] at that moment. Memory only. */
+    private val applied = HashMap<String, Instant?>()
+
     private data class MediaArgs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val wallpaper: MediaRef?)
     private data class Trigger(val partner: PartnerState?, val household: Household?)
 
@@ -224,13 +230,25 @@ class LinkSyncImpl(
                     if (partnerState != null) {
                         lastName = partnerState.displayName.ifBlank { FALLBACK_NAME }
                         changed = syncRows(partnerState, hh, rows.filter { it.link?.ownerUid == hh.partnerUid })
+                        partnerState.lastSeen?.let { lastDocSeen = it }
                     }
                 }
                 if (flushRemovals()) changed = true
-                clearOrphanedMedia()
+                clearOrphanedMedia(hh)
                 if (changed) reschedule()
             }
         }
+    }
+
+    /**
+     * The owner reported [commandId] (a both-of-us command on [rowId]) APPLIED. The next owner doc that
+     * is newer than the last one processed now counts as reflecting it, whether or not it matches, so
+     * the pass clears `pendingBoth` itself and a reversal by the owner is not left pending.
+     */
+    internal suspend fun noteApplied(rowId: String, commandId: String) {
+        scope.async {
+            lock.withLock { if (!applied.containsKey(commandId)) applied[commandId] = lastDocSeen }
+        }.await()
     }
 
     /** Syncs [rows] (all owned by [hh]'s partner) with [owner]; true when any row changed. */
@@ -238,12 +256,14 @@ class LinkSyncImpl(
         var changed = false
         val pending = removals.all().keys
         val live = rows.filter { it.id !in pending }
+        val held = rows.mapNotNull { it.link?.pendingBoth?.commandId }.toSet()
+        applied.keys.retainAll(held)
         for (row in live) {
             try {
                 val doc = owner.alarms.firstOrNull { it.id == row.link?.ownerAlarmId }
                 if (doc == null) {
                     removals.add(row.id, RemovalReason.OWNER_DELETED)
-                } else if (syncRow(row, doc, owner.displayName.ifBlank { FALLBACK_NAME })) {
+                } else if (syncRow(row, doc, owner.displayName.ifBlank { FALLBACK_NAME }, owner.lastSeen)) {
                     changed = true
                 }
             } catch (e: CancellationException) {
@@ -256,7 +276,7 @@ class LinkSyncImpl(
         return changed
     }
 
-    private suspend fun syncRow(row: Alarm, doc: PartnerAlarm, name: String): Boolean {
+    private suspend fun syncRow(row: Alarm, doc: PartnerAlarm, name: String, seen: Instant?): Boolean {
         val link = checkNotNull(row.link)
         val oneShot = doc.days.isEmpty()
         val pb = link.pendingBoth
@@ -267,7 +287,9 @@ class LinkSyncImpl(
         val ownPending = pb?.type == CommandType.DISABLE || oneShotSkip
         val notify = turnedOff && link.joinerEnabled && !ownPending && (!oneShot || oneShotIsFuture(row))
         val resetJoiner = oneShot && !row.enabled && doc.enabled
-        val clear = pb != null && matches(pb, doc, oneShot)
+        val reflectedByNewDoc = pb != null && applied.containsKey(pb.commandId) &&
+            seen != null && applied[pb.commandId].let { it == null || seen > it }
+        val clear = pb != null && (matches(pb, doc, oneShot) || reflectedByNewDoc)
 
         val copied = row.copy(
             label = doc.label, hour = doc.hour, minute = doc.minute, days = doc.days, enabled = doc.enabled,
@@ -300,6 +322,7 @@ class LinkSyncImpl(
             alarms.updateLink(row.id) { l ->
                 if (l.pendingBoth?.commandId == pb.commandId) l.copy(pendingBoth = null) else l
             }
+            applied.remove(pb.commandId)
             changed = true
         }
         return changed
@@ -380,8 +403,21 @@ class LinkSyncImpl(
      * them so [LinkedMediaCache.inUse] stops holding their hashes. Empty refs only; never another
      * partner's.
      */
-    private suspend fun clearOrphanedMedia() {
-        val last = lastMedia ?: return
+    private suspend fun clearOrphanedMedia(hh: Household?) {
+        val last = lastMedia ?: run {
+            // A fresh process: refs persisted by an earlier one may outlive their last row.
+            val uid = hh?.partnerUid ?: currentHousehold.value?.partnerUid ?: return
+            if (mediaCache.inUse().isEmpty() || alarms.linkedAlarms.first().isNotEmpty()) return
+            try {
+                mediaCache.update(uid, emptyMap(), null)
+                lastMedia = MediaArgs(uid, emptyMap(), null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "media cache clear failed", e)
+            }
+            return
+        }
         if (last.alarms.isEmpty() && last.wallpaper == null) return
         if (alarms.linkedAlarms.first().any { it.link?.ownerUid == last.ownerUid }) return
         try {

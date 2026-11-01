@@ -86,8 +86,9 @@ class LinkSyncImplTest {
         media: AlarmMedia? = null,
     ) = PartnerAlarm(id, label, hour, minute, days, enabled, null, skip, media)
 
-    private fun state(vararg alarms: PartnerAlarm, name: String = "Shawn", wallpaper: MediaRef? = null) =
-        PartnerState(name, alarms.toList(), null, null, defaultWallpaper = wallpaper)
+    private fun state(
+        vararg alarms: PartnerAlarm, name: String = "Shawn", wallpaper: MediaRef? = null, seen: Instant? = null,
+    ) = PartnerState(name, alarms.toList(), null, seen, defaultWallpaper = wallpaper)
 
     private class Env(
         val test: LinkSyncImplTest,
@@ -825,5 +826,83 @@ class LinkSyncImplTest {
         }
         assertNotNull(thrown)
         assertEquals(1, e.rows().size)
+    }
+
+    // --- applied both-of-us commands ---
+
+    private val t1 = Instant.parse("2026-03-02T04:59:00Z")
+    private val t2 = Instant.parse("2026-03-02T05:00:01Z")
+
+    @Test fun `applied both-off stays pending on the cached doc and clears silently on the owner's new doc`() = runTest {
+        val pb = PendingBoth(CommandType.DISABLE, null, "c1")
+        val e = started(env(rows = listOf(row(pendingBoth = pb))))
+        e.partner.value = state(owner(), seen = t1)
+        runCurrent()
+        e.sync.noteApplied("row1", "c1")
+        e.partner.value = state(owner(label = "cached again"), seen = t1)
+        runCurrent()
+        assertEquals(pb, e.row()!!.link!!.pendingBoth)
+        e.partner.value = state(owner(enabled = false), seen = t2)
+        runCurrent()
+        assertNull(e.row()!!.link!!.pendingBoth)
+        assertFalse(e.row()!!.enabled)
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+    }
+
+    @Test fun `applied both-off stays pending against the cached doc even when the cached doc turns the copy off`() = runTest {
+        // The doc that finally shows enabled=false must not post a notice for the joiner's own command.
+        val pb = PendingBoth(CommandType.DISABLE, null, "c1")
+        val e = started(env(rows = listOf(row(pendingBoth = pb))))
+        e.sync.noteApplied("row1", "c1")
+        e.partner.value = state(owner(enabled = false), seen = t2)
+        runCurrent()
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+        assertNull(e.row()!!.link!!.pendingBoth)
+    }
+
+    @Test fun `applied then reversed by the owner clears pending, re-arms and does not notify`() = runTest {
+        val pb = PendingBoth(CommandType.DISABLE, null, "c1")
+        val e = started(env(rows = listOf(row(pendingBoth = pb))))
+        e.partner.value = state(owner(), seen = t1)
+        runCurrent()
+        e.sync.noteApplied("row1", "c1")
+        e.partner.value = state(owner(enabled = true), seen = t2)
+        runCurrent()
+        assertNull(e.row()!!.link!!.pendingBoth)
+        assertTrue(e.row()!!.enabled)
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+    }
+
+    @Test fun `applied one-shot both-skip clears on a newer doc without a notice`() = runTest {
+        val pb = PendingBoth(CommandType.SKIP_NEXT, x, "c1")
+        val e = started(env(rows = listOf(row(days = emptySet(), pendingBoth = pb))))
+        e.partner.value = state(owner(days = emptySet()), seen = t1)
+        runCurrent()
+        e.sync.noteApplied("row1", "c1")
+        e.partner.value = state(owner(days = emptySet(), enabled = false), seen = t2)
+        runCurrent()
+        assertNull(e.row()!!.link!!.pendingBoth)
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+    }
+
+    @Test fun `a newer command id is untouched by an applied older one`() = runTest {
+        val pb = PendingBoth(CommandType.ENABLE, null, "c2")
+        val e = started(env(rows = listOf(row(enabled = false, pendingBoth = pb))))
+        e.partner.value = state(owner(enabled = false), seen = t1)
+        runCurrent()
+        e.sync.noteApplied("row1", "c1")
+        e.partner.value = state(owner(enabled = false, label = "n"), seen = t2)
+        runCurrent()
+        assertEquals(pb, e.row()!!.link!!.pendingBoth)
+    }
+
+    @Test fun `stale persisted media refs are cleared once when no row remains`() = runTest {
+        val e = env(rows = emptyList())
+        e.media.inUseHashes += "sha1"
+        started(e)
+        assertEquals(listOf(FakeLinkedMediaCache.Update("them", emptyMap(), null)), e.media.updates)
+        e.partner.value = state(owner())
+        runCurrent()
+        assertEquals(1, e.media.updates.size)
     }
 }

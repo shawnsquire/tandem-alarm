@@ -49,12 +49,14 @@ class LinkRepositoryImpl(
     private val requestRemoval: suspend (String, RemovalReason) -> Unit,
     /** Cancels a pending removal under LinkSync's lock; false if the row is already gone. */
     private val cancelRemoval: suspend (String) -> Boolean,
+    /** LinkSync.noteApplied(rowId, commandId): LinkSync clears the pending command from the owner's next doc. */
+    private val noteApplied: suspend (String, String) -> Unit,
     private val scheduler: AlarmScheduler,
     private val notifier: CommandNotifier,
     private val clock: Clock,
     private val scope: CoroutineScope,
-    /** How long to wait for a fresh partner doc after a both-of-us command is APPLIED before clearing it anyway. */
-    private val appliedWait: kotlin.time.Duration = 1.minutes,
+    /** How long an APPLIED both-of-us command may wait for LinkSync to clear it before it is cleared here, silently. */
+    private val appliedFallback: kotlin.time.Duration = 30.minutes,
 ) : LinkRepository {
     private val joinLock = Mutex()
     private val watchLock = Any()
@@ -259,9 +261,10 @@ class LinkRepositoryImpl(
                 }
                 val applied = done?.first == CommandStatus.APPLIED
                 if (applied) {
-                    // APPLIED is terminal. LinkSync clears pendingBoth when the owner's doc matches; if the owner has
-                    // since reversed it, nothing would, so wait for one fresh doc (which postdates the application).
-                    withTimeoutOrNull(appliedWait) { partner.filterNotNull().first() }
+                    // APPLIED is terminal. LinkSync clears pendingBoth from the owner's next doc (inside its
+                    // pass, so the turn-off notice still sees it); this is only the bound if none ever comes.
+                    noteApplied(rowId, pending.commandId)
+                    delay(appliedFallback)
                 }
                 val reason = done?.second ?: "expired"
                 var cleared = false

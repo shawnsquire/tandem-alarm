@@ -6,6 +6,7 @@ import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -73,6 +74,7 @@ class LinkRepositoryImplTest {
         val notifier = FakeCommandNotifier()
         val removalCalls = mutableListOf<Pair<String, RemovalReason>>()
         val cancelCalls = mutableListOf<String>()
+        val noteCalls = mutableListOf<Pair<String, String>>()
         var cancelResult = true
         private fun store() = createSyncDataStore(
             File(tmp.root, "s-${storeCount++}.preferences_pb"), scope.backgroundScope,
@@ -83,6 +85,7 @@ class LinkRepositoryImplTest {
             fake, this.partner, householdFlow ?: this.household, sender, wrap(remote), processed, removals,
             { id, r -> removalCalls += id to r },
             { id -> cancelCalls += id; if (cancelResult) removals.remove(id); cancelResult },
+            { row, cmd -> noteCalls += row to cmd },
             scheduler, notifier,
             Clock.fixed(now, ZoneOffset.UTC), scope.backgroundScope,
         ) }
@@ -286,29 +289,20 @@ class LinkRepositoryImplTest {
     }
 
     @Test
-    fun appliedThenNonMatchingDocClearsPendingWithoutNotifying() = runTest {
+    fun appliedHandsOverToLinkSyncAndOnlyClearsAfterTheFallback() = runTest {
         val e = env(rows = listOf(linked()))
         e.repo.sendBoth("row1", CommandType.DISABLE, null)
         runCurrent()
+        val before = e.scheduler.rescheduleCount
         e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
+        advanceTimeBy(29.minutes)
         runCurrent()
-        assertNull(e.rows().single().link!!.pendingBoth)
-        assertEquals(2, e.scheduler.rescheduleCount)
-        assertTrue(e.notifier.rejected.isEmpty())
-    }
-
-    @Test
-    fun appliedWithNoDocClearsAfterBound() = runTest {
-        val e = env(rows = listOf(linked()), partner = null)
-        e.repo.sendBoth("row1", CommandType.DISABLE, null)
-        runCurrent()
-        e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
-        advanceTimeBy(59.seconds)
-        runCurrent()
+        assertEquals(listOf("row1" to "c1"), e.noteCalls)
         assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
-        advanceTimeBy(2.seconds)
+        advanceTimeBy(2.minutes)
         runCurrent()
         assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals(before + 1, e.scheduler.rescheduleCount)
         assertTrue(e.notifier.rejected.isEmpty())
     }
 
@@ -326,12 +320,13 @@ class LinkRepositoryImplTest {
     }
 
     @Test
-    fun startWithAlreadyAppliedCommandClears() = runTest {
+    fun startWithAlreadyAppliedCommandNotesItAgain() = runTest {
         val e = env(rows = listOf(linked(pending = PendingBoth(CommandType.DISABLE, null, "c5"))))
         e.remote.updatesFor("c5").emit(CommandStatus.APPLIED to null)
         e.repo.start()
         runCurrent()
-        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals(listOf("row1" to "c5"), e.noteCalls)
+        assertEquals("c5", e.rows().single().link!!.pendingBoth?.commandId)
     }
 
     @Test
