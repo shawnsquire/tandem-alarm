@@ -114,7 +114,7 @@ fun isArmed(alarm: Alarm): Boolean {
  * [context] is non-null (design "Ring command validation"), in order, against the slot's ring,
  * its merged members and the snooze ledger. Live state is matched on `alarm.id` plus X, never
  * on X alone or `cmd.alarmId`, so on a joiner [alarm] is the resolved linked row. With a null
- * [context], SNOOZE is "not supported yet" and STOP_RINGING needs a `ringId`. A SNOOZE missing
+ * [context], SNOOZE is "not supported yet" (the only such case) and STOP_RINGING needs a `ringId`. A SNOOZE missing
  * X or T is rejected "incomplete snooze". Merged members come from [RingContext.merged] and the
  * slot ring's own `merged`:
  * 1. Expired or duplicate: reject (I3).
@@ -134,10 +134,19 @@ fun isArmed(alarm: Alarm): Boolean {
  * STOP_RINGING with a `ringId` and no `occurrenceAt` keeps the ringId rule against [ring]. Rule 1
  * (expiry) runs first for every command; duplicates are the applier's job.
  *
- * Also for L1: SKIP_NEXT upgrades a solo skip to a shared skip; UNSKIP clears only the shared
- * skip; INVITE_LINK is checked for validity (expiry); a partner command aimed at a linked row's
- * `id` is rejected (owner-to-joiner commands are matched by `link.ownerAlarmId`). INVITE_LINK is
- * rejected "not supported yet" until then.
+ * Solo skips: SKIP_NEXT while the owner has a solo skip on the same X applies (the applier
+ * upgrades it to a shared skip). The pinned checks (SKIP_NEXT, DISABLE, one-shot SKIP_NEXT) run
+ * against the shared view, ignoring `soloSkippedOccurrenceAt`, since the partner still sees the
+ * owner ringing at X; "already skipped" looks only at the shared `skippedOccurrenceAt`. UNSKIP
+ * counts only the shared skip ("nothing to unskip" if only a solo skip exists).
+ *
+ * INVITE_LINK applies if the alarm exists, is an own row (`link == null`) and hasn't expired,
+ * regardless of [context].
+ *
+ * Linked rows: the applier resolves owner-to-joiner ring commands to the linked row before
+ * calling, so STOP_RINGING and SNOOZE accept a linked [alarm]. Every other type (SKIP_NEXT,
+ * UNSKIP, DISABLE, ENABLE, INVITE_LINK) aimed at a linked row is rejected "alarm not found", after
+ * the expiry and missing-alarm checks.
  */
 fun validate(
     cmd: Command,
@@ -149,13 +158,16 @@ fun validate(
 ): CommandDecision {
     if (now >= cmd.expiresAt) return CommandDecision.Reject("expired")
     if (alarm == null) return CommandDecision.Reject("alarm not found")
+    if (alarm.link != null && cmd.type !in RING_COMMANDS) return CommandDecision.Reject("alarm not found")
     val stale = CommandDecision.Reject("already rang or changed")
     val ringing = ring != null && ring.alarmId == cmd.alarmId
     val grace = FIRE_GRACE.toJavaDuration()
     fun pinned(): Boolean {
         val target = cmd.occurrenceAt ?: return false
-        return target == nextOccurrence(alarm, now.minus(grace), zone) ||
-            target == nextOccurrence(alarm, now, zone)
+        // The partner still sees this phone ringing at a solo-skipped X, so pin against the shared view.
+        val shared = alarm.copy(soloSkippedOccurrenceAt = null)
+        return target == nextOccurrence(shared, now.minus(grace), zone) ||
+            target == nextOccurrence(shared, now, zone)
     }
     fun disableLike(): CommandDecision = when {
         !alarm.enabled -> CommandDecision.Reject("already off")
@@ -198,9 +210,11 @@ fun validate(
             } else {
                 CommandDecision.Reject("not supported yet")
             }
-        CommandType.INVITE_LINK -> CommandDecision.Reject("not supported yet")
+        CommandType.INVITE_LINK -> CommandDecision.Apply
     }
 }
+
+private val RING_COMMANDS = setOf(CommandType.STOP_RINGING, CommandType.SNOOZE)
 
 /** Ring-command rules 2 to 6 (see [validate]); expiry and a missing alarm are handled by the caller. */
 private fun validateRingOccurrence(

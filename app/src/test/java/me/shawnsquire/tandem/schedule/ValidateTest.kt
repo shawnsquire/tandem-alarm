@@ -409,16 +409,10 @@ class ValidateTest {
     }
 
     @Test
-    fun snoozeAndInviteLinkAreNotSupportedWithoutContext() {
-        for (type in listOf(CommandType.SNOOZE, CommandType.INVITE_LINK)) {
-            assertEquals(reject("not supported yet"), check(cmd(type, todayRing), alarm()))
-        }
-    }
-
-    @Test
-    fun inviteLinkIsNotSupportedYetWithContext() {
+    fun inviteLinkAppliesWithAndWithoutContext() {
         val c = cmd(CommandType.INVITE_LINK, todayRing)
-        assertEquals(reject("not supported yet"), validate(c, alarm(), null, now, newYork, context))
+        assertEquals(apply, check(c, alarm()))
+        assertEquals(apply, validate(c, alarm(), null, now, newYork, context))
     }
 
     @Test
@@ -641,5 +635,86 @@ class ValidateTest {
         val live = ctx(ring = ringState(occurrenceAt = x))
         assertEquals(reject("incomplete snooze"), run(cmd(CommandType.SNOOZE, x), alarm(), live))
         assertEquals(reject("incomplete snooze"), run(cmd(CommandType.SNOOZE, snoozedUntil = t0), alarm(), live))
+    }
+
+    // ---- Solo-skip upgrades, invites and linked rows ----
+
+    private val soloAtX = alarm(soloSkippedOccurrenceAt = todayRing)
+
+    @Test
+    fun skipNextUpgradesSoloSkipOnSameOccurrence() {
+        assertEquals(apply, check(cmd(CommandType.SKIP_NEXT, todayRing), soloAtX))
+    }
+
+    @Test
+    fun disableOnSoloSkippedOccurrenceApplies() {
+        assertEquals(apply, check(cmd(CommandType.DISABLE, todayRing), soloAtX))
+    }
+
+    @Test
+    fun oneShotSoloSkippedSkipNextApplies() {
+        val a = oneShot().copy(soloSkippedOccurrenceAt = todayRing)
+        assertEquals(apply, check(cmd(CommandType.SKIP_NEXT, todayRing), a))
+    }
+
+    @Test
+    fun skipNextWithSharedSkipAtXStillAlreadySkippedEvenWithSolo() {
+        val a = alarm(skippedOccurrenceAt = todayRing, soloSkippedOccurrenceAt = todayRing)
+        assertEquals(reject("already skipped"), check(cmd(CommandType.SKIP_NEXT, todayRing), a))
+    }
+
+    @Test
+    fun skipNextAfterSoloSkippedOccurrenceIsStaleAgainstSharedView() {
+        assertEquals(reject("already rang or changed"), check(cmd(CommandType.SKIP_NEXT, tomorrowRing), soloAtX))
+    }
+
+    @Test
+    fun unskipIgnoresSoloOnlySkip() {
+        assertEquals(reject("nothing to unskip"), check(cmd(CommandType.UNSKIP, todayRing), soloAtX))
+    }
+
+    @Test
+    fun unskipAppliesToSharedSkipEvenWithSoloAtSameOccurrence() {
+        val a = alarm(skippedOccurrenceAt = todayRing, soloSkippedOccurrenceAt = todayRing)
+        assertEquals(apply, check(cmd(CommandType.UNSKIP, todayRing), a))
+    }
+
+    @Test
+    fun inviteLinkOnOwnRowApplies() {
+        assertEquals(apply, check(cmd(CommandType.INVITE_LINK), alarm()))
+    }
+
+    @Test
+    fun inviteLinkExpiredRejects() {
+        val c = cmd(CommandType.INVITE_LINK, expiresAt = now)
+        assertEquals(reject("expired"), check(c, alarm()))
+    }
+
+    @Test
+    fun inviteLinkMissingAlarmRejects() {
+        assertEquals(reject("alarm not found"), check(cmd(CommandType.INVITE_LINK), null))
+    }
+
+    @Test
+    fun partnerControlCommandsOnLinkedRowAreNotFound() {
+        val types = listOf(
+            CommandType.SKIP_NEXT,
+            CommandType.UNSKIP,
+            CommandType.DISABLE,
+            CommandType.ENABLE,
+            CommandType.INVITE_LINK,
+        )
+        for (type in types) {
+            assertEquals(reject("alarm not found"), check(cmd(type, todayRing), linked()))
+        }
+    }
+
+    @Test
+    fun ringCommandsAcceptLinkedRow() {
+        val live = ctx(ring = ringState(alarmId = "L1", occurrenceAt = x))
+        assertEquals(apply, run(stop(), linked(), live))
+        assertEquals(apply, run(snooze(), linked(), live))
+        val byRingId = cmd(CommandType.STOP_RINGING, ringId = "r1").copy(alarmId = "L1")
+        assertEquals(apply, validate(byRingId, linked(), ringState(alarmId = "L1"), now, newYork))
     }
 }
