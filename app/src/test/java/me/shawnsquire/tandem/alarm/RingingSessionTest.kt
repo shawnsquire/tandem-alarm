@@ -35,6 +35,7 @@ import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.RingMember
@@ -800,6 +801,61 @@ class RingingSessionTest {
     @Test fun linkedMovedEarlierWithAFailedPreFireReadRingsAtX() = runTest {
         // The joiner never learns of the move: its row still says 6:30, so X rings as usual (I1).
         val h = harness(alarms = listOf(linked().copy(days = monday)), preFire = LambdaPreFire { throw RuntimeException("offline") })
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+    }
+
+    // ---- the owner's answer to the late ring (Alarm.lateRing) ----
+
+    private fun TestScope.movedEarlierAnswered(answer: LateRing?): Harness {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked().copy(days = monday)), preFire = LambdaPreFire {
+            h.repo.upsertLinked(h.repo.get("a")!!.copy(hour = 6, minute = 0, lateRing = answer)); true
+        })
+        h.fire(occ = occurrence)
+        return h
+    }
+
+    @Test fun linkedMovedEarlierWithTheOwnerDecliningTheLateRingIsSuppressed() = runTest {
+        val h = movedEarlierAnswered(LateRing(occurrence, ring = false))
+        assertQuiet(h)
+        assertNull(h.fired.lateAt("a"))
+    }
+
+    @Test fun linkedMovedEarlierWithTheOwnerAcceptingTheLateRingRingsLate() = runTest {
+        val h = movedEarlierAnswered(LateRing(occurrence, ring = true))
+        assertRangAt(h)
+        assertEquals(occurrence, h.fired.lateAt("a"))
+    }
+
+    @Test fun linkedMovedEarlierWithAnAnswerForAnotherOccurrenceRingsLate() = runTest {
+        assertRangAt(movedEarlierAnswered(LateRing(occurrence.plusSeconds(86_400), ring = false)))
+        assertRangAt(movedEarlierAnswered(LateRing(occurrence.minusSeconds(86_400), ring = false)))
+    }
+
+    @Test fun linkedMovedEarlierWithTheDecliningAnswerArrivingBeforeTheClaimIsSuppressed() = runTest {
+        val h = harness(alarms = listOf(linked().copy(days = monday)))
+        val slot = h.controller.before {
+            h.repo.upsertLinked(h.repo.get("a")!!.copy(hour = 6, minute = 0, lateRing = LateRing(occurrence, ring = false)))
+        }
+        slotSession(h, slot).start("a", occurrence, false, null, TEST_ZONE)
+        assertQuiet(h)
+        assertNull(h.fired.lateAt("a"))
+    }
+
+    @Test fun linkedDecliningAnswerWithAFailedPreFireReadRingsAtX() = runTest {
+        // The answer never arrived (no lateRing on the old copy), and X is still on the schedule (I1).
+        val h = harness(alarms = listOf(linked().copy(days = monday)), preFire = LambdaPreFire { false })
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+    }
+
+    @Test fun ownAlarmWithADecliningLateRingAnswerStillRings() = runTest {
+        // An own row's lateRing is the owner's answer for its joiners; it never affects the owner's own fires.
+        lateinit var h: Harness
+        h = harness(preFire = LambdaPreFire {
+            h.repo.upsert(h.repo.get("a")!!.copy(hour = 6, minute = 0, lateRing = LateRing(occurrence, ring = false))); true
+        })
         h.fire(occ = occurrence)
         assertRangAt(h)
     }

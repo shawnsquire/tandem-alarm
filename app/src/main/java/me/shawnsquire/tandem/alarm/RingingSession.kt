@@ -485,8 +485,9 @@ class RingingSession(
      * can't suppress. Own rows are never checked: an edit there re-arms the alarm itself, and no
      * stored command asked to drop X (I1).
      *
-     * A time moved earlier the same day is not moved off unless that time is skipped here
-     * ([ringsLate]). Moved later, or off that day, suppresses: a later time rings at its own fire.
+     * A time moved earlier the same day is not moved off unless that time is skipped here or the
+     * owner declined the late ring for X ([ringsLate]). Moved later, or off that day, suppresses: a later
+     * time rings at its own fire.
      *
      * Checked in [armedZone], the zone X was computed in, so a zone change since arming never
      * suppresses (I1). A fire that carries no zone (a replay, a re-arm from the records, an intent
@@ -501,13 +502,18 @@ class RingingSession(
      * time already passed ([earlierOccurrenceThatDay]): the joiner learned of it too late, so X rings
      * late rather than not at all that day (Shawn's call, 2026-11-01). Not when that moved-to time is
      * in [skippedOccurrences] (the joiner's own skip, the owner's shared one, a pending "both" skip):
-     * those are stored commands. The owner's solo skip never counts. A late ring is marked in
-     * [firedLedger] so its dismiss leaves a linked one-shot on. Its mirrored STOP or SNOOZE is stale
+     * those are stored commands. The owner's solo skip never counts. Nor when the owner answered
+     * "don't ring" for exactly this X ([Alarm.lateRing] with `ring = false`, copied by LinkSync): a
+     * stored command-like value from the owner, so it may suppress (I1). Anything else rings: no
+     * answer, `ring = true`, an answer for another X, or an owner doc that never arrived. A late ring is
+     * marked in [firedLedger] so its dismiss leaves a linked one-shot on. Its mirrored STOP or SNOOZE is stale
      * on the owner and rejected there; RingMirror only logs that.
      */
     private fun ringsLate(alarm: Alarm, occurrence: Instant, armedZone: ZoneId?): Boolean {
         if (alarm.link == null || armedZone == null || fallsOnSchedule(alarm, occurrence, armedZone)) return false
         val moved = earlierOccurrenceThatDay(alarm, occurrence, armedZone) ?: return false
+        // The owner's answer for exactly this X: a stored value their doc already copied here (I1).
+        if (alarm.lateRing?.let { it.occurrenceAt == occurrence && !it.ring } == true) return false
         return moved !in alarm.skippedOccurrences()
     }
 
