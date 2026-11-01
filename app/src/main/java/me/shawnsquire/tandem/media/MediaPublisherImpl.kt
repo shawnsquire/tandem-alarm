@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -158,9 +159,13 @@ class MediaPublisherImpl(
                 tracked.uploaded -= sha
                 tracked.pending += sha
                 commitTracked(hh, tracked)
-                storage.delete(hh.id, hh.myUid, sha)
-                tracked.pending -= sha
-                commitTracked(hh, tracked)
+                // Not cancellable: collectLatest joins this pass before starting the next, so a re-upload of
+                // the same sha cannot be overtaken by a delete that is still running server-side.
+                withContext(NonCancellable) {
+                    storage.delete(hh.id, hh.myUid, sha)
+                    tracked.pending -= sha
+                    commitTracked(hh, tracked)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

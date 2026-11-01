@@ -47,15 +47,20 @@ private class FakeMediaStorage : MediaStorage {
     val server = mutableSetOf<String>()
     var afterUpload: (suspend (sha: String) -> Unit)? = null
     var afterDelete: (suspend (sha: String) -> Unit)? = null
+    var deleteGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    val calls = mutableListOf<String>()
 
     override suspend fun upload(hid: String, ownerUid: String, sha: String, file: File, contentType: String) {
         if (failUploads) throw IOException("offline")
         uploads += Upload(hid, ownerUid, sha, file.readBytes().size, contentType)
+        calls += "upload:$sha"
         server += sha
         afterUpload?.invoke(sha)
     }
 
     override suspend fun delete(hid: String, ownerUid: String, sha: String) {
+        deleteGate?.await()
+        calls += "delete:$sha"
         deletes += Triple(hid, ownerUid, sha)
         server -= sha
         afterDelete?.invoke(sha)
@@ -350,7 +355,7 @@ class MediaPublisherImplTest {
     }
 
     @Test
-    fun aDeleteCancelledAfterItFinishedServerSideDoesNotLeaveADanglingRef() = runTest {
+    fun aDeleteWhoseResultIsLostDoesNotLeaveADanglingRef() = runTest {
         source.put("/w/a.jpg", bytesA)
         source.put("/w/b.jpg", bytesB)
         linkedWallpaper("/w/a.jpg")
@@ -360,12 +365,12 @@ class MediaPublisherImplTest {
         advanceUntilIdle()
         assertEquals(setOf(sha(bytesA)), storage.server)
 
-        // Switch to B; while A is being deleted the owner switches back, which cancels the pass.
+        // Switch to B; the delete of A finishes server-side but its result is lost while the owner switches back.
         storage.afterDelete = { sha ->
             if (sha == sha(bytesA)) {
                 storage.afterDelete = null
                 linkedWallpaper("/w/a.jpg")
-                awaitCancellation()
+                throw IOException("lost result")
             }
         }
         linkedWallpaper("/w/b.jpg")
@@ -374,6 +379,34 @@ class MediaPublisherImplTest {
         assertEquals(sha(bytesA), p.published.first()!!.alarms.getValue("a").wallpaper!!.sha)
         assertEquals(setOf(sha(bytesA)), storage.server)
         assertEquals(2, storage.uploads.count { it.sha == sha(bytesA) })
+    }
+
+    @Test
+    fun aDeleteInFlightFinishesBeforeTheNextPassReuploadsTheSha() = runTest {
+        source.put("/w/a.jpg", bytesA)
+        source.put("/w/b.jpg", bytesB)
+        linkedWallpaper("/w/a.jpg")
+        partner.set(link("a"))
+        val p = publisher()
+        p.start()
+        advanceUntilIdle()
+
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        storage.deleteGate = gate
+        linkedWallpaper("/w/b.jpg")
+        runCurrent() // pass uploads B and is now suspended inside the delete of A
+        linkedWallpaper("/w/a.jpg") // cancels that pass
+        runCurrent()
+        assertEquals(1, storage.uploads.count { it.sha == sha(bytesA) }) // no re-upload while the delete runs
+
+        storage.deleteGate = null
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        val a = sha(bytesA)
+        assertTrue(storage.calls.indexOf("delete:$a") < storage.calls.lastIndexOf("upload:$a"))
+        assertEquals(sha(bytesA), p.published.first()!!.alarms.getValue("a").wallpaper!!.sha)
+        assertEquals(setOf(a), storage.server)
     }
 
     @Test
