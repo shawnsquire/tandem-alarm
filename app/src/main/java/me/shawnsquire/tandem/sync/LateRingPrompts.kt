@@ -60,6 +60,8 @@ class LateRingPrompts(
     private val partner: PartnerRepository,
     /** Non-null only while paired. */
     private val household: Flow<Household?>,
+    /** Server-confirms a null [household], which also means "unknown" after a listener error. */
+    private val confirmHousehold: suspend () -> HouseholdCheck,
     private val notifier: LateRingNotifier,
     /** Schedules a [check] for the alarm (4b: unique per alarm, replacing, delayed). */
     private val enqueueCheck: (alarmId: String) -> Unit,
@@ -92,30 +94,49 @@ class LateRingPrompts(
         }
     }
 
-    /** Asks the server what the joiner still has and posts the prompt when it would ring late. */
+    /**
+     * Asks the server what the joiner still has and posts the prompt when it would ring late. Every DONE
+     * that posts nothing also removes a prompt already showing for the alarm; RETRY leaves it alone.
+     */
     suspend fun check(alarmId: String): CheckResult {
-        val alarm = alarms.get(alarmId)
-        if (alarm == null || alarm.link != null || !alarm.enabled) return CheckResult.DONE
-        // Unpaired: nothing to read, so stop at once. Not known yet: try again later.
+        val first = alarms.get(alarmId)
+        if (first == null || first.link != null || !first.enabled) return done(alarmId)
+        // A null household is "unknown" as much as "unpaired" (a listener error emits null too): confirm.
         val known = withTimeoutOrNull(HOUSEHOLD_WAIT) { listOf(household.first()) } ?: return CheckResult.RETRY
-        if (known.single() == null) return CheckResult.DONE
+        if (known.single() == null) {
+            when (confirmHousehold()) {
+                HouseholdCheck.Unpaired -> return done(alarmId)
+                HouseholdCheck.Unknown -> return CheckResult.RETRY
+                is HouseholdCheck.Paired -> Unit
+            }
+        }
         val state = partner.readFromServer() ?: return CheckResult.RETRY
-        val link = state.links.firstOrNull { it.ownerAlarmId == alarmId } ?: return CheckResult.DONE
+        // An edit can land during the read: decide on the row as it is now.
+        val alarm = alarms.get(alarmId)
+        if (alarm == null || alarm.link != null || !alarm.enabled) return done(alarmId)
+        val link = state.links.firstOrNull { it.ownerAlarmId == alarmId } ?: return done(alarmId)
         val hour = link.hour
         val minute = link.minute
         val days = link.days
         // An older partner build does not publish its copy; never prompt on unknown.
-        if (hour == null || minute == null || days == null) return CheckResult.DONE
-        if (matches(alarm, hour, minute, days)) return CheckResult.DONE
+        if (hour == null || minute == null || days == null) return done(alarmId)
+        if (matches(alarm, hour, minute, days)) return done(alarmId)
         val joiner = alarm.copy(
             hour = hour, minute = minute, days = days, enabled = true,
             skippedOccurrenceAt = null, soloSkippedOccurrenceAt = null, lateRing = null,
         )
-        val xj = nextOccurrence(joiner, clock.instant(), clock.zone) ?: return CheckResult.DONE
+        val xj = nextOccurrence(joiner, clock.instant(), clock.zone) ?: return done(alarmId)
         // Moved later, or that day removed: the joiner suppresses its late ring anyway.
-        val movedTo = earlierOccurrenceThatDay(alarm, xj, clock.zone) ?: return CheckResult.DONE
-        if (alarm.lateRing?.occurrenceAt == xj) return CheckResult.DONE
+        val movedTo = earlierOccurrenceThatDay(alarm, xj, clock.zone) ?: return done(alarmId)
+        if (alarm.lateRing?.occurrenceAt == xj) return done(alarmId)
         notifier.post(LateRingPrompt(alarmId, state.displayName.ifBlank { FALLBACK_NAME }, movedTo, xj))
+        // The partner may have confirmed while this check ran; the watcher won't re-emit that state.
+        latestPartner?.let { safeSweep(it) }
+        return CheckResult.DONE
+    }
+
+    private fun done(alarmId: String): CheckResult {
+        notifier.cancel(alarmId)
         return CheckResult.DONE
     }
 
@@ -139,14 +160,22 @@ class LateRingPrompts(
                 .collect { state ->
                     // Null is unknown (unpaired, not received yet, listener error): cancel nothing.
                     if (state == null) return@collect
-                    try {
-                        sweep(state)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(TAG, "late-ring sweep failed", e)
-                    }
+                    latestPartner = state
+                    safeSweep(state)
                 }
+        }
+    }
+
+    /** The newest non-null partner state the watcher has seen. */
+    @Volatile private var latestPartner: PartnerState? = null
+
+    private suspend fun safeSweep(state: PartnerState) {
+        try {
+            sweep(state)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "late-ring sweep failed", e)
         }
     }
 

@@ -6,6 +6,9 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -66,11 +69,14 @@ class LateRingPromptsTest {
         val alarms = FakeAlarmRepository(listOf(owner))
         val partner = FakePartnerRepository(null).also { it.serverState = partnerState }
         val notifier = FakeLateRingNotifier()
-        val household = flowOf(if (paired) Household("h", "me", "them") else null)
+        var household: Flow<Household?> = flowOf(if (paired) Household("h", "me", "them") else null)
+        /** What the server confirms when the household flow says null. */
+        var confirm: HouseholdCheck = HouseholdCheck.Unpaired
+        var confirms = 0
         val enqueued = mutableListOf<String>()
         val cancelled = mutableListOf<String>()
         fun prompts(scope: kotlinx.coroutines.CoroutineScope) = LateRingPrompts(
-            alarms, partner, household, notifier, { enqueued += it }, { cancelled += it }, clock, scope,
+            alarms, partner, household, { confirms++; confirm }, notifier, { enqueued += it }, { cancelled += it }, clock, scope,
         )
     }
 
@@ -174,6 +180,127 @@ class LateRingPromptsTest {
         assertEquals(LateRingPrompts.CheckResult.DONE, env.prompts(this).check("a1"))
         assertTrue(env.notifier.posts.isEmpty())
         assertEquals(0, env.partner.serverReads)
+    }
+
+    @Test fun `unknown household that the server says is unpaired is done without a read`() = runTest {
+        val env = Env(paired = false)
+        env.confirm = HouseholdCheck.Unpaired
+        assertEquals(LateRingPrompts.CheckResult.DONE, env.prompts(this).check("a1"))
+        assertEquals(1, env.confirms)
+        assertEquals(0, env.partner.serverReads)
+        assertTrue(env.notifier.posts.isEmpty())
+    }
+
+    @Test fun `unknown household that the server cannot confirm retries`() = runTest {
+        val env = Env(paired = false)
+        env.confirm = HouseholdCheck.Unknown
+        assertEquals(LateRingPrompts.CheckResult.RETRY, env.prompts(this).check("a1"))
+        assertEquals(0, env.partner.serverReads)
+        assertTrue(env.notifier.posts.isEmpty())
+        assertTrue(env.notifier.cancels.isEmpty())
+    }
+
+    @Test fun `household that never emits retries`() = runTest {
+        val env = Env()
+        env.household = flow { awaitCancellation() }
+        assertEquals(LateRingPrompts.CheckResult.RETRY, env.prompts(this).check("a1"))
+        assertEquals(0, env.confirms)
+        assertEquals(0, env.partner.serverReads)
+        assertTrue(env.notifier.posts.isEmpty())
+    }
+
+    @Test fun `unknown household that the server says is paired goes on to the read`() = runTest {
+        val env = Env(paired = false)
+        env.confirm = HouseholdCheck.Paired(Household("h", "me", "them"))
+        assertEquals(LateRingPrompts.CheckResult.DONE, env.prompts(this).check("a1"))
+        assertEquals(1, env.partner.serverReads)
+        assertEquals(1, env.notifier.posts.size)
+    }
+
+    @Test fun `a done check cancels a prompt posted earlier`() = runTest {
+        val env = Env(partnerState = state(published(6, 0)))
+        env.notifier.post(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30")))
+        assertEquals(LateRingPrompts.CheckResult.DONE, env.prompts(this).check("a1"))
+        assertTrue(env.notifier.posted().isEmpty())
+    }
+
+    @Test fun `a done check cancels for a missing, disabled or unpaired alarm`() = runTest {
+        val disabled = Env(owner = alarm().copy(enabled = false))
+        disabled.notifier.post(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30")))
+        disabled.prompts(this).check("a1")
+        assertTrue(disabled.notifier.posted().isEmpty())
+        val unpaired = Env(paired = false)
+        unpaired.notifier.post(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30")))
+        unpaired.prompts(this).check("a1")
+        assertTrue(unpaired.notifier.posted().isEmpty())
+    }
+
+    @Test fun `a retry leaves a showing prompt alone`() = runTest {
+        val env = Env(partnerState = null)
+        env.notifier.post(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30")))
+        assertEquals(LateRingPrompts.CheckResult.RETRY, env.prompts(this).check("a1"))
+        assertEquals(setOf("a1"), env.notifier.posted())
+    }
+
+    @Test fun `an edit that lands during the server read is judged on the fresh row`() = runTest {
+        val env = Env()
+        val slowPartner = object : PartnerRepository by env.partner {
+            override suspend fun readFromServer(): PartnerState? {
+                val state = env.partner.readFromServer()
+                env.alarms.upsert(alarm().copy(enabled = false))
+                return state
+            }
+        }
+        val prompts = LateRingPrompts(
+            env.alarms, slowPartner, env.household, { env.confirm }, env.notifier, {}, {}, env.clock, this,
+        )
+        env.notifier.post(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30")))
+        assertEquals(LateRingPrompts.CheckResult.DONE, prompts.check("a1"))
+        assertEquals(1, env.notifier.posts.size)
+        assertTrue(env.notifier.posted().isEmpty())
+    }
+
+    @Test fun `a fresh row that moved again is the one the prompt describes`() = runTest {
+        val env = Env()
+        val slowPartner = object : PartnerRepository by env.partner {
+            override suspend fun readFromServer(): PartnerState? {
+                val state = env.partner.readFromServer()
+                env.alarms.upsert(alarm(5, 30))
+                return state
+            }
+        }
+        val prompts = LateRingPrompts(
+            env.alarms, slowPartner, env.household, { env.confirm }, env.notifier, {}, {}, env.clock, this,
+        )
+        prompts.check("a1")
+        assertEquals(at("05:30"), env.notifier.posts.single().movedTo)
+    }
+
+    @Test fun `a watcher that already saw the confirming state clears the prompt right after the post`() = runTest {
+        val env = Env()
+        env.partner.set(state(published(6, 0)))
+        val prompts = LateRingPrompts(
+            env.alarms, env.partner, env.household, { env.confirm }, env.notifier, {}, {}, env.clock,
+            kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
+        )
+        prompts.start()
+        runCurrent()
+        assertEquals(LateRingPrompts.CheckResult.DONE, prompts.check("a1"))
+        assertEquals(1, env.notifier.posts.size)
+        assertTrue(env.notifier.posted().isEmpty())
+    }
+
+    @Test fun `a watcher that saw only the old state leaves the prompt`() = runTest {
+        val env = Env()
+        env.partner.set(state(published()))
+        val prompts = LateRingPrompts(
+            env.alarms, env.partner, env.household, { env.confirm }, env.notifier, {}, {}, env.clock,
+            kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
+        )
+        prompts.start()
+        runCurrent()
+        prompts.check("a1")
+        assertEquals(setOf("a1"), env.notifier.posted())
     }
 
     @Test fun `blank partner name falls back`() = runTest {
@@ -290,8 +417,8 @@ class LateRingPromptsTest {
 
     private fun TestScope.watched(env: Env): LateRingPrompts {
         val prompts = LateRingPrompts(
-            env.alarms, env.partner, env.household, env.notifier, { env.enqueued += it }, { env.cancelled += it }, env.clock,
-            kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
+            env.alarms, env.partner, env.household, { env.confirm }, env.notifier, { env.enqueued += it }, { env.cancelled += it },
+            env.clock, kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
         )
         env.notifier.post(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30")))
         prompts.start()

@@ -118,9 +118,14 @@ class AppContainer private constructor(
     val fcmTokenStore = FcmTokenStore(context.syncDataStore)
     private val commandRemote = FirestoreCommandRemote(firestore)
     val partnerRepository: PartnerRepository = PartnerRepositoryImpl(householdFlow, firestore)
+    private val confirmHousehold: suspend () -> HouseholdCheck = {
+        val uid = authManager.uid.value
+        if (uid == null) HouseholdCheck.Unknown
+        else withTimeoutOrNull(15.seconds) { householdOnServer(firestore, uid) } ?: HouseholdCheck.Unknown
+    }
     // L8: asks the owner whether a joiner that hasn't picked up an earlier move should ring late.
     val lateRingPrompts = LateRingPrompts(
-        alarmRepository, partnerRepository, householdFlow, AndroidLateRingNotifier(context),
+        alarmRepository, partnerRepository, householdFlow, confirmHousehold, AndroidLateRingNotifier(context),
         { LateRingCheckWorker.enqueue(context, it) }, { LateRingCheckWorker.cancel(context, it) }, LiveZoneClock, syncScope,
     )
     val pairingRepository: PairingRepository =
@@ -160,11 +165,7 @@ class AppContainer private constructor(
     val linkSyncImpl = LinkSyncImpl(
         partnerRepository.partner, householdFlow, alarmRepository, ringingController, ringStateStore.state,
         alarmScheduler, linkedMediaCache, commandNotifier, linkRemovals, LiveZoneClock, syncScope,
-        confirmHousehold = {
-            val uid = authManager.uid.value
-            if (uid == null) HouseholdCheck.Unknown
-            else withTimeoutOrNull(15.seconds) { householdOnServer(firestore, uid) } ?: HouseholdCheck.Unknown
-        },
+        confirmHousehold = confirmHousehold,
     ) // L4
     val linkSync: LinkSync = linkSyncImpl
     val ringMirror: RingMirror = // L4 (the engine's port gets it in init)

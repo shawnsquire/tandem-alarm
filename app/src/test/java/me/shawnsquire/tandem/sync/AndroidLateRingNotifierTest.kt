@@ -17,6 +17,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -36,6 +37,9 @@ class AndroidLateRingNotifierTest {
     private fun short(at: Instant) =
         DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(at.atZone(ZoneId.systemDefault()))
 
+    private fun day(at: Instant) =
+        DateTimeFormatter.ofPattern("EEE", Locale.getDefault()).format(at.atZone(ZoneId.systemDefault()))
+
     private fun single(): Notification = shadowOf(nm).allNotifications.single()
 
     @Test fun `posts the question with both times on the partner channel`() {
@@ -48,6 +52,25 @@ class AndroidLateRingNotifierTest {
         assertEquals(expected, n.extras.getCharSequence("android.bigText").toString())
         assertEquals("partner_commands", n.channelId)
         assertTrue(n.contentIntent != null)
+    }
+
+    @Test fun `same day shows plain times with no day name`() {
+        grant()
+        notifier.post(prompt)
+        val n = single()
+        assertTrue(!n.extras.getCharSequence("android.text").toString().contains(day(old)))
+        assertTrue(!n.actions.first().title.toString().contains(day(old)))
+    }
+
+    @Test fun `another day puts the day name before the occurrence time but not the moved time`() {
+        grant()
+        val tomorrow = old.plusSeconds(24 * 3600)
+        notifier.post(prompt.copy(occurrenceAt = tomorrow))
+        val n = single()
+        val expected = "Sam's phone hasn't picked up the change to ${short(movedTo)} yet. " +
+            "If it still hasn't by ${day(tomorrow)} ${short(tomorrow)}, should it ring then?"
+        assertEquals(expected, n.extras.getCharSequence("android.text").toString())
+        assertEquals("Ring at ${day(tomorrow)} ${short(tomorrow)}", n.actions.first().title.toString())
     }
 
     @Test fun `has Ring and Skip actions that broadcast the answer`() {

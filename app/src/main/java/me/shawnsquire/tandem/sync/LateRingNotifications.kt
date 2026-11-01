@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import me.shawnsquire.tandem.R
 import java.time.Instant
 import java.time.ZoneId
+import java.util.Locale
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -33,14 +34,14 @@ class AndroidLateRingNotifier(
             if (remaining <= 0) return
             AndroidCommandNotifier.ensureChannel(context)
             val text = context.getString(
-                R.string.link_notice_late_ring, prompt.partnerName, time(prompt.movedTo), time(prompt.occurrenceAt),
+                R.string.link_notice_late_ring, prompt.partnerName, time(prompt.movedTo), occurrence(prompt.occurrenceAt),
             )
             val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
             val tap = launch?.let {
                 PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             }
             val ring = action(
-                context.getString(R.string.link_late_ring_ring, time(prompt.occurrenceAt)),
+                context.getString(R.string.link_late_ring_ring, occurrence(prompt.occurrenceAt)),
                 LateRingActionReceiver.ACTION_RING, prompt,
             )
             val skip = action(context.getString(R.string.link_late_ring_skip), LateRingActionReceiver.ACTION_SKIP, prompt)
@@ -79,7 +80,14 @@ class AndroidLateRingNotifier(
     }
 
     private fun time(at: Instant): String =
-        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(at.atZone(ZoneId.systemDefault()))
+        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(at.atZone(clock.zone))
+
+    /** The occurrence time, with a short day name ("Tue 6:30") when it isn't today. */
+    private fun occurrence(at: Instant): String {
+        val local = at.atZone(clock.zone)
+        if (local.toLocalDate() == clock.instant().atZone(clock.zone).toLocalDate()) return time(at)
+        return "${DateTimeFormatter.ofPattern("EEE", Locale.getDefault()).format(local)} ${time(at)}"
+    }
 
     private fun action(title: String, action: String, prompt: LateRingPrompt): NotificationCompat.Action {
         val intent = Intent(context, LateRingActionReceiver::class.java)
