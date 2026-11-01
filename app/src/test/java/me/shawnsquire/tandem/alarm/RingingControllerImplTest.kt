@@ -22,6 +22,7 @@ import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -305,7 +306,7 @@ class RingingControllerImplTest {
         assertTrue(h.repo.get("a")!!.enabled)
 
         clock = sevenTen
-        assertTrue(c.claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, c.claimSnoozeResume("ring-A", "a"))
         assertEquals(RingState("a", "ring-A", sevenTen, null), h.store.state.first())
         assertTrue(h.repo.get("a")!!.enabled)
         assertNull(h.ledger.get("ring-A"))
@@ -314,7 +315,8 @@ class RingingControllerImplTest {
 
     @Test fun claimFireParksSnoozedRing() = runTest {
         val h = snoozedA()
-        h.controller().claimFire(ringB)
+        val ringB = ringB.copy(occurrenceAt = sevenOhFive) // a known occurrence still parks, never merges
+        assertEquals(SlotClaim.Claimed, h.controller().claimFire(ringB))
         assertEquals(ringB, h.store.state.first())
         assertTrue(h.repo.get("a")!!.enabled)
         assertTrue(h.armer.cancelled.isEmpty())
@@ -322,6 +324,7 @@ class RingingControllerImplTest {
         assertEquals(0, h.scheduler.rescheduleCount)
     }
 
+    /** No occurrence (never on the fire path): no member can be written, so it supersedes as before. */
     @Test fun claimFireDismissesSoundingRing() = runTest {
         val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringing)
         h.controller().claimFire(ringB)
@@ -353,7 +356,7 @@ class RingingControllerImplTest {
 
     @Test fun claimFireNotStillDueWritesNothingAndSupersedesNothing() = runTest {
         val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringing)
-        assertFalse(h.controller().claimFire(ringB) { false })
+        assertEquals(SlotClaim.NotDue, h.controller().claimFire(ringB) { false })
         assertEquals(ringing, h.store.state.first()) // the sounding ring stays
         assertTrue(h.repo.get("a")!!.enabled) // not dismissed
         assertEquals(0, h.scheduler.rescheduleCount)
@@ -361,7 +364,7 @@ class RingingControllerImplTest {
 
     @Test fun claimFireWritesWhenStillDueThrows() = runTest {
         val h = H(listOf(alarm("a", emptySet())), null)
-        assertTrue(h.controller().claimFire(ringB) { throw IllegalStateException("db") })
+        assertEquals(SlotClaim.Claimed, h.controller().claimFire(ringB) { throw IllegalStateException("db") })
         assertEquals(ringB, h.store.state.first())
     }
 
@@ -429,7 +432,7 @@ class RingingControllerImplTest {
         val h = snoozedA()
         val c = h.controller()
         c.dismiss("ring-A")
-        assertFalse(c.claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.NotDue, c.claimSnoozeResume("ring-A", "a"))
         assertNull(h.store.state.first())
     }
 
@@ -438,14 +441,15 @@ class RingingControllerImplTest {
         h.store.set(ringB)
         val c = h.controller()
         c.dismiss("ring-A")
-        assertFalse(c.claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.NotDue, c.claimSnoozeResume("ring-A", "a"))
         assertEquals(ringB, h.store.state.first())
     }
 
+    /** A pre-upgrade entry has no occurrence: the sounding ring is superseded, never merged with a guessed one. */
     @Test fun snoozeResumeSupersedesSoundingRing() = runTest {
         val h = snoozedA()
         h.store.set(ringB)
-        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
         assertEquals(RingState("a", "ring-A", now, null), h.store.state.first())
         assertFalse(h.repo.get("b")!!.enabled) // B (one-shot) was sounding: dismissed
         assertTrue(h.repo.get("a")!!.enabled)
@@ -456,7 +460,7 @@ class RingingControllerImplTest {
         val bSnoozed = ringB.copy(snoozedUntil = sevenTen.plusSeconds(60))
         h.store.set(bSnoozed)
         h.ledger.put("ring-B", "b", bSnoozed.snoozedUntil!!)
-        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
         assertEquals("ring-A", h.store.state.first()!!.ringId)
         assertTrue(h.repo.get("b")!!.enabled)
         assertEquals(SnoozeEntry("ring-B", "b", bSnoozed.snoozedUntil), h.ledger.get("ring-B"))
@@ -481,22 +485,99 @@ class RingingControllerImplTest {
         val state = ringA.copy(occurrenceAt = occurrenceX, merged = merged)
         val h = H(listOf(alarm("a", emptySet())), state)
         h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
-        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
         assertEquals(state.copy(snoozedUntil = null), h.store.state.first())
     }
 
     @Test fun snoozeResumeTakesOccurrenceFromStateWhenLedgerLacksIt() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringA.copy(occurrenceAt = occurrenceX))
         h.ledger.put("ring-A", "a", sevenTen)
-        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
         assertEquals(occurrenceX, h.store.state.first()!!.occurrenceAt)
     }
 
     @Test fun snoozeResumeOfParkedEntryUsesTheParkedOccurrence() = runTest {
-        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(occurrenceAt = Instant.EPOCH))
+        // B snoozed: a sounding B would take the entry into its merged list instead.
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(snoozedUntil = sevenTen, occurrenceAt = Instant.EPOCH))
         h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
-        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
         assertEquals(RingState("a", "ring-A", now, null, occurrenceX), h.store.state.first())
+    }
+
+    // ---- merge into a sounding ring ----
+
+    private val occurrenceY = Instant.parse("2026-03-02T07:05:00Z")
+    private val soundingX = ringing.copy(occurrenceAt = occurrenceX)
+
+    @Test fun claimFireMergesIntoSoundingRing() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX)
+        val result = h.controller().claimFire(RingState("b", "ring-B", sevenOhFive, null, occurrenceY))
+        assertEquals(SlotClaim.Merged, result)
+        // Same ring keeps sounding: ringId, alarmId, startedAt and occurrence unchanged.
+        assertEquals(soundingX.copy(merged = listOf(RingMember("b", occurrenceY))), h.store.state.first())
+        // Not a dismiss: the one-shot stays on and nothing of a dismiss ran.
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertTrue(h.repo.get("b")!!.enabled)
+        assertTrue(h.armer.cancelled.isEmpty())
+        assertTrue(h.notifier.cancelledSnoozed.isEmpty())
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun claimFireDoesNotAddADuplicateMember() = runTest {
+        val state = soundingX.copy(merged = listOf(RingMember("b", occurrenceY)))
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), state)
+        val c = h.controller()
+        assertEquals(SlotClaim.Merged, c.claimFire(RingState("b", "ring-B2", sevenOhFive, null, occurrenceY)))
+        assertEquals(SlotClaim.Merged, c.claimFire(RingState("a", "ring-A2", sevenOhFive, null, occurrenceX))) // the primary
+        assertEquals(state, h.store.state.first())
+    }
+
+    @Test fun claimFireMergeWriteFailurePropagates() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX)
+        val failing = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) { throw IllegalStateException("disk full") }
+        }
+        val c = RingingControllerImpl(h.repo, failing, h.settings, h.scheduler, h.armer, h.notifier, h.ledger) { now }
+        // I1: the caller must not mistake an unwritten merge for one the sounding ring covers.
+        val thrown = runCatching { c.claimFire(RingState("b", "ring-B", sevenOhFive, null, occurrenceY)) }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+        assertEquals(soundingX, h.store.state.first())
+    }
+
+    @Test fun snoozeResumeMergesIntoSoundingRing() = runTest {
+        val soundingB = ringB.copy(occurrenceAt = occurrenceY)
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        assertEquals(SlotClaim.Merged, h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(soundingB.copy(merged = listOf(RingMember("a", occurrenceX))), h.store.state.first())
+        assertNull(h.ledger.get("ring-A"))
+        assertEquals(listOf("ring-A"), h.armer.cancelled)
+        assertEquals(listOf("ring-A"), h.notifier.cancelledSnoozed)
+        assertTrue(h.repo.get("b")!!.enabled) // B was not dismissed
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertEquals(0, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun snoozeResumeWithOccurrenceStillParksSnoozedRing() = runTest {
+        val bSnoozed = ringB.copy(snoozedUntil = sevenTen.plusSeconds(60), occurrenceAt = occurrenceY)
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), bSnoozed)
+        h.ledger.put("ring-B", "b", bSnoozed.snoozedUntil!!, occurrenceY)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(RingState("a", "ring-A", now, null, occurrenceX), h.store.state.first())
+        assertNotNull(h.ledger.get("ring-B"))
+    }
+
+    @Test fun writeUnlessRingingRefusesForAMergedMember() = runTest {
+        val state = soundingX.copy(merged = listOf(RingMember("b", occurrenceY)))
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), state)
+        var writes = 0
+        val c = h.controller()
+        assertFalse(c.writeUnlessRinging("b", null) { writes++ })
+        assertFalse(c.writeUnlessRinging("b", occurrenceY) { writes++ })
+        assertEquals(0, writes)
+        assertTrue(c.writeUnlessRinging("b", occurrenceY.plusSeconds(86400)) { writes++ }) // a later occurrence
+        assertEquals(1, writes)
     }
 
     @Test fun dismissLinkedOneShotUsesSetJoinerEnabledAndLeavesEnabled() = runTest {
@@ -532,7 +613,7 @@ class RingingControllerImplTest {
         val sounding = ringA.copy(snoozedUntil = null)
         val h = H(listOf(alarm("a", emptySet())), sounding)
         h.ledger.put("ring-A", "a", sevenTen)
-        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
         assertTrue(h.repo.get("a")!!.enabled)
         assertEquals(sounding, h.store.state.first()) // same ring: startedAt kept
         assertEquals(0, h.scheduler.rescheduleCount)
@@ -540,7 +621,7 @@ class RingingControllerImplTest {
 
     @Test fun snoozeResumeLiveFromStateAloneKeepsStartedAt() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringA) // no ledger entry
-        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
         assertEquals(ringA.copy(snoozedUntil = null), h.store.state.first())
     }
 
@@ -638,7 +719,7 @@ class RingingControllerImplTest {
 
     @Test fun notLiveSnoozeResumeCancelsItsSnoozedNotification() = runTest {
         val h = H(listOf(alarm("a", emptySet())), null)
-        assertFalse(h.controller().claimSnoozeResume("ring-gone", "a"))
+        assertEquals(SlotClaim.NotDue, h.controller().claimSnoozeResume("ring-gone", "a"))
         assertEquals(listOf("ring-gone"), h.notifier.cancelledSnoozed)
     }
 

@@ -12,6 +12,7 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.ParkedSnooze
 import me.shawnsquire.tandem.schedule.RingContext
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isOneShot
@@ -82,8 +83,12 @@ class RingingControllerImpl(
     override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: Instant?, write: suspend () -> Unit): Boolean =
         withContext(NonCancellable) { mutex.withLock {
             // A failed read throws before anything is written: the command is not applied.
-            val ring = ringStateStore.state.first()?.takeIf { it.alarmId == alarmId }
+            val state = ringStateStore.state.first()
+            val ring = state?.takeIf { it.alarmId == alarmId }
             if (ring != null && (occurrenceAt == null || ring.startedAt >= occurrenceAt)) return@withLock false
+            // A merged member is ringing too.
+            val member = state?.merged.orEmpty().any { it.alarmId == alarmId && (occurrenceAt == null || it.occurrenceAt >= occurrenceAt) }
+            if (member) return@withLock false
             write()
             true
         } }
@@ -124,27 +129,29 @@ class RingingControllerImpl(
         Unit
     } }
 
-    override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean = withContext(NonCancellable) { mutex.withLock {
+    override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim = withContext(NonCancellable) { mutex.withLock {
         val due = try {
             stillDue()
         } catch (e: Throwable) {
             log("fire re-check failed; treating the ring as due", e)
             true
         }
-        if (!due) return@withLock false
+        if (!due) return@withLock SlotClaim.NotDue
         val current = try {
             ringStateStore.state.first()
         } catch (e: Throwable) {
             log("state read failed; claiming the slot without superseding", e)
             null
         }
+        val member = newRing.occurrenceAt?.let { RingMember(newRing.alarmId, it) }
+        // Only the merge write or the write below may throw: a throw means the new ring was not written.
+        if (mergeLocked(current, newRing.ringId, member)) return@withLock SlotClaim.Merged
         supersedeLocked(current, newRing.ringId)
-        // Only this write may throw: a throw means the new ring was not written.
         ringStateStore.set(newRing)
-        true
+        SlotClaim.Claimed
     } }
 
-    override suspend fun claimSnoozeResume(ringId: String, alarmId: String): Boolean =
+    override suspend fun claimSnoozeResume(ringId: String, alarmId: String): SlotClaim =
         withContext(NonCancellable) { mutex.withLock {
             // A failed read here throws: the caller rings anyway (I1).
             val entry = ledger.get(ringId)
@@ -155,19 +162,24 @@ class RingingControllerImpl(
             if (!live) {
                 // Dismissed while snoozed; make sure no snoozed notification outlives its entry.
                 bestEffort("cancel stale snoozed notification") { notifier.cancelSnoozed(ringId) }
-                return@withLock false
+                return@withLock SlotClaim.NotDue
             }
 
             bestEffort("ledger remove") { ledger.remove(ringId) }
             bestEffort("cancel fired snooze") { snoozeArmer.cancelSnooze(ringId) }
             bestEffort("cancel snoozed notification") { notifier.cancelSnoozed(ringId) }
-            // Never supersede itself: if the slot already holds this ring, just overwrite it.
-            if (!sameRing) supersedeLocked(current, ringId)
+            // Never merge into or supersede itself: if the slot already holds this ring, just overwrite it.
+            if (!sameRing) {
+                // A pre-upgrade entry has no occurrence: it supersedes, since a member needs its real X.
+                val member = entry?.occurrenceAt?.let { RingMember(entry.alarmId, it) }
+                if (mergeLocked(current, ringId, member)) return@withLock SlotClaim.Merged
+                supersedeLocked(current, ringId)
+            }
             val startedAt = if (sameRing) current.startedAt else now()
             val occurrenceAt = entry?.occurrenceAt ?: current?.takeIf { sameRing }?.occurrenceAt
             val merged = if (sameRing) current.merged else emptyList()
             ringStateStore.set(RingState(alarmId, ringId, startedAt, null, occurrenceAt, merged))
-            true
+            SlotClaim.Claimed
         } }
 
     override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = withContext(NonCancellable) {
@@ -192,6 +204,18 @@ class RingingControllerImpl(
             }
             if (reschedule) bestEffort("reschedule after clearing stale ring") { alarmScheduler.rescheduleAll() }
         }
+    }
+
+    /**
+     * Adds [member] to [current] if it is a different ring that is actively sounding; true when the
+     * member is now part of it (already being one counts). The write may throw. False, and nothing
+     * written, for a snoozed or empty slot, the same ring, or no [member].
+     */
+    private suspend fun mergeLocked(current: RingState?, newRingId: String, member: RingMember?): Boolean {
+        if (member == null || current == null || current.ringId == newRingId || current.snoozedUntil != null) return false
+        val isPrimary = current.alarmId == member.alarmId && current.occurrenceAt == member.occurrenceAt
+        if (!isPrimary && member !in current.merged) ringStateStore.set(current.copy(merged = current.merged + member))
+        return true
     }
 
     /** Dismisses [current] if it is a different ring that is actively sounding; parks a snoozed one. Never throws. */

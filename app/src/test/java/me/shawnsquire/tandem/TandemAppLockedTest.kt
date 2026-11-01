@@ -286,7 +286,7 @@ class TandemAppLockedTest {
         val ring = RingState("a", "ring-started-locked", Instant.now().truncatedTo(ChronoUnit.MILLIS), null)
         try {
             // A ring that began before unlock, as RingingSession starts one: claim the slot, register it live.
-            assertTrue(engine.ringSlot.claimFire(ring))
+            assertEquals(me.shawnsquire.tandem.alarm.SlotClaim.Claimed, engine.ringSlot.claimFire(ring))
             LiveRings.register(ring.ringId)
 
             // The user unlocks and opens the app while USER_UNLOCKED is still deferred: no broadcast yet.

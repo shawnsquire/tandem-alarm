@@ -236,16 +236,26 @@ class RingingSession(
         }
         register(snoozeRingId)
         var alarm: Alarm? = null
-        // Liveness check, ledger cleanup, supersede and the state write happen in one critical section.
+        // Liveness check, ledger cleanup, merge or supersede and the state write happen in one critical section.
         val claim = boundedClaim(
             "snooze claim",
-            onLate = { live: Boolean ->
-                // A late "not live" (dismissed while snoozed) does not stop a ring that has started.
-                if (live) adoptLateClaim(alarm, snoozeRingId) else log("late snooze claim: snooze was dismissed", null)
+            onLate = { result: SlotClaim ->
+                // A late "not live" (dismissed while snoozed) or "merged" does not stop a ring that has started.
+                when (result) {
+                    SlotClaim.Claimed -> adoptLateClaim(alarm, snoozeRingId)
+                    SlotClaim.Merged -> log("late snooze claim: merged into the sounding ring", null)
+                    SlotClaim.NotDue -> log("late snooze claim: snooze was dismissed", null)
+                }
             },
         ) { ringSlot.claimSnoozeResume(snoozeRingId, alarmId) }
-        if (claim is Claim.Done && !claim.value) {
+        if (claim is Claim.Done && claim.value == SlotClaim.NotDue) {
             finish() // dismissed while snoozed
+            return
+        }
+        if (claim is Claim.Done && claim.value == SlotClaim.Merged) {
+            // The sounding ring's session plays for both. Snooze fires never consult the fired ledger.
+            guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
+            finish()
             return
         }
         // Failed or timed out: cannot tell, so it counts as live (I1).
@@ -286,15 +296,19 @@ class RingingSession(
 
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
         register(ringId)
-        // Newest alarm supersedes a sounding ring; a snoozed one is parked and keeps its snooze.
+        // A sounding ring takes this alarm into its merged list; a snoozed one is parked and keeps its snooze.
         // The decision is re-checked inside the claim's critical section, so a skip, disable or delete
         // stored since the read above still suppresses; a failed re-check counts as due (I1).
         var suppressedAlarm: Alarm? = null
         val claim = boundedClaim(
             "ring slot claim",
-            onLate = { written: Boolean ->
-                // A late "no longer due" does not stop a ring that has started.
-                if (written) adoptLateClaim(alarm, ringId) else log("late ring slot claim: no longer due", null)
+            onLate = { result: SlotClaim ->
+                // A late "no longer due" or "merged" does not stop a ring that has started.
+                when (result) {
+                    SlotClaim.Claimed -> adoptLateClaim(alarm, ringId)
+                    SlotClaim.Merged -> log("late ring slot claim: merged into the sounding ring", null)
+                    SlotClaim.NotDue -> log("late ring slot claim: no longer due", null)
+                }
             },
         ) {
             ringSlot.claimFire(RingState(alarmId, ringId, now(), null, occurrenceAt = occurrence)) {
@@ -305,8 +319,16 @@ class RingingSession(
                 current != null && isArmed(current) && !isSkipped(current, occurrence)
             }
         }
-        if (claim is Claim.Done && !claim.value) {
+        if (claim is Claim.Done && claim.value == SlotClaim.NotDue) {
             suppressFire(alarmId, occurrence, suppressedAlarm) // finish() stops vibration and unregisters the ring
+            return
+        }
+        if (claim is Claim.Done && claim.value == SlotClaim.Merged) {
+            // The sounding ring's session plays for both, and its auto-silence covers this one too.
+            // Recorded so a replay stays quiet. Not markRang: the claim is done, so no late re-check can see it.
+            guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
+            guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
+            finish() // plays nothing; stops only this session's share of the vibration
             return
         }
         ring(alarm, ringId, observe = claim is Claim.Done, fire = alarmId to occurrence)

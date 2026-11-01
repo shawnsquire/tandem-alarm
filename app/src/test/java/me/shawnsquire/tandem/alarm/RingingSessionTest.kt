@@ -32,6 +32,7 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.sync.PreFireCheck
@@ -88,10 +89,10 @@ private class YieldingRingStateStore(private val inner: FakeRingStateStore) : Ri
 private class GatedSlot(private val inner: RingSlot) : RingSlot {
     val gate = CompletableDeferred<Unit>()
     var events: MutableList<String>? = null
-    override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean {
+    override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim {
         events?.add("claim"); gate.await(); return inner.claimFire(newRing, stillDue)
     }
-    override suspend fun claimSnoozeResume(ringId: String, alarmId: String): Boolean {
+    override suspend fun claimSnoozeResume(ringId: String, alarmId: String): SlotClaim {
         gate.await()
         return inner.claimSnoozeResume(ringId, alarmId)
     }
@@ -664,32 +665,68 @@ class RingingSessionTest {
 
     // ---- re-entry ----
 
-    @Test fun newFireSupersedesActiveRing() = runTest {
+    @Test fun newFireMergesIntoSoundingRing() = runTest {
         val a = alarm("a")
-        val b = alarm("b", days = setOf(java.time.DayOfWeek.MONDAY))
+        val b = alarm("b")
         val shared = Harness(this, listOf(a, b), null, LambdaPreFire { true }, clockNow)
         shared.fire("a", occurrence)
         runCurrent()
-        assertEquals("ring-1", shared.rawStore.state.first()!!.ringId)
+        val ringA = RingState("a", "ring-1", clockNow, null, occurrence)
+        assertEquals(ringA, shared.rawStore.state.first())
 
         // Second session (its own adapters, as the service builds per start) on the same stores.
         val bSound = RecordingSound { currentTime }
+        val bVibration = RecordingVibration()
         var bFinished = 0
+        val bOccurrence = occurrence.plusSeconds(60)
         val sessionB = RingingSession(
             shared.repo, shared.store, FakeSettingsRepository(), LambdaPreFire { true },
-            shared.scheduler, shared.controller, shared.controller, bSound, RecordingVibration(), shared.notifier,
+            shared.scheduler, shared.controller, shared.controller, bSound, bVibration, shared.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { clockNow },
-            { "ring-2" }, onFinished = { bFinished++ },
+            { "ring-2" }, firedLedger = shared.fired, onFinished = { bFinished++ },
         )
-        sessionB.start("b", occurrence, false, null)
+        sessionB.start("b", bOccurrence, false, null)
         runCurrent()
 
-        assertFalse(shared.repo.get("a")!!.enabled) // A (one-shot) counted as dismissed
+        // B joined A's ring: same ringId, alarm and occurrence.
+        assertEquals(ringA.copy(merged = listOf(RingMember("b", bOccurrence))), shared.rawStore.state.first())
+        // A was not dismissed and keeps sounding.
+        assertTrue(shared.repo.get("a")!!.enabled)
+        assertTrue(shared.armer.cancelled.isEmpty())
+        assertEquals(0, shared.finished)
+        assertEquals(0, shared.sound.stops)
+        // B plays nothing, posts nothing and ends; its occurrence is recorded against a replay.
+        assertTrue(bSound.starts.isEmpty())
+        assertEquals(1, bFinished)
+        assertEquals(listOf("ring-1"), shared.notifier.ringing)
+        assertTrue(shared.notifier.fallback.isEmpty())
+        assertEquals(bOccurrence, shared.fired.lastRang("b"))
+        assertTrue(shared.repo.get("b")!!.enabled)
+
+        // A's own auto-silence still ends the ring at ten minutes.
+        advanceTimeBy(10.minutes); runCurrent()
         assertEquals(1, shared.finished)
-        assertTrue(shared.sound.stops >= 1)
-        assertEquals(RingState("b", "ring-2", clockNow, null, occurrence), shared.rawStore.state.first())
-        assertEquals(1, bSound.starts.size)
-        assertEquals(0, bFinished)
+        assertNull(shared.rawStore.state.first())
+    }
+
+    @Test fun snoozeResumeMergesIntoSoundingRing() = runTest {
+        val ringB = RingState("b", "ring-B", clockNow.minusSeconds(60), null, occurrence)
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringB)
+        val xOccurrence = occurrence.minusSeconds(600)
+        h.ledger.put("ring-X", "a", clockNow, xOccurrence)
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertEquals(ringB.copy(merged = listOf(RingMember("a", xOccurrence))), h.rawStore.state.first())
+        assertNull(h.ledger.get("ring-X"))
+        assertEquals(listOf("ring-X"), h.armer.cancelled)
+        assertEquals(listOf("ring-X"), h.notifier.cancelledSnoozed)
+        assertTrue(h.sound.starts.isEmpty())
+        assertTrue(h.notifier.ringing.isEmpty())
+        assertTrue(h.notifier.fallback.isEmpty())
+        assertTrue(h.repo.get("b")!!.enabled)
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertEquals(1, h.finished)
+        assertNull(h.fired.lastRang("a"))
     }
 
     // ---- failing steps still ring ----
@@ -843,14 +880,17 @@ class RingingSessionTest {
         sessionB.start("b", occurrence, false, null)
         runCurrent()
 
-        val sounding = (h.sound.starts.size - h.sound.stops) + (bSound.starts.size - bSound.stops)
+        val sounding = listOf(h.sound, bSound).count { it.starts.size > it.stops }
         assertEquals(1, sounding)
+        assertEquals(1, h.sound.starts.size + bSound.starts.size) // the loser never started a sound
         assertEquals(1, h.finished + bFinished)
         val winner = if (h.finished == 0) "ring-1" else "ring-B"
-        assertEquals(winner, h.rawStore.state.first()!!.ringId)
-        // The loser (a one-shot) was dismissed, not silently overwritten.
+        val final = h.rawStore.state.first()!!
+        assertEquals(winner, final.ringId)
+        // The loser joined the winner's ring, not silently overwritten.
         val loserAlarm = if (winner == "ring-1") "b" else "a"
-        assertFalse(h.repo.get(loserAlarm)!!.enabled)
+        assertEquals(listOf(RingMember(loserAlarm, occurrence)), final.merged)
+        assertTrue(h.repo.get(loserAlarm)!!.enabled)
     }
 
     // ---- D2: fired ledger and live registry ----
@@ -1079,7 +1119,7 @@ class RingingSessionTest {
     private fun RingSlot.before(before: suspend () -> Unit): RingSlot {
         val inner = this
         return object : RingSlot by inner {
-            override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean {
+            override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim {
                 before()
                 return inner.claimFire(newRing, stillDue)
             }
@@ -1119,9 +1159,9 @@ class RingingSessionTest {
         val gate = CompletableDeferred<Unit>()
         val h = harness()
         val slot = object : RingSlot by h.controller {
-            override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): Boolean {
+            override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim {
                 gate.await()
-                return false
+                return SlotClaim.NotDue
             }
         }
         slotSession(h, slot).start("a", occurrence, false, null)
@@ -1130,6 +1170,28 @@ class RingingSessionTest {
         gate.complete(Unit) // the claim finishes late with "not due"
         runCurrent()
         assertEquals(0, h.sound.stops)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun lateMergedClaimDoesNotStopOrAdoptTheRing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val h = harness()
+        val slot = object : RingSlot by h.controller {
+            override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim {
+                gate.await()
+                return SlotClaim.Merged
+            }
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size) // rang on timeout
+        gate.complete(Unit) // the claim finishes late: merged into another ring
+        runCurrent()
+        assertEquals(0, h.sound.stops)
+        assertEquals(0, h.finished)
+        assertTrue(h.notifier.ringing.isEmpty()) // the other ring's state is not adopted
+        h.rawStore.set(RingState("b", "ring-other", clockNow, null)) // that ring changing does not end this one
+        runCurrent()
         assertEquals(0, h.finished)
     }
 
