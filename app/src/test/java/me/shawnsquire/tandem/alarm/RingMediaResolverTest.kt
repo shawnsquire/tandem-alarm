@@ -44,9 +44,16 @@ class RingMediaResolverTest {
     /** The cache's dispatcher on the test clock, so a quick resolve isn't overtaken by the virtual timeout. */
     private fun TestScope.testIo() = StandardTestDispatcher(testScheduler)
 
+    /** What Settings.System.DEFAULT_ALARM_ALERT_URI stands for on a device. */
+    private val systemAlarm = "content://settings/system/alarm_alert"
+    private val system = { systemAlarm }
+
+    /** A linked row with its own ringtone and wallpaper overrides. */
+    private val overridden = linked.copy(link = linked.link!!.copy(overrideRingtoneUri = "content://override", overrideWallpaperPath = "/wall/override"))
+
     @Test fun ownRingIgnoresTheCache() = runTest {
         val cache = Cache { error("must not be asked") }
-        val m = resolveRingMedia(own, cache, "content://def", "/wall/def", dispatcher = testIo())
+        val m = resolveRingMedia(own, cache, "content://def", "/wall/def", dispatcher = testIo(), systemAlarmUri = { error("own rings: the adapter appends it") })
         assertEquals(RingMedia("Wake", listOf("content://own", "content://def"), listOf("/wall/own", "/wall/def")), m)
         assertEquals(0, cache.calls)
     }
@@ -63,14 +70,32 @@ class RingMediaResolverTest {
 
     @Test fun slowCacheFallsBackAfterTheTimeout() = runTest {
         val cache = Cache { awaitCancellation() }
-        val m = resolveRingMedia(linked, cache, "content://def", null, timeout = 500.milliseconds, dispatcher = testIo())
+        val m = resolveRingMedia(linked, cache, "content://def", null, timeout = 500.milliseconds, dispatcher = testIo(), systemAlarmUri = system)
         assertEquals(500, currentTime)
-        assertEquals(RingMedia("Mine", listOf("content://own", "content://def"), listOf("/wall/own")), m)
+        // The cache's own order: joiner override, owner's, the system alarm, the joiner's default.
+        assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm, "content://def"), listOf("/wall/own")), m)
     }
 
     @Test fun throwingCacheFallsBack() = runTest {
-        val m = resolveRingMedia(linked, Cache { throw IllegalStateException("disk") }, null, null, dispatcher = testIo())
-        assertEquals(RingMedia("Mine", listOf("content://own"), listOf("/wall/own")), m)
+        val m = resolveRingMedia(linked, Cache { throw IllegalStateException("disk") }, null, null, dispatcher = testIo(), systemAlarmUri = system)
+        assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm), listOf("/wall/own")), m)
+    }
+
+    @Test fun slowCacheKeepsTheOverrideRingtoneAndWallpaperFirst() = runTest {
+        val m = resolveRingMedia(overridden, Cache { awaitCancellation() }, "content://def", "/wall/def", timeout = 500.milliseconds, dispatcher = testIo(), systemAlarmUri = system)
+        assertEquals(listOf("content://override", "content://own", systemAlarm, "content://def"), m.soundCandidates)
+        assertEquals(listOf("/wall/override", "/wall/own", "/wall/def"), m.wallpaperPaths)
+    }
+
+    @Test fun throwingCacheKeepsTheOverrideRingtoneAndWallpaperFirst() = runTest {
+        val m = resolveRingMedia(overridden, Cache { throw IllegalStateException("disk") }, "content://def", "/wall/def", dispatcher = testIo(), systemAlarmUri = system)
+        assertEquals(listOf("content://override", "content://own", systemAlarm, "content://def"), m.soundCandidates)
+        assertEquals(listOf("/wall/override", "/wall/own", "/wall/def"), m.wallpaperPaths)
+    }
+
+    @Test fun anUnknownSystemAlarmIsLeftOutOfTheFallback() = runTest {
+        val m = resolveRingMedia(linked, Cache { throw IllegalStateException("disk") }, "content://def", null, dispatcher = testIo(), systemAlarmUri = { null })
+        assertEquals(listOf("content://own", "content://def"), m.soundCandidates)
     }
 
     @Test fun callerCancellationPropagates() = runTest {
@@ -91,12 +116,12 @@ class RingMediaResolverTest {
         val started = CountDownLatch(1)
         try {
             val cache = Cache { resolveThread = Thread.currentThread(); started.countDown(); latch.await(5, TimeUnit.SECONDS); RingMedia("late", emptyList(), emptyList()) }
-            val job = async { resolveRingMedia(linked, cache, "content://def", null, timeout = 500.milliseconds, dispatcher = Dispatchers.IO) }
+            val job = async { resolveRingMedia(linked, cache, "content://def", null, timeout = 500.milliseconds, dispatcher = Dispatchers.IO, systemAlarmUri = system) }
             runCurrent()
             assertTrue(started.await(5, TimeUnit.SECONDS))
             advanceTimeBy(501); runCurrent()
             assertTrue(job.isCompleted)
-            assertEquals(RingMedia("Mine", listOf("content://own", "content://def"), listOf("/wall/own")), job.await())
+            assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm, "content://def"), listOf("/wall/own")), job.await())
             assertNotEquals(callerThread, resolveThread)
         } finally {
             latch.countDown()

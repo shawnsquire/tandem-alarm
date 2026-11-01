@@ -239,7 +239,7 @@ class RingingSession(
         silencing = false
         currentCoroutineContext().ensureActive()
         if (fullSurface) {
-            startRingOutputs(surfaceMedia?.soundCandidates.orEmpty())
+            startRingOutputs(surfaceMedia?.soundCandidates.orEmpty(), surfaceAlarm)
             // The refusal proves the slot holds this ring, so a claim that landed while silent
             // (never adopted) gets its actions now.
             if (!wasFull || !actionsPosted) showRinging(surfaceAlarm, ringId)
@@ -507,7 +507,7 @@ class RingingSession(
         surfaceMedia = media
         fullSurface = !notify
         labelledIds = (fire?.first ?: alarm?.id)?.let { listOf(it) }
-        if (!notify) startRingOutputs(media.soundCandidates)
+        if (!notify) startRingOutputs(media.soundCandidates, alarm)
         // Marked after the ring has begun, so a process death before this point still gets a boot replay.
         if (fire != null) markRang(fire.first, fire.second)
         // Without a stored RingState, Stop and Snooze would be silently ignored: post no actions.
@@ -541,10 +541,14 @@ class RingingSession(
     private suspend fun resolveMedia(alarm: Alarm?, default: String?): RingMedia =
         resolveRingMedia(alarm, linkedMediaCache, default, null, dispatcher = ioDispatcher)
 
-    /** The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it. */
-    private suspend fun startRingOutputs(candidates: List<String>) {
+    /**
+     * The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it.
+     * [candidates] were resolved for [primary]: a linked one's (cache or fallback) already end on the
+     * system and joiner defaults, so the adapter adds none of its own.
+     */
+    private suspend fun startRingOutputs(candidates: List<String>, primary: Alarm?) {
         startVibration("vibration")
-        guarded("sound", Unit) { sound.start(candidates) }
+        guarded("sound", Unit) { sound.start(candidates, appendSystemDefaults = primary?.link == null) }
     }
 
     /**
@@ -563,7 +567,7 @@ class RingingSession(
         surfaceMedia = media
         if (silencing) return
         currentCoroutineContext().ensureActive()
-        startRingOutputs(media.soundCandidates)
+        startRingOutputs(media.soundCandidates, primary)
         showRinging(primary, ringId)
     }
 

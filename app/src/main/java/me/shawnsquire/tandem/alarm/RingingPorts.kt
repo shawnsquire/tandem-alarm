@@ -92,9 +92,13 @@ class SwitchableRingMirrorPort(private val outbox: MirrorOutbox = InMemoryMirror
     }
 }
 
-/** Loops the first candidate URI that opens; the adapter appends system-default fallbacks after [candidates]. */
+/**
+ * Loops the first candidate URI that opens. With [appendSystemDefaults] the adapter tries the
+ * system defaults after [candidates]; a linked ring's candidates already end on them, in the order
+ * the media cache chose, so it passes false. The bundled tone is always last.
+ */
 interface AlarmSound {
-    fun start(candidates: List<String>)
+    fun start(candidates: List<String>, appendSystemDefaults: Boolean = true)
     fun stop()
 }
 

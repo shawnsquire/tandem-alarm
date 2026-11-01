@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import android.provider.Settings
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,9 +16,12 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * What a ring plays and shows. An own ring (no link) is the alarm's own media then the joiner's
- * defaults, with no cache involved. A linked ring asks [cache], bounded by [timeout]: I1, a slow or
- * failing cache never delays sound beyond that, it falls back to the same own-ring formula (label:
- * the joiner's override, else the alarm's). Only the caller's own cancellation propagates.
+ * defaults, with no cache involved; the sound adapter appends the system defaults. A linked ring
+ * asks [cache], bounded by [timeout]: I1, a slow or failing cache never delays sound beyond that, it
+ * falls back to the row's own media in the cache's order, each override first as the label's is:
+ * sound the joiner's override, the alarm's, [systemAlarmUri] (read only then), the joiner's default;
+ * wallpaper the joiner's override, the alarm's, the joiner's default. Only the caller's own
+ * cancellation propagates.
  *
  * The resolve runs on [dispatcher], outside the caller's job (as the session's pre-fire check
  * does): a cache that blocks its thread on disk can't be interrupted, so on the caller's dispatcher
@@ -31,23 +35,31 @@ suspend fun resolveRingMedia(
     defaultWallpaper: String?,
     timeout: Duration = RING_MEDIA_TIMEOUT,
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    systemAlarmUri: () -> String? = ::systemDefaultAlarmUri,
 ): RingMedia {
-    fun own() = RingMedia(
-        label = alarm?.link?.overrideLabel ?: alarm?.label.orEmpty(),
+    val link = alarm?.link ?: return RingMedia(
+        label = alarm?.label.orEmpty(),
         soundCandidates = listOfNotNull(alarm?.ringtoneUri, defaultRingtone),
         wallpaperPaths = chooseWallpaperPaths(alarm?.wallpaperPath, defaultWallpaper),
     )
-    if (alarm?.link == null) return own()
+    fun fallback() = RingMedia(
+        label = link.overrideLabel ?: alarm.label,
+        soundCandidates = listOfNotNull(link.overrideRingtoneUri, alarm.ringtoneUri, systemAlarmUri(), defaultRingtone),
+        wallpaperPaths = listOfNotNull(link.overrideWallpaperPath, alarm.wallpaperPath, defaultWallpaper).filter { it.isNotBlank() },
+    )
     // Its own Job: a throw stays in the Deferred (await rethrows it) and never cancels the caller.
     val resolving = CoroutineScope(dispatcher).async { cache.resolve(alarm, defaultRingtone, defaultWallpaper) }
     return try {
-        withTimeoutOrNull(timeout) { resolving.await() } ?: own()
+        withTimeoutOrNull(timeout) { resolving.await() } ?: fallback()
     } catch (e: Throwable) {
         currentCoroutineContext().ensureActive()
-        own()
+        fallback()
     } finally {
         resolving.cancel() // a timeout or the caller's own cancellation: nobody waits for it any more
     }
 }
 
 val RING_MEDIA_TIMEOUT = 500.milliseconds
+
+/** The system alarm sound's symbolic Uri, as the media cache places it; null where it can't be read (a JVM test). */
+internal fun systemDefaultAlarmUri(): String? = runCatching { Settings.System.DEFAULT_ALARM_ALERT_URI?.toString() }.getOrNull()

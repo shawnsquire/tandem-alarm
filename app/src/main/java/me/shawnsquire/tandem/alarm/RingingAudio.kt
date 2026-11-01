@@ -19,7 +19,8 @@ import java.util.IdentityHashMap
 
 /**
  * Loops the first candidate that prepares, then falls back to the system alarm, ringtone and
- * notification defaults and finally the bundled tone. One instance per [RingingSession].
+ * notification defaults (unless the caller's candidates already carry them) and finally the
+ * bundled tone. One instance per [RingingSession].
  *
  * Audio never blocks the ring: [start] returns at once and all player work runs on a dedicated
  * "alarm-audio" thread. [stop] is idempotent and safe from any thread.
@@ -28,14 +29,15 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
     private var run: Run? = null
 
     @Synchronized
-    override fun start(candidates: List<String>) {
+    override fun start(candidates: List<String>, appendSystemDefaults: Boolean) {
         run?.stop()
         val bundled = bundledToneUri(context)
-        val all = candidates + listOf(
+        val defaults = if (!appendSystemDefaults) emptyList() else listOf(
             RingtoneManager.TYPE_ALARM,
             RingtoneManager.TYPE_RINGTONE,
             RingtoneManager.TYPE_NOTIFICATION,
         ).mapNotNull { runCatching { RingtoneManager.getDefaultUri(it) }.getOrNull()?.toString() }
+        val all = candidates + defaults
         run = Run(context.applicationContext, SoundSequencer(all, bundled)).also { it.begin() }
     }
 

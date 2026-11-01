@@ -57,10 +57,14 @@ import kotlin.time.Duration.Companion.seconds
 
 class RecordingSound(private val clock: () -> Long) : AlarmSound {
     val starts = mutableListOf<List<String>>()
+    /** Each start's appendSystemDefaults: false for a linked ring, whose candidates already end on them. */
+    val appendsDefaults = mutableListOf<Boolean>()
     val startTimes = mutableListOf<Long>()
     var stops = 0
     var events: MutableList<String>? = null
-    override fun start(candidates: List<String>) { starts += candidates; startTimes += clock(); events?.add("sound") }
+    override fun start(candidates: List<String>, appendSystemDefaults: Boolean) {
+        starts += candidates; appendsDefaults += appendSystemDefaults; startTimes += clock(); events?.add("sound")
+    }
     override fun stop() { stops++ }
 }
 
@@ -1055,7 +1059,7 @@ class RingingSessionTest {
         val vib = RecordingVibration()
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler, h.controller,
-            object : AlarmSound { override fun start(candidates: List<String>) = throw IllegalStateException("audio"); override fun stop() {} },
+            object : AlarmSound { override fun start(candidates: List<String>, appendSystemDefaults: Boolean) = throw IllegalStateException("audio"); override fun stop() {} },
             vib, h.notifier, backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
             onFinished = {},
         )
@@ -1814,6 +1818,7 @@ class RingingSessionTest {
         h.fire(occ = occurrence)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
+        assertEquals(listOf(true), h.sound.appendsDefaults) // the adapter appends the system defaults
         assertEquals(1, h.vibration.starts)
         assertEquals(listOf("ring-1"), h.notifier.ringing)
         assertTrue(h.notifier.notify.isEmpty())
@@ -2029,6 +2034,7 @@ class RingingSessionTest {
         runCurrent()
         // The sound adapter walks these in order, so an unreadable override falls to the owner's media.
         assertEquals(listOf(listOf("/override/unreadable", "/owner/good")), h.sound.starts)
+        assertEquals(listOf(false), h.sound.appendsDefaults) // exactly the cache's list: it already ends on the defaults
         assertEquals(listOf(listOf("Owner")), h.notifier.ringingLabels)
     }
 
@@ -2046,7 +2052,9 @@ class RingingSessionTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.RING)), cache = StubMediaCache(fail = true))
         h.fire(occ = occurrence)
         runCurrent()
+        // The fallback builds the cache's order itself (no system alarm Uri on the JVM).
         assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts)
+        assertEquals(listOf(false), h.sound.appendsDefaults)
     }
 
     @Test fun ringingNotificationShowsTheOverrideLabelOfALinkedRing() = runTest {
@@ -2073,6 +2081,7 @@ class RingingSessionTest {
         join(h, "b", bOccurrence)
         runCurrent()
         assertEquals(listOf(listOf("/owner/tone")), h.sound.starts)
+        assertEquals(listOf(false), h.sound.appendsDefaults)
         assertEquals(listOf(listOf("Owner label")), h.notifier.ringingLabels)
     }
 
