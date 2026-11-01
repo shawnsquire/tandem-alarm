@@ -9,14 +9,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import me.shawnsquire.tandem.sync.HealthSignals
+import me.shawnsquire.tandem.sync.LinkedMediaStatus
 import me.shawnsquire.tandem.sync.PartnerRepository
+import me.shawnsquire.tandem.sync.StorageStatus
 import me.shawnsquire.tandem.ui.partner.ASLEEP_AFTER
 import me.shawnsquire.tandem.ui.partner.formatLastSeen
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 
-enum class HealthItem { EXACT_ALARMS, FULL_SCREEN_INTENT, NOTIFICATIONS, BATTERY, FCM_TOKEN, LAST_FCM, PARTNER_SEEN }
+enum class HealthItem { EXACT_ALARMS, FULL_SCREEN_INTENT, NOTIFICATIONS, BATTERY, FCM_TOKEN, LAST_FCM, PARTNER_SEEN, STORAGE_REACHABLE, LINKED_MEDIA }
 
 /** WARNING is calm (not an error): something worth knowing that the user cannot fix, like a sleeping partner phone. */
 enum class HealthStatus { OK, PROBLEM, INFO, WARNING }
@@ -42,6 +44,13 @@ private data class Snapshot(
     val battery: Boolean,
 )
 
+private data class Signals(
+    val lastFcm: Instant?,
+    val tokenPresent: Boolean,
+    val storage: StorageStatus?,
+    val linkedMedia: LinkedMediaStatus?,
+)
+
 class HealthViewModel(
     private val probe: HealthProbe,
     signals: HealthSignals,
@@ -64,11 +73,11 @@ class HealthViewModel(
 
     val state: StateFlow<HealthUiState> = combine(
         snapshot,
-        signals.lastFcmAt,
-        signals.fcmTokenPresent,
+        combine(signals.lastFcmAt, signals.fcmTokenPresent, signals.storageStatus, signals.linkedMedia, ::Signals),
         partnerRepository.partner,
         ticker,
-    ) { s, lastFcm, tokenPresent, partner, _ ->
+    ) { s, sig, partner, _ ->
+        val (lastFcm, tokenPresent, storage, linkedMedia) = sig
         val now = clock.instant()
         HealthUiState(
             listOf(
@@ -79,7 +88,7 @@ class HealthViewModel(
                 flag(HealthItem.FCM_TOKEN, tokenPresent, null),
                 HealthRow(HealthItem.LAST_FCM, HealthStatus.INFO, detail = lastFcm?.let { age(it, now) }),
                 partnerRow(partner?.lastSeen, now),
-            ),
+            ) + listOfNotNull(storageRow(storage, now), linkedMediaRow(linkedMedia)),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HealthUiState())
 
@@ -94,6 +103,26 @@ class HealthViewModel(
             HealthItem.PARTNER_SEEN,
             if (age > ASLEEP_AFTER) HealthStatus.WARNING else HealthStatus.OK,
             detail = formatLastSeen(age),
+        )
+    }
+
+    /** Hidden until a Storage call has been recorded. */
+    private fun storageRow(status: StorageStatus?, now: Instant): HealthRow? = status?.let {
+        HealthRow(
+            HealthItem.STORAGE_REACHABLE,
+            if (it.ok) HealthStatus.OK else HealthStatus.WARNING,
+            detail = age(it.at, now),
+        )
+    }
+
+    /** Hidden when nothing is linked (or the cache never reported). */
+    private fun linkedMediaRow(status: LinkedMediaStatus?): HealthRow? {
+        if (status == null || status.referenced == 0) return null
+        return if (status.missing == 0) HealthRow(HealthItem.LINKED_MEDIA, HealthStatus.OK)
+        else HealthRow(
+            HealthItem.LINKED_MEDIA,
+            HealthStatus.WARNING,
+            detail = "${status.missing} of ${status.referenced} files waiting to download",
         )
     }
 

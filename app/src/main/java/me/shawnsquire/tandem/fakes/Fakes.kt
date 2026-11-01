@@ -28,6 +28,8 @@ import me.shawnsquire.tandem.sync.CommandApplier
 import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.sync.CommandSender
 import me.shawnsquire.tandem.sync.HealthSignals
+import me.shawnsquire.tandem.sync.LinkedMediaStatus
+import me.shawnsquire.tandem.sync.StorageStatus
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.LinkResult
 import me.shawnsquire.tandem.sync.LinkSync
@@ -283,6 +285,8 @@ class FakeStatePublisher : StatePublisher {
 class FakeHealthSignals : HealthSignals {
     override val lastFcmAt: Flow<Instant?> = MutableStateFlow(null)
     override val fcmTokenPresent: Flow<Boolean> = MutableStateFlow(true)
+    override val storageStatus: Flow<StorageStatus?> = MutableStateFlow(null)
+    override val linkedMedia: Flow<LinkedMediaStatus?> = MutableStateFlow(null)
 }
 
 class FakeLinkRepository : LinkRepository {
