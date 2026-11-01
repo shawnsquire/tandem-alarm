@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.sync
 
+import android.util.Log
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
@@ -22,10 +23,13 @@ internal fun <T> Flow<T>.resubscribeOnError(
     var wait = initial
     while (true) {
         var failed = false
-        catch { failed = true }.collect { emit(it); wait = initial }
+        catch { e -> failed = true; Log.w(TAG, "listener failed; resubscribing in $wait", e) }
+            .collect { emit(it); wait = initial }
         if (!failed) return@flow
         emit(onError)
         delay(wait)
         wait = (wait * 2).coerceAtMost(max)
     }
 }
+
+private const val TAG = "Resubscribe"

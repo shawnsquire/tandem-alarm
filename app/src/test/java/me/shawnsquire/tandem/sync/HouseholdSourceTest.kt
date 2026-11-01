@@ -9,7 +9,11 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+// Robolectric for android.util.Log, which resubscribeOnError logs to.
+@RunWith(RobolectricTestRunner::class)
 class HouseholdSourceTest {
     private val user = mapOf<String, Any?>("householdId" to "h1")
     private val hh = mapOf<String, Any?>("members" to listOf("me", "them"))

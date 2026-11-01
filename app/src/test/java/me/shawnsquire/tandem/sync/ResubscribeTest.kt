@@ -7,7 +7,11 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.shadows.ShadowLog
 
+@RunWith(RobolectricTestRunner::class)
 class ResubscribeTest {
     @Test fun `passes values through and ends when upstream completes`() = runTest {
         flowOf(1, 2).resubscribeOnError(-1).test {
@@ -41,5 +45,16 @@ class ResubscribeTest {
         }
         // 0, +1s, +2s (value 7 then error), then reset to +1s
         assertEquals(listOf(0L, 1_000L, 3_000L, 4_000L), times.take(4))
+    }
+
+    @Test fun `an error is logged before resubscribing`() = runTest {
+        ShadowLog.clear()
+        flow<Int> { throw IllegalStateException("denied") }.resubscribeOnError(-1).test {
+            assertEquals(-1, awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+        val log = ShadowLog.getLogsForTag("Resubscribe").single()
+        assertEquals(android.util.Log.WARN, log.type)
+        assertEquals("denied", log.throwable?.message)
     }
 }
