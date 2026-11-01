@@ -1639,6 +1639,35 @@ class RingingControllerImplTest {
         assertNull(merged.notices.latest.value)
     }
 
+    @Test fun remoteSnoozeWhoseWriteFailsTakesItsNoticeBack() = runTest {
+        val h = mergedH()
+        assertTrue(runCatching { h.controller(store = h.failingWrites()).snooze(RingOrigin.REMOTE, tenOhFive) }.isFailure)
+        assertEquals(mergedRing, h.store.state.first())
+        assertTrue(h.ledger.all().isEmpty()) // the rollback is unchanged
+        assertNull(h.notices.latest.value)
+    }
+
+    @Test fun remoteSplitWhoseWriteFailsTakesItsNoticeBack() = runTest {
+        val h = mergedH()
+        assertTrue(runCatching { h.controller(store = h.failingWrites()).snoozeOccurrence("b", occurrenceY, tenOhFive, RingOrigin.REMOTE) }.isFailure)
+        assertEquals(mergedRing, h.store.state.first())
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(listOf("split-1"), h.armer.cancelled)
+        assertNull(h.notices.latest.value)
+    }
+
+    @Test fun remoteMoveOfASnoozedSlotWhoseWriteFailsTakesItsNoticeBack() = runTest {
+        val snoozed = soundingX.copy(snoozedUntil = tenOhFive)
+        val h = H(listOf(alarm("a", emptySet())), snoozed)
+        h.ledger.put("ring-1", "a", tenOhFive, occurrenceX)
+        val later = tenOhFive.plusSeconds(120)
+        assertTrue(runCatching { h.controller(store = h.failingWrites()).snoozeOccurrence("a", occurrenceX, later, RingOrigin.REMOTE) }.isFailure)
+        assertEquals(snoozed, h.store.state.first())
+        assertEquals(SnoozeEntry("ring-1", "a", tenOhFive, occurrenceX), h.ledger.get("ring-1")) // back at the old end
+        assertEquals(Triple("a", "ring-1", tenOhFive), h.armed.last())
+        assertNull(h.notices.latest.value)
+    }
+
     @Test fun remoteDismissWhoseLaterStepFailsKeepsItsNotice() = runTest {
         // The ring did end: the notice explains it even though a step after the write threw.
         val h = H(listOf(alarm("a", emptySet())), soundingX)

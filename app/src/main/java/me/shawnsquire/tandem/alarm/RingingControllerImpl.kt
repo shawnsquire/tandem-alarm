@@ -216,8 +216,8 @@ class RingingControllerImpl(
         try {
             armSnoozeLocked(state.ringId, state.alarmId, end, state.occurrenceAt, armed)
             for ((id, member) in split) armSnoozeLocked(id, member.alarmId, end, member.occurrenceAt, armed)
-            if (origin == RingOrigin.REMOTE) notifyRemote(state, state.primaryMember(), MirrorKind.SNOOZE, end, endsRing = true)
-            ringStateStore.set(state.copy(snoozedUntil = end, merged = emptyList()))
+            val notice = if (origin == RingOrigin.REMOTE) RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.SNOOZE, end, endsRing = true) else null
+            writeNoticed(notice) { ringStateStore.set(state.copy(snoozedUntil = end, merged = emptyList())) }
         } catch (e: Throwable) {
             // Not snoozed after all: the ring keeps sounding, so take every snooze back.
             takeBackLocked(armed)
@@ -263,8 +263,7 @@ class RingingControllerImpl(
         val armed = mutableListOf<String>()
         try {
             armSnoozeLocked(id, member.alarmId, until, member.occurrenceAt, armed)
-            notice?.let(::emitRemote)
-            ringStateStore.set(rest)
+            writeNoticed(notice) { ringStateStore.set(rest) }
         } catch (e: Throwable) {
             takeBackLocked(armed)
             throw e
@@ -285,8 +284,7 @@ class RingingControllerImpl(
         try {
             ledger.put(entry.ringId, entry.alarmId, to, entry.occurrenceAt)
             if (slot != null) {
-                notice?.let(::emitRemote)
-                ringStateStore.set(slot.copy(snoozedUntil = to))
+                writeNoticed(notice) { ringStateStore.set(slot.copy(snoozedUntil = to)) }
             }
         } catch (e: Throwable) {
             runCatching { if (before != null) ledger.put(before.ringId, before.alarmId, before.until, before.occurrenceAt) else ledger.remove(entry.ringId) }
@@ -507,11 +505,6 @@ class RingingControllerImpl(
 
     /** The primary as a member, null without a known occurrence (never guessed). */
     private fun RingState.primaryMember(): RingMember? = occurrenceAt?.let { RingMember(alarmId, it) }
-
-    /** Tells the ringing screen a REMOTE resolution touched [state]; call just before its state write. */
-    private fun notifyRemote(state: RingState, member: RingMember?, kind: MirrorKind, snoozedUntil: Instant?, endsRing: Boolean) {
-        emitRemote(RemoteRingEnd(state.ringId, member, kind, snoozedUntil, endsRing))
-    }
 
     /** Never throws: a resolution must not fail over the screen's notice. Null if it couldn't be emitted. */
     private fun emitRemote(notice: RemoteRingEnd): RemoteRingEnd? = try {
