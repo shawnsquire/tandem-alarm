@@ -61,6 +61,11 @@ class SnoozeLedgerTest {
         assertEquals(SnoozeEntry("ring-X", "a", t1, null), SharedPrefsSnoozeLedger(context).get("ring-X"))
     }
 
+    @Test fun malformedOccurrencePartKeepsTheEntryWithNullOccurrence() {
+        deviceProtectedPrefs(context, "alarm_snoozes").edit().putString("ring-bad", "${t1.toEpochMilli()};oops|a").commit()
+        assertEquals(SnoozeEntry("ring-bad", "a", t1, null), SharedPrefsSnoozeLedger(context).get("ring-bad"))
+    }
+
     @Test fun oldFormatValueDecodesWithNullOccurrence() {
         deviceProtectedPrefs(context, "alarm_snoozes").edit().putString("ring-old", "${t1.toEpochMilli()}|a|weird").commit()
         assertEquals(SnoozeEntry("ring-old", "a|weird", t1, null), SharedPrefsSnoozeLedger(context).get("ring-old"))

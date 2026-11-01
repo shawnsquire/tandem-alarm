@@ -47,7 +47,7 @@ class SharedPrefsSnoozeLedger(context: Context) : SnoozeLedger {
         val semi = head.indexOf(';')
         val until = (if (semi < 0) head else head.substring(0, semi)).toLongOrNull() ?: return null
         val occ = if (semi < 0) null else head.substring(semi + 1).toLongOrNull()?.let(Instant::ofEpochMilli)
-        if (semi >= 0 && occ == null) return null
+        // A bad occurrence part must not drop the entry: a parked snooze still rings (I1).
         return SnoozeEntry(ringId, value.substring(sep + 1), Instant.ofEpochMilli(until), occ)
     }
 
