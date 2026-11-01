@@ -51,6 +51,9 @@ class CommandApplierImpl(
 ) : CommandApplier {
     private val lock = Mutex()
 
+    /** Invite command ids already notified in this process; guarded by [lock]. */
+    private val notifiedInvites = mutableSetOf<String>()
+
     /**
      * The FCM path: applies only if the household is known and the server doc is still pending.
      * Otherwise throws [CommandNotVerifiedException] so the caller falls back to a household-bound pull.
@@ -145,13 +148,26 @@ class CommandApplierImpl(
                     // Re-delivery retries, validate expires it after 24 h, and acceptInvite rejects
                     // "deleted this alarm" if the user taps Join on one that is really gone.
                     partnerState == null || ownerAlarm == null -> return
-                    alarms.linkedAlarms.first().any { it.link?.ownerAlarmId == cmd.alarmId } ->
-                        outcome = Outcome.Rejected("already joined")
                     else -> {
-                        // Left pending on purpose: the owner reads APPLIED as accepted, so only
-                        // LinkRepository.acceptInvite/declineInvite record and resolve it.
-                        invite = cmd to ownerAlarm
-                        return@withLock
+                        val joined = alarms.linkedAlarms.first().filter { it.link?.ownerAlarmId == cmd.alarmId }
+                        when {
+                            // acceptInvite made the row but its own resolve hasn't landed (or was lost):
+                            // the owner's invite was accepted, so say so (the first resolve wins).
+                            joined.any { it.link?.ownerUid == cmd.from } -> {
+                                processed.record(cmd.id, Outcome.Applied, cmd.expiresAt)
+                                resolve(hid, cmd.id, Outcome.Applied)
+                                return@withLock
+                            }
+                            joined.isNotEmpty() -> outcome = Outcome.Rejected("already joined")
+                            else -> {
+                                // Left pending on purpose: the owner reads APPLIED as accepted, so only
+                                // LinkRepository.acceptInvite/declineInvite record and resolve it.
+                                // Redeliveries (pull, FCM, listener) skip the notification so a swiped-away
+                                // invite isn't re-posted for the rest of its 24 h.
+                                if (notifiedInvites.add(cmd.id)) invite = cmd to ownerAlarm
+                                return@withLock
+                            }
+                        }
                     }
                 }
             }

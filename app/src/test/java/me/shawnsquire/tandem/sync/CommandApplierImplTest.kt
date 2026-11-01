@@ -551,9 +551,9 @@ class CommandApplierImplTest {
         assertNull(e.processed.outcome("c1"))
         assertEquals(0, e.scheduler.rescheduleCount)
         assertTrue(e.notifier.calls.isEmpty())
-        // Re-delivery posts again (the notification id is stable) and still resolves nothing.
+        // Re-delivery doesn't post again and still resolves nothing.
         e.applier.apply(c)
-        assertEquals(2, e.notifier.invites.size)
+        assertEquals(1, e.notifier.invites.size)
         assertTrue(e.remote.resolved.isEmpty())
     }
 
@@ -594,12 +594,31 @@ class CommandApplierImplTest {
         assertTrue(e.remote.resolved.isEmpty())
     }
 
-    @Test fun `invite for an already joined alarm is rejected`() = runTest {
+    @Test fun `invite for an alarm already joined from this owner resolves applied`() = runTest {
         val e = env(alarms = listOf(weekly, linkedRow), partner = flowOf(partnerWith(ownerId)))
         e.applier.apply(invite())
         assertTrue(e.notifier.invites.isEmpty())
+        assertTrue(e.notifier.calls.isEmpty())
+        assertEquals(0, e.scheduler.rescheduleCount)
+        assertEquals(listOf(FakeCommandRemote.Resolved("h1", "c1", CommandStatus.APPLIED, null)), e.remote.resolved)
+        assertEquals(Outcome.Applied, e.processed.outcome("c1"))
+    }
+
+    @Test fun `invite for an alarm joined from someone else is rejected`() = runTest {
+        val other = linkedRow.copy(link = linkedRow.link!!.copy(ownerUid = "stranger"))
+        val e = env(alarms = listOf(weekly, other), partner = flowOf(partnerWith(ownerId)))
+        e.applier.apply(invite())
+        assertTrue(e.notifier.invites.isEmpty())
         rejection(e, "already joined")
-        assertEquals(Outcome.Rejected("already joined"), e.processed.outcome("c1"))
+    }
+
+    @Test fun `a pending invite is notified once per process`() = runTest {
+        val e = env(partner = flowOf(partnerWith(ownerId)))
+        val c = invite()
+        e.applier.apply(c)
+        e.applier.apply(c)
+        assertEquals(1, e.notifier.invites.size)
+        assertTrue(e.remote.resolved.isEmpty())
     }
 
     @Test fun `invite with unknown partner state stays pending`() = runTest {
