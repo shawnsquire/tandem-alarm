@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
@@ -1394,6 +1395,37 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(1, h.finished)
         assertFalse(h.repo.get("b")!!.enabled)
+    }
+
+    @Test fun memberJoiningAfterAResumeGetsItsTenMinutesOnAnImmediateDispatcher() = runTest {
+        // An immediate dispatcher (as the service's Main.immediate) runs the re-observe's first look
+        // inside the resume: its re-arm must replace the resume's own timer, not orphan one.
+        val h = harness(alarms = listOf(alarm("a"), alarm("b"), alarm("c")))
+        val bAt = occurrence.plusSeconds(600)
+        var calls = 0
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            if (calls++ == 0) h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        val immediate = UnconfinedTestDispatcher(testScheduler)
+        RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, slot, h.sound, h.vibration, h.notifier, CoroutineScope(backgroundScope.coroutineContext + immediate),
+            immediate, { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
+        ).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(0, h.finished) // resumed for b
+        advanceTimeBy(5.minutes); runCurrent()
+        val cAt = occurrence.plusSeconds(900)
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("c", "ring-c", h.clock, null, cAt)))
+        runCurrent()
+        advanceTimeBy(5.minutes + 1.seconds); runCurrent() // the resume's ten minutes are up; c's are not
+        assertNotNull(h.rawStore.state.first())
+        assertEquals(0, h.finished)
+        advanceTimeBy(5.minutes); runCurrent()
+        assertNull(h.rawStore.state.first())
+        assertEquals(1, h.finished)
     }
 
     @Test fun resumedRingAutoSilencesTenMinutesLater() = runTest {

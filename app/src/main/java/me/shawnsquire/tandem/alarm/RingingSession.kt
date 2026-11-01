@@ -221,9 +221,11 @@ class RingingSession(
         } else {
             guarded("notifier", Unit) { notifier.showNotifyRinging(surfaceAlarm, ringId) }
         }
-        observe(ringId)
+        // Before observing: on an immediate dispatcher the first look runs inside observe(), and a
+        // re-arm there must replace this timer, not one this line would then orphan.
         autoSilence = null // this job: arming anew must not cancel it
         armAutoSilence(ringId)
+        observe(ringId)
     }
 
     private sealed interface Claim<out T> {
