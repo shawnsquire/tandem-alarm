@@ -120,6 +120,7 @@ dependencies {
     implementation(libs.firebase.firestore)
     implementation(libs.firebase.messaging)
     implementation(libs.firebase.functions)
+    implementation(libs.firebase.storage)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
