@@ -75,11 +75,18 @@ class RingingControllerImplTest {
             get() = armer.armFailure
             set(v) { armer.armFailure = v }
         val ledger = InMemorySnoozeLedger()
+        val fired = InMemoryFiredLedger()
     }
 
-    private fun H.controller(mirror: RingMirrorPort = NoOpRingMirrorPort, armer: SnoozeArmer = this.armer): RingingControllerImpl {
+    private fun H.controller(
+        mirror: RingMirrorPort = NoOpRingMirrorPort,
+        armer: SnoozeArmer = this.armer,
+        store: RingStateStore = this.store,
+        ledger: SnoozeLedger = this.ledger,
+        fired: FiredLedger = this.fired,
+    ): RingingControllerImpl {
         var splits = 0
-        return RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror, newRingId = { "split-${++splits}" }) { now }
+        return RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror, fired, newRingId = { "split-${++splits}" }) { now }
     }
 
     private class RecordingMirror : RingMirrorPort {
@@ -1066,5 +1073,322 @@ class RingingControllerImplTest {
         assertTrue(ctx.merged.isEmpty())
         assertTrue(ctx.snoozes.isEmpty())
         assertNull(ctx.lastRang)
+    }
+
+    // ---- one occurrence: dismissOccurrence / snoozeOccurrence ----
+
+    private val tenOhFive = Instant.parse("2026-03-02T10:05:00Z")
+    private val promoted = RingState("b", "ring-1", ringing.startedAt, null, occurrenceY, listOf(RingMember("c", occurrenceZ)))
+
+    @Test fun remoteStopForThePrimaryOfAMergedRingPromotesTheNextMemberAndKeepsSounding() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertEquals(promoted, h.store.state.first()) // same ringId and startedAt: the session plays on
+        assertFalse(h.repo.get("a")!!.enabled) // the primary's one-shot is off
+        assertTrue(h.repo.get("b")!!.link!!.joinerEnabled) // the others are untouched
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun remoteStopForAMergedMemberRemovesOnlyIt() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismissOccurrence("b", occurrenceY, RingOrigin.REMOTE)
+        assertEquals(mergedRing.copy(merged = listOf(RingMember("c", occurrenceZ))), h.store.state.first())
+        assertFalse(h.repo.get("b")!!.link!!.joinerEnabled)
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun remoteSnoozeForThePrimarySplitsItOutAndKeepsTheRestSounding() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        val c = h.controller(mirror)
+        c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(promoted, h.store.state.first())
+        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX)), h.ledger.all())
+        assertEquals(listOf(Triple("a", "split-1", tenOhFive)), h.armed)
+        assertEquals(listOf("split-1" to tenOhFive), h.notifier.snoozed)
+        assertTrue(h.repo.get("a")!!.enabled) // not a dismiss
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertTrue(mirror.calls.isEmpty())
+        val ctx = c.ringContext("a")
+        assertEquals(listOf(ParkedSnooze("a", occurrenceX, tenOhFive)), ctx.snoozes)
+        assertEquals(promoted.merged, ctx.merged)
+    }
+
+    @Test fun remoteSnoozeForAMergedMemberSplitsItOutAndKeepsTheRingSounding() = runTest {
+        val h = mergedH()
+        val c = h.controller()
+        c.snoozeOccurrence("c", occurrenceZ, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(mergedRing.copy(merged = listOf(RingMember("b", occurrenceY))), h.store.state.first())
+        assertEquals(listOf(SnoozeEntry("split-1", "c", tenOhFive, occurrenceZ)), h.ledger.all())
+        assertEquals(listOf(Triple("c", "split-1", tenOhFive)), h.armed)
+        assertEquals(listOf("split-1" to tenOhFive), h.notifier.snoozed)
+        assertEquals(listOf(ParkedSnooze("c", occurrenceZ, tenOhFive)), c.ringContext("c").snoozes)
+    }
+
+    @Test fun splitArmFailureKeepsTheRingSoundingUnchanged() = runTest {
+        val h = mergedH()
+        h.armFailure = IllegalStateException("alarm manager")
+        val thrown = runCatching { h.controller().snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE) }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+        assertEquals(mergedRing, h.store.state.first())
+        assertTrue(h.ledger.all().isEmpty())
+        assertTrue(h.notifier.snoozed.isEmpty())
+    }
+
+    @Test fun splitStateWriteFailureTakesTheSnoozeBack() = runTest {
+        val h = mergedH()
+        val failing = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) { throw IllegalStateException("disk") }
+        }
+        val thrown = runCatching { h.controller(store = failing).snoozeOccurrence("b", occurrenceY, tenOhFive, RingOrigin.REMOTE) }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+        assertEquals(mergedRing, h.store.state.first())
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(listOf("split-1"), h.armer.cancelled)
+        assertTrue(h.notifier.snoozed.isEmpty())
+    }
+
+    @Test fun remoteStopForASoloSlotRingEndsIt() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), soundingX)
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertNull(h.store.state.first())
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun remoteSnoozeForASoloSlotRingSnoozesItToExactlyT() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), soundingX)
+        h.settings.setSnoozeMinutes(7)
+        val mirror = RecordingMirror()
+        h.controller(mirror).snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(soundingX.copy(snoozedUntil = tenOhFive), h.store.state.first())
+        assertEquals(listOf(SnoozeEntry("ring-1", "a", tenOhFive, occurrenceX)), h.ledger.all())
+        assertEquals(listOf("ring-1" to tenOhFive), h.notifier.snoozed)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun stopForASnoozedSlotRingEndsIt() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), soundingX.copy(snoozedUntil = tenOhFive))
+        h.ledger.put("ring-1", "a", tenOhFive, occurrenceX)
+        h.controller().dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertNull(h.store.state.first())
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(listOf("ring-1"), h.armer.cancelled)
+        assertFalse(h.repo.get("a")!!.enabled)
+    }
+
+    @Test fun snoozeForASnoozedSlotRingMovesItOnlyLater() = runTest {
+        val snoozed = soundingX.copy(snoozedUntil = tenOhFive)
+        val h = H(listOf(alarm("a", emptySet())), snoozed)
+        h.ledger.put("ring-1", "a", tenOhFive, occurrenceX)
+        val c = h.controller()
+        c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE) // equal: nothing
+        c.snoozeOccurrence("a", occurrenceX, tenOhFive.minusSeconds(60), RingOrigin.REMOTE) // earlier: nothing
+        assertEquals(snoozed, h.store.state.first())
+        assertTrue(h.armed.isEmpty())
+        assertEquals(0, h.scheduler.rescheduleCount)
+        assertTrue(h.notifier.snoozed.isEmpty())
+
+        val later = tenOhFive.plusSeconds(120)
+        c.snoozeOccurrence("a", occurrenceX, later, RingOrigin.REMOTE)
+        assertEquals(snoozed.copy(snoozedUntil = later), h.store.state.first())
+        assertEquals(listOf(SnoozeEntry("ring-1", "a", later, occurrenceX)), h.ledger.all())
+        assertEquals(listOf(Triple("a", "ring-1", later)), h.armed) // same ringId
+        assertEquals(listOf("ring-1" to later), h.notifier.snoozed)
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun snoozeForAParkedSnoozeMovesItOnlyLater() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        val c = h.controller()
+        c.snoozeOccurrence("a", occurrenceX, sevenTen, RingOrigin.REMOTE)
+        c.snoozeOccurrence("a", occurrenceX, sevenOhFive, RingOrigin.REMOTE)
+        assertEquals(SnoozeEntry("ring-A", "a", sevenTen, occurrenceX), h.ledger.get("ring-A"))
+        assertTrue(h.armed.isEmpty())
+        assertEquals(0, h.scheduler.rescheduleCount)
+
+        val later = sevenTen.plusSeconds(300)
+        c.snoozeOccurrence("a", occurrenceX, later, RingOrigin.REMOTE)
+        assertEquals(listOf(SnoozeEntry("ring-A", "a", later, occurrenceX)), h.ledger.all())
+        assertEquals(listOf(Triple("a", "ring-A", later)), h.armed)
+        assertEquals(listOf("ring-A" to later), h.notifier.snoozed)
+        assertEquals(ringB, h.store.state.first()) // the slot ring is untouched
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun movedSnoozeGoesBackWhenTheLedgerWriteFails() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        var fail = true
+        val flaky = object : SnoozeLedger by h.ledger {
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) {
+                if (fail) { fail = false; throw IllegalStateException("prefs") }
+                h.ledger.put(ringId, alarmId, until, occurrenceAt)
+            }
+        }
+        val later = sevenTen.plusSeconds(300)
+        val thrown = runCatching { h.controller(ledger = flaky).snoozeOccurrence("a", occurrenceX, later, RingOrigin.REMOTE) }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+        assertEquals(SnoozeEntry("ring-A", "a", sevenTen, occurrenceX), h.ledger.get("ring-A"))
+        assertEquals(listOf(Triple("a", "ring-A", later), Triple("a", "ring-A", sevenTen)), h.armed) // re-armed at the old end
+        assertTrue(h.notifier.snoozed.isEmpty())
+    }
+
+    @Test fun stopForAParkedSnoozeDropsItAndLeavesTheSlotAlone() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        h.controller().dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertNull(h.ledger.get("ring-A"))
+        assertEquals(listOf("ring-A"), h.armer.cancelled)
+        assertEquals(ringB, h.store.state.first())
+        assertFalse(h.repo.get("a")!!.enabled)
+    }
+
+    @Test fun alreadyResolvedOccurrenceIsANoOp() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        h.fired.markRang("a", occurrenceX)
+        val mirror = RecordingMirror()
+        val c = h.controller(mirror)
+        c.dismissOccurrence("a", occurrenceX, RingOrigin.LOCAL)
+        c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.LOCAL)
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertTrue(h.ledger.all().isEmpty())
+        assertTrue(h.armed.isEmpty())
+        assertEquals(0, h.scheduler.rescheduleCount)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun earlyStopRecordsTheOccurrenceAndTurnsAOneShotOff() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        h.controller().dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertEquals(occurrenceX, h.fired.lastRang("a"))
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertNull(h.store.state.first())
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun earlyStopOfALinkedOneShotTurnsOnlyOurSideOff() = runTest {
+        val h = H(listOf(linkedAlarm("a")), null)
+        h.controller().dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertFalse(h.repo.get("a")!!.link!!.joinerEnabled)
+    }
+
+    @Test fun earlySnoozeRecordsTheOccurrenceAndArmsTheSnooze() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        val c = h.controller()
+        c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(occurrenceX, h.fired.lastRang("a"))
+        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX)), h.ledger.all())
+        assertEquals(listOf(Triple("a", "split-1", tenOhFive)), h.armed)
+        assertEquals(listOf("split-1" to tenOhFive), h.notifier.snoozed)
+        assertTrue(h.repo.get("a")!!.enabled) // a snooze, not a dismiss
+        assertNull(h.store.state.first())
+        assertEquals(1, h.scheduler.rescheduleCount)
+        val ctx = c.ringContext("a")
+        assertEquals(listOf(ParkedSnooze("a", occurrenceX, tenOhFive)), ctx.snoozes)
+        assertEquals(occurrenceX, ctx.lastRang)
+    }
+
+    @Test fun earlySnoozeArmFailureLeavesTheOccurrenceUnresolved() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        h.armFailure = IllegalStateException("alarm manager")
+        val thrown = runCatching { h.controller().snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE) }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+        assertNull(h.fired.lastRang("a")) // I1: X still rings
+        assertTrue(h.ledger.all().isEmpty())
+    }
+
+    @Test fun earlySnoozeLedgerFailureCancelsTheArmAndLeavesTheOccurrenceUnresolved() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        val failing = object : SnoozeLedger by h.ledger {
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) { throw IllegalStateException("prefs") }
+        }
+        val thrown = runCatching { h.controller(ledger = failing).snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE) }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+        assertNull(h.fired.lastRang("a"))
+        assertEquals(listOf("split-1"), h.armer.cancelled)
+        assertTrue(h.notifier.snoozed.isEmpty())
+    }
+
+    @Test fun earlySnoozeFiredLedgerFailureTakesTheSnoozeBack() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        val failing = object : FiredLedger by h.fired {
+            override fun markRang(alarmId: String, occurrence: Instant) { throw IllegalStateException("prefs") }
+        }
+        val thrown = runCatching { h.controller(fired = failing).snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE) }.exceptionOrNull()
+        assertTrue(thrown is IllegalStateException)
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(listOf("split-1"), h.armer.cancelled)
+        assertTrue(h.notifier.snoozed.isEmpty())
+    }
+
+    /** Every path that resolves one occurrence, with the single member LOCAL must report. */
+    private class OccurrenceCase(
+        val name: String,
+        val h: () -> H,
+        val kind: MirrorKind,
+        val member: RingMember,
+        val until: Instant?,
+        val act: suspend (RingingControllerImpl, RingOrigin) -> Unit,
+    )
+
+    private val occurrenceCases: List<OccurrenceCase> get() {
+        val later = tenOhFive.plusSeconds(120)
+        val a = RingMember("a", occurrenceX)
+        val snoozedSlot = { H(listOf(alarm("a", emptySet())), soundingX.copy(snoozedUntil = tenOhFive)).also { it.ledger.put("ring-1", "a", tenOhFive, occurrenceX) } }
+        val parked = { H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB).also { it.ledger.put("ring-A", "a", sevenTen, occurrenceX) } }
+        val solo = { H(listOf(alarm("a", emptySet())), soundingX) }
+        val early = { H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), null) }
+        fun stop(name: String, h: () -> H, m: RingMember) =
+            OccurrenceCase(name, h, MirrorKind.DISMISS, m, null) { c, o -> c.dismissOccurrence(m.alarmId, m.occurrenceAt, o) }
+        fun snooze(name: String, h: () -> H, m: RingMember, t: Instant) =
+            OccurrenceCase(name, h, MirrorKind.SNOOZE, m, t) { c, o -> c.snoozeOccurrence(m.alarmId, m.occurrenceAt, t, o) }
+        return listOf(
+            stop("stop primary of merged", ::mergedH, a),
+            stop("stop merged member", ::mergedH, RingMember("b", occurrenceY)),
+            stop("stop solo slot", solo, a),
+            stop("stop snoozed slot", snoozedSlot, a),
+            stop("stop parked", parked, a),
+            stop("stop early", early, a),
+            snooze("snooze primary of merged", ::mergedH, a, tenOhFive),
+            snooze("snooze merged member", ::mergedH, RingMember("c", occurrenceZ), tenOhFive),
+            snooze("snooze solo slot", solo, a, tenOhFive),
+            snooze("snooze snoozed slot later", snoozedSlot, a, later),
+            snooze("snooze parked later", parked, a, later),
+            snooze("snooze early", early, a, tenOhFive),
+        )
+    }
+
+    @Test fun localResolutionMirrorsJustThatMemberOnceOnEveryPath() = runTest {
+        for (case in occurrenceCases) {
+            val mirror = RecordingMirror()
+            case.act(case.h().controller(mirror), RingOrigin.LOCAL)
+            assertEquals(case.name, listOf(Triple(case.kind, listOf(case.member), case.until)), mirror.calls)
+        }
+    }
+
+    @Test fun remoteResolutionNeverCallsThePortOnAnyPath() = runTest {
+        for (case in occurrenceCases) {
+            val mirror = RecordingMirror()
+            case.act(case.h().controller(mirror), RingOrigin.REMOTE)
+            assertTrue(case.name, mirror.calls.isEmpty())
+        }
+    }
+
+    @Test fun localSnoozeThatDoesNotMoveTheSnoozeMirrorsNothing() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), soundingX.copy(snoozedUntil = tenOhFive))
+        h.ledger.put("ring-1", "a", tenOhFive, occurrenceX)
+        val mirror = RecordingMirror()
+        h.controller(mirror).snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.LOCAL)
+        assertTrue(mirror.calls.isEmpty())
     }
 }

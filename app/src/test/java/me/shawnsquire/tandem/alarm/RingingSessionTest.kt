@@ -150,7 +150,7 @@ class RingingSessionTest {
         var clock: Instant = now
         val ledger = InMemorySnoozeLedger()
         val armer = RecordingArmer()
-        val controller = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger) { clock }
+        val controller = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, firedLedger = fired) { clock }
         private val dispatcher = ioDispatcher ?: StandardTestDispatcher(scope.testScheduler)
         val session = RingingSession(
             repo, store, settings, preFire, scheduler, controller, controller, sound, vibration, notifier,
@@ -1334,5 +1334,85 @@ class RingingSessionTest {
         runCurrent()
         assertTrue(replaySound.starts.isEmpty())
         assertEquals(1, replayFinished)
+    }
+
+    // ---- an occurrence resolved before its fire claims (the real controller) ----
+
+    private val repeating = alarm(days = setOf(java.time.DayOfWeek.MONDAY)) // stays armed: only the fired ledger can quiet it
+    private val snoozeEnd = occurrence.plusSeconds(300)
+
+    @Test fun earlyStopMakesTheLaterFireQuiet() = runTest {
+        val h = harness(alarms = listOf(alarm()))
+        h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE)
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        assertFalse(h.repo.get("a")!!.enabled) // one-shot off, as on a normal dismiss
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+    }
+
+    @Test fun earlySnoozeMakesTheFireQuietAndTheSnoozeRingsWithTheOccurrence() = runTest {
+        val h = harness(alarms = listOf(repeating))
+        h.controller.snoozeOccurrence("a", occurrence, snoozeEnd, RingOrigin.REMOTE)
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        val entry = h.ledger.all().single()
+        assertEquals(snoozeEnd, entry.until)
+        assertEquals(occurrence, entry.occurrenceAt)
+        assertEquals(listOf(Triple("a", entry.ringId, snoozeEnd)), h.armer.armed)
+
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+
+        h.clock = snoozeEnd
+        slotSession(h, h.controller).start("a", snoozeEnd, true, entry.ringId)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(RingState("a", entry.ringId, snoozeEnd, null, occurrence), h.rawStore.state.first())
+    }
+
+    /** X fired here at 11:30:00 and sits in its pre-fire check; the partner's command lands at 11:30:01. */
+    private fun TestScope.preFireRace(resolve: suspend (RingingControllerImpl) -> Unit): Harness {
+        val gate = CompletableDeferred<Unit>()
+        val h = Harness(this, listOf(repeating), null, LambdaPreFire { gate.await(); true }, occurrence.plusSeconds(1))
+        h.fire(occ = occurrence)
+        runCurrent() // inside the pre-fire check
+        backgroundScope.launch { resolve(h.controller) }
+        runCurrent()
+        gate.complete(Unit)
+        return h
+    }
+
+    @Test fun stopLandingDuringThePreFireCheckSuppressesTheFire() = runTest {
+        val h = preFireRace { it.dismissOccurrence("a", occurrence, RingOrigin.REMOTE) }
+        assertQuiet(h)
+        assertEquals(0, h.vibration.starts)
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        assertTrue(h.repo.get("a")!!.enabled)
+    }
+
+    @Test fun snoozeLandingDuringThePreFireCheckSuppressesTheFireAndArmsTheSnooze() = runTest {
+        val h = preFireRace { it.snoozeOccurrence("a", occurrence, snoozeEnd, RingOrigin.REMOTE) }
+        assertQuiet(h)
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        val entry = h.ledger.all().single()
+        assertEquals(SnoozeEntry(entry.ringId, "a", snoozeEnd, occurrence), entry)
+        assertEquals(listOf(Triple("a", entry.ringId, snoozeEnd)), h.armer.armed)
+    }
+
+    @Test fun stopLandingAfterTheRecheckButBeforeTheClaimSuppressesTheFire() = runTest {
+        val h = harness(alarms = listOf(repeating))
+        h.clock = occurrence.plusSeconds(1)
+        val slot = h.controller.before { h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE) }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        assertQuiet(h) // stillDue saw the ledger under the controller's lock
+        assertEquals(occurrence, h.fired.lastRang("a"))
+    }
+
+    @Test fun snoozeLandingAfterTheRecheckButBeforeTheClaimSuppressesTheFire() = runTest {
+        val h = harness(alarms = listOf(repeating))
+        h.clock = occurrence.plusSeconds(1)
+        val slot = h.controller.before { h.controller.snoozeOccurrence("a", occurrence, snoozeEnd, RingOrigin.REMOTE) }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        assertQuiet(h)
+        assertEquals(snoozeEnd, h.ledger.all().single().until)
     }
 }
