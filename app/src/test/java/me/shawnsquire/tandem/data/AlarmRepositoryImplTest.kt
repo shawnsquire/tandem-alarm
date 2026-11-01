@@ -380,4 +380,31 @@ class AlarmRepositoryImplTest {
         assertFalse(repo.updateLink("own") { it })
         assertNull(repo.get("own")!!.link)
     }
+
+    @Test
+    fun malformedLinkedRowsReadWithSafeDefaults() = runTest {
+        fun row(id: String, mode: String?, joinerEnabled: Boolean?, type: String?, commandId: String?) = alarm(id = id)
+            .toEntity().copy(
+                linkOwnerUid = "owner",
+                linkOwnerAlarmId = "owner-alarm",
+                linkMode = mode,
+                linkJoinerEnabled = joinerEnabled,
+                linkPendingBothType = type,
+                linkPendingBothOccurrenceAt = 1_700_000_000_000,
+                linkPendingBothCommandId = commandId,
+            )
+
+        dao.upsert(row("unknownMode", "BOGUS", false, "BOGUS", "c1"))
+        dao.upsert(row("nullFields", null, null, "SKIP_NEXT", null))
+
+        val unknown = repo.get("unknownMode")!!.link!!
+        assertEquals(LinkMode.RING, unknown.mode)
+        assertFalse(unknown.joinerEnabled)
+        assertNull(unknown.pendingBoth)
+
+        val nulls = repo.get("nullFields")!!.link!!
+        assertEquals(LinkMode.RING, nulls.mode)
+        assertTrue(nulls.joinerEnabled)
+        assertNull(nulls.pendingBoth)
+    }
 }
