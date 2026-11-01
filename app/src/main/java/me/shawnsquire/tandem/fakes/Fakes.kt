@@ -24,14 +24,14 @@ import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.sync.CommandApplier
-import me.shawnsquire.tandem.sync.AlarmMedia
+import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.sync.CommandSender
 import me.shawnsquire.tandem.sync.HealthSignals
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.LinkResult
 import me.shawnsquire.tandem.sync.LinkSync
 import me.shawnsquire.tandem.sync.MediaPublisher
-import me.shawnsquire.tandem.sync.MediaRef
+import me.shawnsquire.tandem.media.MediaRef
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PairingStatus
 import me.shawnsquire.tandem.sync.PartnerAlarm
@@ -96,10 +96,8 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
         val incoming = alarm.link ?: throw IllegalArgumentException("upsertLinked needs a linked alarm")
         state.update { list ->
             val stored = list.firstOrNull { it.id == alarm.id }
-            val storedLink = stored?.link
-            if (stored == null || storedLink == null) {
-                if (stored == null) list + alarm else list.map { if (it.id == alarm.id) alarm else it }
-            } else {
+            if (stored == null) list + alarm else {
+                val storedLink = checkNotNull(stored.link) { "upsertLinked: row ${stored.id} exists and is not linked" }
                 val merged = stored.copy(
                     label = alarm.label,
                     hour = alarm.hour,
@@ -114,17 +112,15 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
     }
 
     override suspend fun updateLink(id: String, transform: (AlarmLink) -> AlarmLink): Boolean {
-        var found = false
-        state.update { list ->
-            list.map {
-                val link = it.link
-                if (it.id == id && link != null) {
-                    found = true
-                    it.copy(link = transform(link))
-                } else it
-            }
+        // transform runs exactly once (MutableStateFlow.update may retry its lambda), so read-then-set under a lock.
+        synchronized(state) {
+            val list = state.value
+            val row = list.firstOrNull { it.id == id }
+            val link = row?.link ?: return false
+            val updated = row.copy(link = transform(link))
+            state.value = list.map { if (it.id == id) updated else it }
+            return true
         }
-        return found
     }
 }
 
@@ -375,8 +371,14 @@ class FakeLinkedMediaCache : LinkedMediaCache {
         updates += Update(ownerUid, alarms, defaultWallpaper)
     }
 
-    override fun pathFor(sha: String): String? = null
-    override fun inUse(): Set<String> = emptySet()
+    /** Cached file paths by sha, for tests to populate. */
+    val paths = mutableMapOf<String, String>()
+
+    /** Hashes reported by [inUse], for tests to populate. */
+    val inUseHashes = mutableSetOf<String>()
+
+    override fun pathFor(sha: String): String? = paths[sha]
+    override fun inUse(): Set<String> = inUseHashes.toSet()
 
     override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) = RingMedia(
         label = alarm.link?.overrideLabel ?: alarm.label,

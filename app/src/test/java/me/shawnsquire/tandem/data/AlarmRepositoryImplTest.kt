@@ -364,6 +364,16 @@ class AlarmRepositoryImplTest {
     }
 
     @Test
+    fun upsertLinkedRefusesToConvertAnOwnAlarm() = runTest {
+        val own = alarm()
+        repo.upsert(own)
+        val incoming = linked().copy(id = own.id)
+        val e = runCatching { repo.upsertLinked(incoming) }.exceptionOrNull()
+        assertTrue(e is IllegalStateException)
+        assertEquals(own, repo.get(own.id))
+    }
+
+    @Test
     fun upsertLinkedRejectsAnAlarmWithoutALink() = runTest {
         val e = runCatching { repo.upsertLinked(alarm()) }.exceptionOrNull()
         assertTrue(e is IllegalArgumentException)

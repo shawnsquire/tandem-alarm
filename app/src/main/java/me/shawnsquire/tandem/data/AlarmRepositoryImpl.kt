@@ -46,8 +46,9 @@ class AlarmRepositoryImpl(
     override suspend fun upsertLinked(alarm: Alarm) {
         require(alarm.link != null) { "upsertLinked needs a linked alarm" }
         dao.upsertMerging(alarm.toEntity()) { stored, incoming ->
-            // A same-id row that isn't linked has no joiner state to keep: the incoming row replaces it.
-            if (stored.toAlarm().link == null) incoming else stored.copy(
+            // Never turn an own alarm into a linked row (I2): an id collision or LinkSync bug must fail loudly.
+            check(stored.toAlarm().link != null) { "upsertLinked: row ${stored.id} exists and is not linked" }
+            stored.copy(
                 label = incoming.label,
                 hour = incoming.hour,
                 minute = incoming.minute,

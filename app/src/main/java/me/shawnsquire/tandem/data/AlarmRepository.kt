@@ -27,8 +27,9 @@ interface AlarmRepository {
      * Inserts it if absent. If a row with that id exists, replaces only the owner-copied fields
      * (label, hour, minute, days, enabled, link.ownerSkippedOccurrenceAt) and keeps every joiner-owned
      * field (skippedOccurrenceAt, soloSkippedOccurrenceAt, ringtoneUri, wallpaperPath and the rest of link),
-     * so a sync never overwrites the joiner's own state. An existing row with that id that is not linked
-     * is replaced whole (there is no joiner state to keep). One transaction.
+     * so a sync never overwrites the joiner's own state. If an existing row with that id is not linked,
+     * throws IllegalStateException without writing: an id collision or LinkSync bug must never turn an
+     * own alarm into a linked row (I2). One transaction.
      */
     suspend fun upsertLinked(alarm: Alarm)
 
