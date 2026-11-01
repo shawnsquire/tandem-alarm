@@ -238,7 +238,8 @@ class LinkRepositoryImpl(
     /**
      * Holds the invite open until [status] reports an answer or [expiresAt] passes, then drops it from the
      * count and the ledger. A cancelled wait (the process going away) leaves the ledger entry for the next start.
-     * [status] ending without an answer (its listener failed) is no answer: it is collected again after a delay.
+     * [status] ending without an answer (its listener failed) is no answer: it is collected again (see
+     * [awaitAnswer]) while the household is the one it failed under; a different household drops the invite as moot.
      */
     private suspend fun settleInvite(
         alarmId: String, commandId: String?, expiresAt: Instant, status: Flow<Pair<CommandStatus, String?>>,
@@ -246,8 +247,12 @@ class LinkRepositoryImpl(
         var settled = false
         try {
             val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
+            var sentIn: Household? = null
             withTimeoutOrNull(remaining) {
-                while (status.firstOrNull { it.first != CommandStatus.PENDING } == null) delay(RESUBSCRIBE_DELAY)
+                awaitAnswer({ status }) {
+                    val hh = household.filterNotNull().first()
+                    hh == (sentIn ?: hh.also { sentIn = it })
+                }
             }
             settled = true
         } finally {
@@ -347,14 +352,18 @@ class LinkRepositoryImpl(
                 val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
                 // Waiting for a household and re-subscribing after a completed observe (its listener failed)
                 // both count against the deadline.
+                var dropped = false
                 val done = withTimeoutOrNull(remaining) {
                     val hh = household.filterNotNull().first()
-                    var update: Pair<CommandStatus, String?>? = null
-                    while (update == null) {
-                        update = remote.observe(hh.id, pending.commandId).firstOrNull { it.first != CommandStatus.PENDING }
-                        if (update == null) delay(RESUBSCRIBE_DELAY)
-                    }
-                    update
+                    awaitAnswer({ remote.observe(hh.id, pending.commandId) }) {
+                        alarms.get(rowId)?.link?.pendingBoth?.commandId == pending.commandId &&
+                            household.filterNotNull().first() == hh
+                    }.also { dropped = it == null }
+                }
+                if (dropped) {
+                    // Replaced, or unpaired (LinkSync removes the row): no answer is coming, and none is reported.
+                    Log.i(TAG, "stopped watching ${pending.commandId}")
+                    return@launch
                 }
                 val applied = done?.first == CommandStatus.APPLIED
                 if (applied) {
@@ -394,6 +403,25 @@ class LinkRepositoryImpl(
         }
     }
 
+    /**
+     * The first answer from [observe]. Its ending at PENDING is a listener failure, not an answer: it is
+     * collected again after a wait that doubles from [RESUBSCRIBE_DELAY] to [RESUBSCRIBE_MAX], while
+     * [stillWanted] (checked before each retry; it may suspend while the household is unknown). Null once it
+     * isn't, so a listen denied for good (unpaired) stops instead of retrying until the TTL.
+     */
+    private suspend fun awaitAnswer(
+        observe: () -> Flow<Pair<CommandStatus, String?>>,
+        stillWanted: suspend () -> Boolean,
+    ): Pair<CommandStatus, String?>? {
+        var wait = RESUBSCRIBE_DELAY
+        while (true) {
+            observe().firstOrNull { it.first != CommandStatus.PENDING }?.let { return it }
+            delay(wait)
+            wait = (wait * 2).coerceAtMost(RESUBSCRIBE_MAX)
+            if (!stillWanted()) return null
+        }
+    }
+
     /** [PendingBoth.createdAt] plus the TTL; [fallback] starts the window for a command stored without one. */
     private fun expiryOf(pending: PendingBoth, fallback: Instant): Instant =
         (pending.createdAt ?: fallback).plus(COMMAND_TTL)
@@ -415,6 +443,7 @@ class LinkRepositoryImpl(
         val PARTNER_WAIT = 2.seconds
         val HOUSEHOLD_WAIT = 2.seconds
         val RESUBSCRIBE_DELAY = 5.seconds
+        val RESUBSCRIBE_MAX = 60.seconds
         val COMMAND_TTL: Duration = Duration.ofHours(24)
     }
 }

@@ -57,6 +57,7 @@ class LinkRepositoryImplTest {
         /** Collections that end PENDING right away, as the real flow does when its listener fails. */
         var failingCollects = 0
         var collects = 0
+        var onCollect: () -> Unit = {}
         override fun send(
             type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?,
             onCreated: (String) -> Unit,
@@ -64,6 +65,7 @@ class LinkRepositoryImplTest {
             sent += Triple(type, alarmId, occurrenceAt)
             onCreated("inv${sent.size}")
             return kotlinx.coroutines.flow.flow {
+                onCollect()
                 if (collects++ < failingCollects) emit(CommandStatus.PENDING to null) else emitAll(status)
             }
         }
@@ -625,6 +627,27 @@ class LinkRepositoryImplTest {
     }
 
     @Test
+    fun repeatedListenerFailuresOnAnOpenInviteBackOffAndStopOnceTheHouseholdChanges() = runTest {
+        val e = env()
+        val times = mutableListOf<Long>()
+        e.sender.failingCollects = Int.MAX_VALUE
+        e.sender.onCollect = { times += testScheduler.currentTime }
+        e.repo.invite("a1")
+        advanceTimeBy(140.seconds)
+        assertEquals(listOf(0L, 5_000L, 15_000L, 35_000L, 75_000L, 135_000L), times)
+        assertEquals(setOf("a1"), e.repo.openInvites.first())
+        e.household.value = Household("h2", "me", "other")
+        advanceTimeBy(1.hours)
+        assertEquals(6, times.size)
+        // An invite into the old household is moot: it is dropped, and not restored on the next start.
+        assertEquals(emptySet<String>(), e.repo.openInvites.first())
+        val restarted = e.makeRepo()
+        restarted.start()
+        runCurrent()
+        assertEquals(emptySet<String>(), restarted.openInvites.first())
+    }
+
+    @Test
     fun anAnsweredInviteIsNotRestored() = runTest {
         val e = env()
         e.repo.invite("a1")
@@ -731,6 +754,54 @@ class LinkRepositoryImplTest {
         advanceTimeBy(31.minutes)
         runCurrent()
         assertNull(e.rows().single().link!!.pendingBoth)
+        assertTrue(e.notifier.rejected.isEmpty())
+    }
+
+    /** An Env whose observe always ends at PENDING (every listen fails), recording when each one started. */
+    private fun TestScope.failingListens(times: MutableList<Long>) = Env(this, listOf(linked()), state(ownerAlarm()), hh, wrap = { f ->
+        object : CommandRemote by f {
+            override fun observe(householdId: String, commandId: String) =
+                kotlinx.coroutines.flow.flowOf(CommandStatus.PENDING to null).also { times += testScheduler.currentTime }
+        }
+    })
+
+    @Test
+    fun repeatedListenerFailuresOnABothCommandBackOff() = runTest {
+        val times = mutableListOf<Long>()
+        val e = failingListens(times)
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        advanceTimeBy(200.seconds)
+        assertEquals(listOf(0L, 5_000L, 15_000L, 35_000L, 75_000L, 135_000L, 195_000L), times)
+        assertTrue(e.notifier.rejected.isEmpty())
+    }
+
+    @Test
+    fun aBothWatchStopsListeningOnceTheHouseholdChanges() = runTest {
+        val times = mutableListOf<Long>()
+        val e = failingListens(times)
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        // Unknown (a household listener gap) only pauses it.
+        e.household.value = null
+        advanceTimeBy(1.hours)
+        assertEquals(1, times.size)
+        e.household.value = Household("h2", "me", "other")
+        advanceTimeBy(1.hours)
+        assertEquals(1, times.size)
+        // Not answered: no rejection posted, and the row is LinkSync's to remove.
+        assertTrue(e.notifier.rejected.isEmpty())
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+    }
+
+    @Test
+    fun aBothWatchStopsListeningOnceTheRowNoLongerHoldsItsCommand() = runTest {
+        val times = mutableListOf<Long>()
+        val e = failingListens(times)
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        e.fake.updateLink("row1") { it.copy(pendingBoth = null) }
+        advanceTimeBy(1.hours)
+        assertEquals(1, times.size)
         assertTrue(e.notifier.rejected.isEmpty())
     }
 
