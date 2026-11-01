@@ -677,12 +677,13 @@ class RingingSession(
         }.also { jobs += it }
     }
 
-    private suspend fun noteMembers(ringId: String, current: Set<RingMember>) {
+    private fun noteMembers(ringId: String, current: Set<RingMember>) {
         val joined = seenMembers?.let { seen -> current.filter { it !in seen } }.orEmpty()
         seenMembers = current
         if (joined.isEmpty()) return
         armAutoSilence(ringId)
-        alertJoined(ringId, joined)
+        // Its own job: the member reads have no bound, and the observation must still see the ring end.
+        jobs += scope.launch { alertJoined(ringId, joined) }
     }
 
     /**
@@ -710,8 +711,7 @@ class RingingSession(
         }
         if (finished || silencing || fullSurface) return // changed across the reads
         val shown = guarded("notifier", false) { notifier.showNotifyRinging(surfaceAlarm, ringId, surfaceLabels(surfaceAlarm), alertAgain = true) }
-        // Its own job: the media resolve must not hold up this observation.
-        if (!shown) jobs += scope.launch { ringInFull(surfaceAlarm, ringId) }
+        if (!shown) ringInFull(surfaceAlarm, ringId)
     }
 
     private fun finish() {

@@ -1957,6 +1957,27 @@ class RingingSessionTest {
         assertEquals(listOf("ring-1"), h.notifier.ringing)
     }
 
+    @Test fun aJoiningMemberWhoseReadHangsDoesNotDelayTheEndOfTheRing() = runTest {
+        // The join's alert reads the member with no bound of its own: off the state observation, so
+        // the ring's end still reaches finish() while that read hangs.
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        val repo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
+            override suspend fun get(id: String): Alarm? = if (id == "b") awaitCancellation() else h.repo.get(id)
+        }
+        RingingSession(
+            repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
+        ).start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        assertNull(h.rawStore.state.first())
+        assertEquals(1, h.finished)
+    }
+
     @Test fun aPromotionInANotifyRingDoesNotAlertAgain() = runTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
         h.fire(occ = occurrence)
