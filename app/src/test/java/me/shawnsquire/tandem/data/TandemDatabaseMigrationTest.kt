@@ -5,6 +5,7 @@ import androidx.room.testing.MigrationTestHelper
 import androidx.test.platform.app.InstrumentationRegistry
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
+import me.shawnsquire.tandem.schedule.LateRing
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -75,7 +76,7 @@ class TandemDatabaseMigrationTest {
 
         // The migrated file also opens through Room and the entity conversion.
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4)
             .allowMainThreadQueries()
             .build()
         try {
@@ -127,7 +128,7 @@ class TandemDatabaseMigrationTest {
         migrated.close()
 
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4)
             .allowMainThreadQueries()
             .build()
         try {
@@ -140,5 +141,75 @@ class TandemDatabaseMigrationTest {
         } finally {
             db.close()
         }
+    }
+
+    private fun insertV3Rows(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL(
+            "INSERT INTO alarms (id, label, hour, minute, days, enabled, skippedOccurrenceAt, ringtoneUri, wallpaperPath, " +
+                "linkOwnerUid, linkOwnerAlarmId, linkMode, linkJoinerEnabled) " +
+                "VALUES ('linked', 'Wake', 6, 30, 31, 1, NULL, NULL, NULL, 'them', 'o1', 'RING', 1)",
+        )
+        db.execSQL(
+            "INSERT INTO alarms (id, label, hour, minute, days, enabled, skippedOccurrenceAt, ringtoneUri, wallpaperPath) " +
+                "VALUES ('own', 'Dentist', 14, 5, 0, 1, NULL, NULL, NULL)",
+        )
+    }
+
+    private fun assertLateRingColumnsNullAndWritable(migrated: androidx.sqlite.db.SupportSQLiteDatabase) {
+        migrated.query("SELECT lateRingOccurrenceAt, lateRingRing FROM alarms").use { c ->
+            assertEquals(2, c.count)
+            while (c.moveToNext()) {
+                assertTrue(c.isNull(0))
+                assertTrue(c.isNull(1))
+            }
+        }
+        migrated.close()
+
+        val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            runBlocking {
+                assertNull(db.alarmDao().get("linked")!!.toAlarm().lateRing)
+                assertNull(db.alarmDao().get("own")!!.toAlarm().lateRing)
+                db.alarmDao().setLateRing("own", 1_700_000_000_000L, false)
+                assertEquals(LateRing(Instant.ofEpochMilli(1_700_000_000_000L), false), db.alarmDao().get("own")!!.toAlarm().lateRing)
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun migrate3To4AddsLateRingColumnsAsNull() {
+        helper.createDatabase(dbName, 3).apply {
+            insertV3Rows(this)
+            close()
+        }
+        assertLateRingColumnsNullAndWritable(
+            helper.runMigrationsAndValidate(dbName, 4, true, TandemDatabase.MIGRATION_3_4),
+        )
+    }
+
+    @Test
+    fun migrate1To4RunsEveryMigrationOnce() {
+        helper.createDatabase(dbName, 1).apply {
+            execSQL(
+                "INSERT INTO alarms (id, label, hour, minute, days, enabled, skippedOccurrenceAt, ringtoneUri, wallpaperPath) " +
+                    "VALUES ('own', 'Dentist', 14, 5, 0, 1, NULL, NULL, NULL)",
+            )
+            execSQL(
+                "INSERT INTO alarms (id, label, hour, minute, days, enabled, skippedOccurrenceAt, ringtoneUri, wallpaperPath) " +
+                    "VALUES ('linked', 'Wake', 6, 30, 31, 1, NULL, NULL, NULL)",
+            )
+            close()
+        }
+        assertLateRingColumnsNullAndWritable(
+            helper.runMigrationsAndValidate(
+                dbName, 4, true,
+                TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4,
+            ),
+        )
     }
 }

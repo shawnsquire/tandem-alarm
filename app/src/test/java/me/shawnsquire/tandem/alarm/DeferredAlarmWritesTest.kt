@@ -10,6 +10,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import java.time.Instant
 import me.shawnsquire.tandem.awaitTandemStartup
+import me.shawnsquire.tandem.schedule.LateRing
 
 @RunWith(RobolectricTestRunner::class)
 class DeferredAlarmWritesTest {
@@ -101,6 +102,17 @@ class DeferredAlarmWritesTest {
             ),
             SharedPrefsDeferredAlarmWrites(context).all(),
         )
+    }
+
+    @Test fun lateRingRoundTripsIncludingNull() {
+        val queue = SharedPrefsDeferredAlarmWrites(context)
+        val writes = listOf(
+            DeferredWrite.SetLateRing("a", LateRing(t1, false)),
+            DeferredWrite.SetLateRing("a", LateRing(t1, true)),
+            DeferredWrite.SetLateRing("a", null),
+        )
+        writes.forEach(queue::append)
+        assertEquals(writes, SharedPrefsDeferredAlarmWrites(context).all())
     }
 
     @Test fun drainedLegacyQueueNeverReusesItsSeqs() {

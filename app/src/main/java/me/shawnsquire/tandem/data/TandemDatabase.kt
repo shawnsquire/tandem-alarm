@@ -7,14 +7,14 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [AlarmEntity::class], version = 3, exportSchema = true)
+@Database(entities = [AlarmEntity::class], version = 4, exportSchema = true)
 abstract class TandemDatabase : RoomDatabase() {
     abstract fun alarmDao(): AlarmDao
 
     companion object {
         /** Room opens the file lazily, so this does no I/O. */
         fun build(context: Context): TandemDatabase =
-            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
 
         private val LINK_COLUMNS = listOf(
             "linkOwnerUid" to "TEXT",
@@ -49,6 +49,17 @@ abstract class TandemDatabase : RoomDatabase() {
                     "UPDATE alarms SET linkPendingBothCreatedAt = ? WHERE linkPendingBothCommandId IS NOT NULL",
                     arrayOf<Any>(System.currentTimeMillis()),
                 )
+            }
+        }
+
+        /**
+         * Adds the owner's late-ring answer. Kept out of [LINK_COLUMNS] so a v1 or v2 install does not
+         * add the columns in 1 -> 2 and then fail on a duplicate here.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `lateRingOccurrenceAt` INTEGER")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `lateRingRing` INTEGER")
             }
         }
     }

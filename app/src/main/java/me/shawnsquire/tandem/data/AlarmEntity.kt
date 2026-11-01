@@ -7,6 +7,7 @@ import java.time.Instant
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 
@@ -44,6 +45,9 @@ data class AlarmEntity(
     val linkOverrideWallpaperPath: String? = null,
     /** Epoch millis of the owner's "just me" skipped occurrence. */
     val soloSkippedOccurrenceAt: Long? = null,
+    /** Epoch millis of [LateRing.occurrenceAt]. Set together with [lateRingRing], or both null. */
+    val lateRingOccurrenceAt: Long? = null,
+    val lateRingRing: Boolean? = null,
 )
 
 fun AlarmEntity.toAlarm(): Alarm = Alarm(
@@ -58,6 +62,9 @@ fun AlarmEntity.toAlarm(): Alarm = Alarm(
     wallpaperPath = wallpaperPath,
     link = toLink(),
     soloSkippedOccurrenceAt = soloSkippedOccurrenceAt?.let(Instant::ofEpochMilli),
+    lateRing = if (lateRingOccurrenceAt != null && lateRingRing != null) {
+        LateRing(Instant.ofEpochMilli(lateRingOccurrenceAt), lateRingRing)
+    } else null,
 )
 
 /**
@@ -113,4 +120,6 @@ fun Alarm.toEntity(): AlarmEntity = AlarmEntity(
     linkOverrideRingtoneUri = link?.overrideRingtoneUri,
     linkOverrideWallpaperPath = link?.overrideWallpaperPath,
     soloSkippedOccurrenceAt = soloSkippedOccurrenceAt?.toEpochMilli(),
+    lateRingOccurrenceAt = lateRing?.occurrenceAt?.toEpochMilli(),
+    lateRingRing = lateRing?.ring,
 )

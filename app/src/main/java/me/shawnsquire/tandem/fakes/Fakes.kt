@@ -19,6 +19,7 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingMember
@@ -95,6 +96,10 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
         list.map { if (it.id == id) it.copy(soloSkippedOccurrenceAt = occurrence) else it }
     }
 
+    override suspend fun setLateRing(id: String, lateRing: LateRing?) = state.update { list ->
+        list.map { if (it.id == id) it.copy(lateRing = lateRing) else it }
+    }
+
     override suspend fun setJoinerEnabled(id: String, enabled: Boolean) = state.update { list ->
         list.map { a -> if (a.id == id) a.link?.let { a.copy(link = it.copy(joinerEnabled = enabled)) } ?: a else a }
     }
@@ -111,6 +116,7 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
                     minute = alarm.minute,
                     days = alarm.days,
                     enabled = alarm.enabled,
+                    lateRing = alarm.lateRing,
                     link = storedLink.copy(ownerSkippedOccurrenceAt = incoming.ownerSkippedOccurrenceAt),
                 )
                 list.map { if (it.id == alarm.id) merged else it }

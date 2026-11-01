@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.data
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -106,5 +107,19 @@ class SkipExpiryTest {
         val result = linked.withoutExpiredSkip(now)
         assertNull(result.soloSkippedOccurrenceAt)
         assertTrue(result.enabled)
+    }
+
+    private fun late(at: Instant?) = skipped(null).copy(lateRing = at?.let { LateRing(it, false) })
+
+    @Test
+    fun anExpiredLateRingReadsAsNull() {
+        assertNull(late(cutoff).withoutExpiredSkip(now).lateRing)
+        assertNull(late(cutoff.minusSeconds(1)).withoutExpiredSkip(now).lateRing)
+    }
+
+    @Test
+    fun aLaterLateRingIsKept() {
+        val live = cutoff.plusMillis(1)
+        assertEquals(late(live), late(live).withoutExpiredSkip(now))
     }
 }

@@ -301,6 +301,7 @@ class AlarmEditViewModel(
                     enabled = true,
                     skippedOccurrenceAt = if (unchanged) current?.skippedOccurrenceAt else null,
                     soloSkippedOccurrenceAt = if (unchanged) current?.soloSkippedOccurrenceAt else null,
+                    lateRing = if (unchanged) current?.lateRing else null,
                     link = current?.link,
                     ringtoneUri = s.ringtoneUri,
                     wallpaperPath = s.wallpaperPath,
@@ -345,7 +346,7 @@ class AlarmEditViewModel(
     /**
      * Whether [alarm] was written. Compares every field the editor writes and ignores only those other
      * writers change: `enabled` (partner ENABLE/DISABLE), `skippedOccurrenceAt` (partner skip, and the
-     * expired-skip strip on read) and `soloSkippedOccurrenceAt` (the owner's solo skip). A failed upsert leaves the old row, which differs in whatever was edited.
+     * expired-skip strip on read), `soloSkippedOccurrenceAt` (the owner's solo skip) and `lateRing` (the owner's late-ring answer, also stripped on read when expired). A failed upsert leaves the old row, which differs in whatever was edited.
      */
     private suspend fun writeLanded(alarm: Alarm): Boolean {
         val stored = runCatching { repository.get(alarm.id) }.getOrNull() ?: return false
@@ -353,6 +354,7 @@ class AlarmEditViewModel(
             enabled = alarm.enabled,
             skippedOccurrenceAt = alarm.skippedOccurrenceAt,
             soloSkippedOccurrenceAt = alarm.soloSkippedOccurrenceAt,
+            lateRing = alarm.lateRing,
         ) == alarm
     }
 

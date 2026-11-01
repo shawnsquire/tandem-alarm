@@ -10,6 +10,7 @@ import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PartnerState
@@ -153,6 +154,18 @@ class AlarmEditViewModelTest {
         e.vm.setTime(7, 0)
         e.vm.save()
         assertNull(e.repo.get("a1")!!.soloSkippedOccurrenceAt)
+    }
+
+    @Test fun labelEditKeepsLateRingAndTimeEditClearsIt() = runTest {
+        val late = LateRing(Instant.parse("2026-11-04T06:30:00Z"), false)
+        val keep = Env("a1", listOf(existing.copy(lateRing = late)))
+        keep.vm.setLabel("x")
+        keep.vm.save()
+        assertEquals(late, keep.repo.get("a1")!!.lateRing)
+        val clear = Env("a1", listOf(existing.copy(lateRing = late)))
+        clear.vm.setTime(7, 0)
+        clear.vm.save()
+        assertNull(clear.repo.get("a1")!!.lateRing)
     }
 
     @Test fun titleIsLookedUpForCurrentUri() = runTest {

@@ -16,6 +16,7 @@ import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakePreFireCheck
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
@@ -152,6 +153,19 @@ class SwitchablePortsTest {
         assertFalse(repo.get("a")!!.enabled)
         assertEquals(listOf(alarm("a", enabled = false), alarm("b", skip = skip)), mirror.read().alarms.map { it.alarm })
         assertEquals(listOf(DeferredWrite.SetEnabled("a", false), DeferredWrite.SetSkip("b", skip)), queue.all())
+    }
+
+    @Test
+    fun lockedLateRingIsQueuedAndReplayedOnAttach() = runTest {
+        val repo = repo(mirrorOf(alarm("a")))
+        val late = LateRing(now.plusSeconds(3600), false)
+        repo.setLateRing("a", late)
+        assertEquals(listOf(DeferredWrite.SetLateRing("a", late)), queue.all())
+        val real = FakeAlarmRepository(listOf(alarm("a")))
+        repo.attach(real)
+        runCurrent()
+        assertEquals(late, real.get("a")!!.lateRing)
+        assertTrue(queue.all().isEmpty())
     }
 
     @Test
