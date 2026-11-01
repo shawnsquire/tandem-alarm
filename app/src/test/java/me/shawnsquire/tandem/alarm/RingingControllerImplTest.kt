@@ -449,9 +449,9 @@ class RingingControllerImplTest {
     @Test fun snoozeWritesLedgerBetweenArmAndState() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         val recordingLedger = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant) {
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) {
                 h.events += "ledger"
-                h.ledger.put(ringId, alarmId, until)
+                h.ledger.put(ringId, alarmId, until, occurrenceAt)
             }
         }
         val recordingStore = object : RingStateStore by h.store {
@@ -467,7 +467,7 @@ class RingingControllerImplTest {
     @Test fun snoozeLedgerFailureWritesNothingAndCancelsArm() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         val failingLedger = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant) { throw IllegalStateException("prefs") }
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) { throw IllegalStateException("prefs") }
         }
         val c = RingingControllerImpl(h.repo, h.store, h.settings, h.scheduler, h.armer, h.notifier, failingLedger) { now }
         var thrown = false

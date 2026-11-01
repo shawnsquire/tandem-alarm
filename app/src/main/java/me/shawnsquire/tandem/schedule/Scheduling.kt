@@ -101,5 +101,6 @@ fun validate(
             } else {
                 CommandDecision.Reject("not ringing")
             }
+        CommandType.SNOOZE, CommandType.INVITE_LINK -> CommandDecision.Reject("not supported yet")
     }
 }

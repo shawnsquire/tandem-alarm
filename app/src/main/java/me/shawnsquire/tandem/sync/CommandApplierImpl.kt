@@ -154,6 +154,7 @@ class CommandApplierImpl(
             CommandType.DISABLE -> alarms.setEnabled(cmd.alarmId, false)
             CommandType.ENABLE -> alarms.setEnabled(cmd.alarmId, true)
             CommandType.STOP_RINGING -> ringing.dismiss(requireNotNull(cmd.ringId))
+            CommandType.SNOOZE, CommandType.INVITE_LINK -> Unit // validate() rejects these until linked alarms land
         }
     }
 

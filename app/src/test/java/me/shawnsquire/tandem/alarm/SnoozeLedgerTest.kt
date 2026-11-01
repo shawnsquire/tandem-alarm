@@ -42,4 +42,27 @@ class SnoozeLedgerTest {
         exercise(SharedPrefsSnoozeLedger(context)) { SharedPrefsSnoozeLedger(context) }
 
     @Test fun inMemoryLedgerBehavesTheSame() = exercise(InMemorySnoozeLedger())
+
+    private fun roundTripWithOccurrence(ledger: SnoozeLedger, fresh: () -> SnoozeLedger = { ledger }) {
+        ledger.put("ring-O", "a|weird", t1, t2)
+        assertEquals(SnoozeEntry("ring-O", "a|weird", t1, t2), fresh().get("ring-O"))
+        ledger.put("ring-N", "b", t1)
+        assertNull(fresh().get("ring-N")!!.occurrenceAt)
+    }
+
+    @Test fun sharedPrefsRoundTripsOccurrence() =
+        roundTripWithOccurrence(SharedPrefsSnoozeLedger(context)) { SharedPrefsSnoozeLedger(context) }
+
+    @Test fun inMemoryRoundTripsOccurrence() = roundTripWithOccurrence(InMemorySnoozeLedger())
+
+    @Test fun roundTripWithoutOccurrenceHasNullOccurrence() {
+        val ledger = SharedPrefsSnoozeLedger(context)
+        ledger.put("ring-X", "a", t1)
+        assertEquals(SnoozeEntry("ring-X", "a", t1, null), SharedPrefsSnoozeLedger(context).get("ring-X"))
+    }
+
+    @Test fun oldFormatValueDecodesWithNullOccurrence() {
+        deviceProtectedPrefs(context, "alarm_snoozes").edit().putString("ring-old", "${t1.toEpochMilli()}|a|weird").commit()
+        assertEquals(SnoozeEntry("ring-old", "a|weird", t1, null), SharedPrefsSnoozeLedger(context).get("ring-old"))
+    }
 }

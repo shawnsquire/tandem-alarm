@@ -3,8 +3,11 @@ package me.shawnsquire.tandem.alarm
 import android.content.Context
 import java.time.Instant
 
-/** One armed snooze: [ringId] comes back at [until] for [alarmId]. */
-data class SnoozeEntry(val ringId: String, val alarmId: String, val until: Instant)
+/**
+ * One armed snooze: [ringId] comes back at [until] for [alarmId]. [occurrenceAt] is the scheduled
+ * occurrence the ring belongs to (null for entries written before linked alarms).
+ */
+data class SnoozeEntry(val ringId: String, val alarmId: String, val until: Instant, val occurrenceAt: Instant? = null)
 
 /**
  * Every armed snooze, keyed by ringId. U3-private source of truth for snooze PendingIntents:
@@ -12,7 +15,7 @@ data class SnoozeEntry(val ringId: String, val alarmId: String, val until: Insta
  * parked behind a newer ring lives here until it fires or is dismissed.
  */
 interface SnoozeLedger {
-    fun put(ringId: String, alarmId: String, until: Instant)
+    fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant? = null)
     fun remove(ringId: String)
     fun get(ringId: String): SnoozeEntry?
     fun all(): List<SnoozeEntry>
@@ -22,8 +25,9 @@ interface SnoozeLedger {
 class SharedPrefsSnoozeLedger(context: Context) : SnoozeLedger {
     private val prefs by lazy { deviceProtectedPrefs(context, PREFS) }
 
-    override fun put(ringId: String, alarmId: String, until: Instant) {
-        check(prefs.edit().putString(ringId, "${until.toEpochMilli()}|$alarmId").commit()) { "snooze ledger write failed" }
+    override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) {
+        val head = if (occurrenceAt == null) "${until.toEpochMilli()}" else "${until.toEpochMilli()};${occurrenceAt.toEpochMilli()}"
+        check(prefs.edit().putString(ringId, "$head|$alarmId").commit()) { "snooze ledger write failed" }
     }
 
     override fun remove(ringId: String) {
@@ -38,8 +42,13 @@ class SharedPrefsSnoozeLedger(context: Context) : SnoozeLedger {
     private fun decode(ringId: String, value: String): SnoozeEntry? {
         val sep = value.indexOf('|')
         if (sep <= 0) return null
-        val until = value.substring(0, sep).toLongOrNull() ?: return null
-        return SnoozeEntry(ringId, value.substring(sep + 1), Instant.ofEpochMilli(until))
+        // Head is "until" (old format) or "until;occurrence".
+        val head = value.substring(0, sep)
+        val semi = head.indexOf(';')
+        val until = (if (semi < 0) head else head.substring(0, semi)).toLongOrNull() ?: return null
+        val occ = if (semi < 0) null else head.substring(semi + 1).toLongOrNull()?.let(Instant::ofEpochMilli)
+        if (semi >= 0 && occ == null) return null
+        return SnoozeEntry(ringId, value.substring(sep + 1), Instant.ofEpochMilli(until), occ)
     }
 
     private companion object {
@@ -51,8 +60,8 @@ class SharedPrefsSnoozeLedger(context: Context) : SnoozeLedger {
 class InMemorySnoozeLedger : SnoozeLedger {
     private val entries = LinkedHashMap<String, SnoozeEntry>()
 
-    @Synchronized override fun put(ringId: String, alarmId: String, until: Instant) {
-        entries[ringId] = SnoozeEntry(ringId, alarmId, until)
+    @Synchronized override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) {
+        entries[ringId] = SnoozeEntry(ringId, alarmId, until, occurrenceAt)
     }
 
     @Synchronized override fun remove(ringId: String) {
