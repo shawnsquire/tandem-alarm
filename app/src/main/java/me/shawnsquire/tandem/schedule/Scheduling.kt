@@ -21,6 +21,10 @@ fun Alarm.isOneShot(): Boolean = days.isEmpty()
  * - Returns null when the alarm is disabled.
  * - [Alarm.skippedOccurrenceAt] skips exactly that occurrence (the following one is returned);
  *   a skip that has already passed is ignored.
+ *
+ * L1 extends this (design "Data model") to also skip the joiner's own skip,
+ * `link.ownerSkippedOccurrenceAt`, a pending "both" skip, and on the owner the solo skip
+ * ([Alarm.soloSkippedOccurrenceAt]).
  */
 fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
     if (!alarm.enabled) return null
@@ -40,6 +44,34 @@ fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
 }
 
 /**
+ * Snooze-ledger view for validation; mirrors alarm.SnoozeEntry without depending on the alarm
+ * package (schedule is java.time only).
+ */
+data class ParkedSnooze(val alarmId: String, val occurrenceAt: Instant?, val until: Instant)
+
+/**
+ * Extra state [validate] needs for ring commands (STOP_RINGING{occurrenceAt}, SNOOZE).
+ * [ring] is the slot's ring, [merged] its merged members, [snoozes] every snooze-ledger entry
+ * (current and parked), [lastRang] is FiredLedger.lastRang for the command's alarm.
+ */
+data class RingContext(
+    val ring: RingState?,
+    val merged: List<RingMember>,
+    val snoozes: List<ParkedSnooze>,
+    val lastRang: Instant?,
+)
+
+/**
+ * Whether [alarm] can ring at all.
+ *
+ * L1 rule (design "Data model"): for a linked row (`link != null`) armed only when
+ * `link.joinerEnabled` is true and the owner side is on: the copied `enabled` is true (or a
+ * "both on" ENABLE is pending in `link.pendingBoth`) and no "both off" DISABLE is pending.
+ * For an own row: `enabled`. Today it returns `enabled` for every row.
+ */
+fun isArmed(alarm: Alarm): Boolean = alarm.enabled
+
+/**
  * Owner-side validation of a partner [cmd] against local state (I2, I3).
  * Rejects expired commands (24 h), commands whose target occurrence doesn't match [alarm]'s
  * next occurrence, and stop-ringing whose ringId doesn't match [ring].
@@ -50,6 +82,29 @@ fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
  * form keeps the genuinely current next occurrence valid during that window.
  * SKIP_NEXT on a one-shot alarm is validated like DISABLE; for a one-shot alarm the applier/UI
  * disables it instead of setting a skip.
+ *
+ * [context] is null today and ignored. L1 rule (design "Ring command validation") for
+ * STOP_RINGING{occurrenceAt: X} and SNOOZE{X, T}, checked in order against the slot's ring, its
+ * merged members and the snooze ledger:
+ * 1. Expired or duplicate: reject (I3).
+ * 2. Not ringing here ("skipped here"): this phone's own state says X wouldn't ring: its
+ *    `skippedOccurrenceAt` or `soloSkippedOccurrenceAt`, `link.ownerSkippedOccurrenceAt`, a
+ *    pending "both" skip or off, copied `enabled = false`, or `joinerEnabled = false`.
+ * 3. Already resolved ("already rang or changed"): X was dismissed, auto-silenced or dismissed in
+ *    advance on this phone. Checked against FiredLedger (`lastRang`) plus the live ring state, so
+ *    it holds inside [FIRE_GRACE] too and a late SNOOZE can't re-arm a dismissed ring.
+ * 4. Live: X is sounding, snoozed (current or parked), or a member of a merged ring: apply. A
+ *    SNOOZE whose T is not later than X's current snooze end is rejected ("already snoozed
+ *    later"), so two crossing snoozes settle on the later T.
+ * 5. Early: X is the next occurrence and at most [FIRE_GRACE] away. STOP_RINGING dismisses it in
+ *    advance; SNOOZE arms the snooze with no ring first.
+ * 6. Otherwise reject.
+ *
+ * Also for L1: SKIP_NEXT upgrades a solo skip to a shared skip; UNSKIP clears only the shared
+ * skip; INVITE_LINK is checked for validity (expiry); a partner command aimed at a linked row's
+ * `id` is rejected (owner-to-joiner commands are matched by `link.ownerAlarmId`). STOP_RINGING
+ * may carry `ringId` (today's check) or `occurrenceAt`. SNOOZE and INVITE_LINK are rejected
+ * "not supported yet" until then.
  */
 fun validate(
     cmd: Command,
@@ -57,6 +112,7 @@ fun validate(
     ring: RingState?,
     now: Instant,
     zone: ZoneId,
+    context: RingContext? = null,
 ): CommandDecision {
     if (now >= cmd.expiresAt) return CommandDecision.Reject("expired")
     if (alarm == null) return CommandDecision.Reject("alarm not found")

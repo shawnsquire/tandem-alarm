@@ -373,4 +373,40 @@ class ValidateTest {
         assertTrue(oneShot().isOneShot())
         assertFalse(alarm().isOneShot())
     }
+
+    private val context = RingContext(
+        ring = ringState(),
+        merged = emptyList(),
+        snoozes = listOf(ParkedSnooze("a1", todayRing, todayRing.plusSeconds(540))),
+        lastRang = yesterdayRing,
+    )
+
+    @Test
+    fun ringContextDoesNotChangeTodaysDecisions() {
+        val stop = cmd(CommandType.STOP_RINGING, ringId = "r1")
+        val skip = cmd(CommandType.SKIP_NEXT, todayRing)
+        for (c in listOf(stop, skip)) {
+            for (ring in listOf(null, ringState())) {
+                assertEquals(
+                    validate(c, alarm(), ring, now, newYork),
+                    validate(c, alarm(), ring, now, newYork, context),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun snoozeAndInviteLinkAreNotSupportedYet() {
+        for (type in listOf(CommandType.SNOOZE, CommandType.INVITE_LINK)) {
+            val c = cmd(type, todayRing)
+            assertEquals(reject("not supported yet"), check(c, alarm()))
+            assertEquals(reject("not supported yet"), validate(c, alarm(), null, now, newYork, context))
+        }
+    }
+
+    @Test
+    fun isArmedMirrorsEnabled() {
+        assertTrue(isArmed(alarm(enabled = true)))
+        assertFalse(isArmed(alarm(enabled = false)))
+    }
 }
