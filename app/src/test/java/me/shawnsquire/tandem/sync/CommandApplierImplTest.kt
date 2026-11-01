@@ -84,7 +84,7 @@ class CommandApplierImplTest {
         )
         val p = ProcessedCommands(ds, clock)
         val applier = CommandApplierImpl(
-            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), p, n, clock, backgroundScope,
+            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), flowOf(null), p, n, clock, backgroundScope,
         )
         return Env(a, r, s, rc, remote, n, p, applier)
     }

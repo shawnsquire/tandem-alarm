@@ -38,6 +38,16 @@ class StatePublisherImpl(
     private val household: Flow<Household?>,
     private val displayName: Flow<String>,
     private val fcmToken: Flow<String?>,
+    /**
+     * This phone's links (LinkRepository.links). Unused until L4, which passes them to deviceDocMap
+     * (the device doc's `links`) and switches the published alarms to ownAlarms.
+     */
+    private val links: Flow<List<PublishedLink>>,
+    /**
+     * The uploaded media refs (MediaPublisher.published). Unused until L4, which passes them to
+     * deviceDocMap (`alarms[].media` and the default wallpaper); null means none published yet.
+     */
+    private val media: Flow<PublishedMedia?>,
     private val writer: DeviceDocWriter,
     private val clock: Clock,
     private val scope: CoroutineScope,

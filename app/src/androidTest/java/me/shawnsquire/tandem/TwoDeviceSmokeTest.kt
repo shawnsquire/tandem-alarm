@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.toList
@@ -45,6 +46,7 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.RingStateStoreImpl
 import me.shawnsquire.tandem.data.TandemDatabase
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
+import me.shawnsquire.tandem.fakes.FakeLinkSync
 import me.shawnsquire.tandem.fakes.FakeRingingController
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
@@ -295,16 +297,17 @@ private class SmokeDevice(context: Context, name: String, displayName: String) {
     private val commandApplier = CommandApplierImpl(
         alarms, ringState, scheduler, ringing, commandRemote, householdFlow,
         partnerRepository.partner.map { it?.displayName }.stateIn(scope, SharingStarted.Eagerly, null),
+        partnerRepository.partner,
         ProcessedCommands(syncStore, LiveZoneClock), notifier, LiveZoneClock, scope,
     )
     val preFireCheck = PreFireCheckImpl(
-        householdFlow, commandRemote, commandApplier::applyPending,
+        householdFlow, commandRemote, commandApplier::applyPending, partnerRepository, FakeLinkSync(),
         onSuccess = { scope.launch { statePublisher.publishNow() } },
     )
     val commandSender: CommandSender = CommandSenderImpl(commandRemote, household, LiveZoneClock)
     val statePublisher = StatePublisherImpl(
         alarms, ringState, householdFlow, authManager.displayName, fcmTokenStore.token,
-        FirestoreDeviceDocWriter(firestore), LiveZoneClock, scope,
+        flowOf(emptyList()), flowOf(null), FirestoreDeviceDocWriter(firestore), LiveZoneClock, scope,
     )
 
     fun close() {

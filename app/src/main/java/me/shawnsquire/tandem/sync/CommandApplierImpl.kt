@@ -38,6 +38,11 @@ class CommandApplierImpl(
     private val remote: CommandRemote,
     private val household: Flow<Household?>,
     private val partnerName: StateFlow<String?>,
+    /**
+     * The partner's published state, including their alarms. Unused until L4, which uses it to call
+     * CommandNotifier.notifyInvite(cmd, partnerAlarm, name) for INVITE_LINK and to check owner commands.
+     */
+    private val partner: Flow<PartnerState?>,
     private val processed: ProcessedCommands,
     private val notifier: CommandNotifier,
     private val clock: Clock,

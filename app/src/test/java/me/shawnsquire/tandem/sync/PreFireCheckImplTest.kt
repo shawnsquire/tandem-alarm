@@ -11,6 +11,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.fakes.FakeLinkSync
+import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandType
 import org.junit.Assert.assertEquals
@@ -34,7 +36,7 @@ class PreFireCheckImplTest {
     ) = PreFireCheckImpl(household, remote, { h, c ->
         applied += h to c
         if (c.id == applyFailsFor) error("boom")
-    }, onSuccess)
+    }, FakePartnerRepository(), FakeLinkSync(), onSuccess)
 
     private fun cmd(id: String, createdAt: String) = Command(
         id, "them", "me", CommandType.STOP_RINGING, "a1", null, "r1",
