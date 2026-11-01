@@ -27,7 +27,9 @@ class TasksTest {
         assertEquals("boom", d.await().exceptionOrNull()?.message)
     }
 
-    @Test fun `a cancelled await ignores the task finishing later`() = runTest {
+    // Pins only that cancelling ends the await without the task and a late result is harmless; that the
+    // listener drops its reference to the continuation isn't observable here.
+    @Test fun `cancelling the caller ends the await before the task finishes, and a late result is harmless`() = runTest {
         val src = TaskCompletionSource<String>()
         val d = async(start = CoroutineStart.UNDISPATCHED) { src.task.await() }
         d.cancel()
