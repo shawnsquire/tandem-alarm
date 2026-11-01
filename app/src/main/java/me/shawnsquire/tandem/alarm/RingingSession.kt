@@ -691,13 +691,22 @@ class RingingSession(
      * mirrored as dismissed. It gets the alerting post an un-silence makes: a fresh post that takes
      * over as the one up, or the full surface when that can't alert (I1). Not tied to the relabel,
      * which can time out; whichever of the two posts last, the notifier updates the Notify id up.
-     * A member that isn't a Notify link (or can't be read) is [watchMembers]' to upgrade, with no
-     * chime first. Only a join: a promotion or a split-out brings nobody new to hear.
+     * A member read as not a Notify link (or deleted) is [watchMembers]' to upgrade, with no chime
+     * first. One whose read fails still gets it: the watch reads on its own and may find a Notify
+     * link, and a chime before an upgrade is harmless where silence isn't (I1). Only a join: a
+     * promotion or a split-out brings nobody new to hear.
      */
     private suspend fun alertJoined(ringId: String, joined: List<RingMember>) {
         if (finished || silencing || fullSurface || !actionsPosted) return
         for (id in joined.map { it.alarmId }.distinct()) {
-            if (!isNotifyLink(guarded("member alarm read", null as Alarm?) { alarmRepository.get(id) })) return
+            val member = try {
+                alarmRepository.get(id)
+            } catch (e: Throwable) {
+                currentCoroutineContext().ensureActive()
+                log("member alarm read failed; alerting for it", e)
+                continue
+            }
+            if (!isNotifyLink(member)) return
         }
         if (finished || silencing || fullSurface) return // changed across the reads
         val shown = guarded("notifier", false) { notifier.showNotifyRinging(surfaceAlarm, ringId, surfaceLabels(surfaceAlarm), alertAgain = true) }

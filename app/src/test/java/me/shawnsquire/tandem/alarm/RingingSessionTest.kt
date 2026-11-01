@@ -1934,6 +1934,29 @@ class RingingSessionTest {
         assertEquals(0, h.finished)
     }
 
+    @Test fun aJoiningMemberWhoseReadFailsStillAlertsBeforeTheUpgrade() = runTest {
+        // Unknown counts as Ring (I1): the member watch upgrades, but that takes the media resolve,
+        // and a read that failed only here must not leave the join unheard meanwhile.
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        val repo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
+            override suspend fun get(id: String): Alarm? = if (id == "b") throw IllegalStateException("db") else h.repo.get(id)
+        }
+        RingingSession(
+            repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired,
+            linkedMediaCache = StubMediaCache(hang = true), onFinished = { h.finished++ },
+        ).start("a", occurrence, false, null)
+        advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds + 1); runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.notifyAlertsAgain)
+        assertTrue(h.sound.starts.isEmpty())
+        advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds); runCurrent()
+        assertEquals(1, h.sound.starts.size) // then in full
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+    }
+
     @Test fun aPromotionInANotifyRingDoesNotAlertAgain() = runTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
         h.fire(occ = occurrence)
