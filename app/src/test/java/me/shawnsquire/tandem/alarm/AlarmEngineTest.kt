@@ -9,12 +9,14 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.TandemApp
 import me.shawnsquire.tandem.awaitTandemStartup
 import me.shawnsquire.tandem.data.RingStateStoreImpl
@@ -42,6 +44,7 @@ import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -57,6 +60,8 @@ class AlarmEngineTest {
     private val app: Application = RuntimeEnvironment.getApplication()
     private val locked = LockedContext(app)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val sessionThread = Executors.newSingleThreadExecutor { Thread(it, "ringing-session") }.asCoroutineDispatcher()
+    private val sessionScope = CoroutineScope(scope.coroutineContext + sessionThread)
     private val zone = ZoneId.systemDefault()
 
     @Before
@@ -77,6 +82,7 @@ class AlarmEngineTest {
     @After
     fun tearDown() {
         scope.cancel()
+        sessionThread.close()
         assertEquals("CE storage touched while locked", emptyList<String>(), locked.touches)
     }
 
@@ -131,15 +137,23 @@ class AlarmEngineTest {
         override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean = inner.pullAndApply(timeout, linkedOwnerAlarmId).also { results += it }
     }
 
-    private class LockedRing(val engine: AlarmEngine, scope: CoroutineScope, preFire: PreFireCheck = engine.preFireCheck) {
+    /**
+     * The session keeps unsynchronized state and needs a single-threaded scope, as RingingService gives
+     * it with Dispatchers.Main.immediate. The main looper is blocked by runBlocking here, so the session
+     * runs on its own thread, and [start] is called there too, as the service calls it on main.
+     */
+    private inner class LockedRing(val engine: AlarmEngine, preFire: PreFireCheck = engine.preFireCheck) {
         val sound = RecordingSound { System.currentTimeMillis() }
         val vibration = RecordingVibration()
         val finished = CompletableDeferred<Unit>()
         val session = RingingSession(
             engine.alarmRepository, engine.ringStateStore, engine.settings, preFire, engine.scheduler,
-            engine.ringSlot, sound, vibration, RecordingNotifier(), scope, Dispatchers.IO, Instant::now,
+            engine.ringSlot, sound, vibration, RecordingNotifier(), sessionScope, Dispatchers.IO, Instant::now,
             firedLedger = engine.firedLedger, liveRings = SyncRingRegistry(), onFinished = { finished.complete(Unit) },
         )
+
+        suspend fun start(alarmId: String, occurrence: Instant) =
+            withContext(sessionThread) { session.start(alarmId, occurrence, false, null) }
     }
 
     /** A just-due occurrence, in millis like the mirror; a skip on it hasn't expired yet. */
@@ -148,9 +162,9 @@ class AlarmEngineTest {
     @Test
     fun lockedSessionRingsWithMirroredRingtone() = runBlocking {
         seedMirror(alarm("a", ringtone = "content://tone/mirrored"), defaultRingtone = "content://tone/default")
-        val ring = LockedRing(lockedEngine(), scope)
+        val ring = LockedRing(lockedEngine())
 
-        ring.session.start("a", dueNow(), false, null)
+        ring.start("a", dueNow())
 
         awaitTrue("sound") { ring.sound.starts.isNotEmpty() }
         assertEquals(listOf("content://tone/mirrored", "content://tone/default"), ring.sound.starts.single())
@@ -164,9 +178,9 @@ class AlarmEngineTest {
         seedMirror(alarm("a", days = setOf(DayOfWeek.MONDAY), skip = occurrence, ringtone = "content://tone/mirrored"))
         val engine = lockedEngine()
         val preFire = CountingPreFire(engine.preFireCheck)
-        val ring = LockedRing(engine, scope, preFire)
+        val ring = LockedRing(engine, preFire)
 
-        ring.session.start("a", occurrence, false, null)
+        ring.start("a", occurrence)
 
         withTimeout(5.seconds) { ring.finished.await() }
         assertTrue(ring.sound.starts.isEmpty())
@@ -182,15 +196,15 @@ class AlarmEngineTest {
     @Test
     fun stopOnLockedOneShotDisablesItInTheMirrorAndQueue() = runBlocking {
         seedMirror(alarm("once"))
-        val ring = LockedRing(lockedEngine(), scope)
-        ring.session.start("once", dueNow(), false, null)
+        val ring = LockedRing(lockedEngine())
+        ring.start("once", dueNow())
         awaitTrue("ring state") { ring.engine.ringStateStore.state.first()?.alarmId == "once" }
         val ringId = ring.engine.ringStateStore.state.first()!!.ringId
 
         ring.engine.controller.dismiss(ringId)
 
         // Real-time budget: the dismiss does real DataStore and SharedPreferences IO on other threads, so virtual time can't drive it.
-        withTimeout(30.seconds) { ring.finished.await() }
+        withTimeout(5.seconds) { ring.finished.await() }
         assertNull(ring.engine.ringStateStore.state.first())
         assertFalse(mirrored.getValue("once").enabled)
         assertEquals(listOf<DeferredWrite>(DeferredWrite.SetEnabled("once", false)), queued)
@@ -212,9 +226,9 @@ class AlarmEngineTest {
     @Test
     fun lockedFireWithAnUnreadableMirrorRingsWithDefaults() = runBlocking {
         putRawMirror("not json")
-        val ring = LockedRing(lockedEngine(), scope)
+        val ring = LockedRing(lockedEngine())
 
-        ring.session.start("a", dueNow(), false, null)
+        ring.start("a", dueNow())
 
         awaitTrue("sound") { ring.sound.starts.isNotEmpty() }
         assertEquals(listOf(emptyList<String>()), ring.sound.starts)
@@ -227,9 +241,9 @@ class AlarmEngineTest {
     fun lockedFireForAnIdMissingFromTheMirrorRings() = runBlocking {
         // Locked, delete throws, so a missing id is a read problem, never a local delete.
         seedMirror(alarm("other", ringtone = "content://tone/other"), defaultRingtone = "content://tone/default")
-        val ring = LockedRing(lockedEngine(), scope)
+        val ring = LockedRing(lockedEngine())
 
-        ring.session.start("a", dueNow(), false, null)
+        ring.start("a", dueNow())
 
         awaitTrue("sound") { ring.sound.starts.isNotEmpty() }
         assertEquals(listOf(listOf("content://tone/default")), ring.sound.starts)
@@ -342,8 +356,8 @@ class AlarmEngineTest {
     @Test
     fun oneShotRingStartedLockedAndStoppedAfterAttachIsDisabledInRoom() = runBlocking {
         seedMirror(alarm("once"))
-        val ring = LockedRing(lockedEngine(), scope)
-        ring.session.start("once", dueNow(), false, null)
+        val ring = LockedRing(lockedEngine())
+        ring.start("once", dueNow())
         awaitTrue("ring state") { ring.engine.ringStateStore.state.first()?.alarmId == "once" }
         val ringId = ring.engine.ringStateStore.state.first()!!.ringId
 

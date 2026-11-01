@@ -38,6 +38,10 @@ import kotlin.time.Duration.Companion.seconds
  *
  * I1: firing never waits on the network beyond a hard 3 s pre-fire timeout. The check result
  * is informational; the ring decision is made only from local state read after the check.
+ *
+ * Not thread-safe: [scope] must be single-threaded and [start] called on its thread, as
+ * RingingService does with Dispatchers.Main.immediate. Only [ioDispatcher] work runs elsewhere,
+ * and it touches no session state.
  */
 class RingingSession(
     private val alarmRepository: AlarmRepository,
