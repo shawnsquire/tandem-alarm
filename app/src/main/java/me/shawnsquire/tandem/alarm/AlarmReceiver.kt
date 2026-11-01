@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import me.shawnsquire.tandem.schedule.RingOrigin
 
 /**
  * Entry point for exact-alarm broadcasts and notification actions. Fires do no work here: they
@@ -33,12 +34,12 @@ class AlarmReceiver : BroadcastReceiver() {
                 val ringId = intent.getStringExtra(AlarmIntents.EXTRA_RING_ID) ?: return
                 val pending = goAsync()
                 val controller = AlarmEngine.get(context).controller
-                controlAsync(pending, CoroutineScope(SupervisorJob() + Dispatchers.Default)) { controller.dismiss(ringId) }
+                controlAsync(pending, CoroutineScope(SupervisorJob() + Dispatchers.Default)) { controller.dismiss(ringId, RingOrigin.LOCAL) }
             }
             AlarmIntents.ACTION_SNOOZE -> {
                 val pending = goAsync()
                 val controller = AlarmEngine.get(context).controller
-                controlAsync(pending, CoroutineScope(SupervisorJob() + Dispatchers.Default)) { controller.snooze() }
+                controlAsync(pending, CoroutineScope(SupervisorJob() + Dispatchers.Default)) { controller.snooze(RingOrigin.LOCAL) }
             }
             else -> Unit
         }

@@ -52,6 +52,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.ui.theme.TandemTheme
 import java.io.File
@@ -133,14 +134,14 @@ class RingingActivity : ComponentActivity() {
                     onStop = {
                         val id = current?.ringId ?: return@RingingScreen
                         lifecycleScope.launch {
-                            runLogged("dismiss") { engine.controller.dismiss(id) }
+                            runLogged("dismiss") { engine.controller.dismiss(id, RingOrigin.LOCAL) }
                         }
                         // Close at once; the controller's dismiss is NonCancellable.
                         userStopped.complete(Unit)
                     },
                     onSnooze = {
                         lifecycleScope.launch {
-                            runLogged("snooze") { engine.controller.snooze() }
+                            runLogged("snooze") { engine.controller.snooze(RingOrigin.LOCAL) }
                         }
                     },
                 )

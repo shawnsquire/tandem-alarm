@@ -26,6 +26,7 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
+import me.shawnsquire.tandem.fakes.FakeRingingController
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
@@ -33,6 +34,7 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.RingMember
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.sync.PreFireCheck
@@ -1264,6 +1266,16 @@ class RingingSessionTest {
         assertNull(h.rawStore.state.first())
         assertFalse(h.repo.get("a")!!.enabled) // a real dismiss: one-shot disabled
         assertEquals(1, h.finished)
+    }
+
+    @Test fun autoSilenceDismissIsLocal() = runTest {
+        val h = harness()
+        val recording = FakeRingingController()
+        slotSession(h, h.controller, controller = recording).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(listOf("ring-1"), recording.dismissed)
+        assertEquals(listOf(RingOrigin.LOCAL), recording.dismissOrigins)
     }
 
     @Test fun lateClaimFireWriteBehindStuckLockIsClearedByAutoSilence() = runTest {

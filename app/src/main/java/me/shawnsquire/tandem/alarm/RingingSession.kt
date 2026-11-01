@@ -17,6 +17,7 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.schedule.isOneShot
@@ -151,7 +152,7 @@ class RingingSession(
             if (ringId != null) {
                 observeJob?.cancel() // the dismiss's clear must not end the session before the dismiss is done
                 val d = scope.async {
-                    try { controller.dismiss(ringId) } catch (e: Throwable) { log("auto-silence dismiss failed", e) }
+                    try { controller.dismiss(ringId, RingOrigin.LOCAL) } catch (e: Throwable) { log("auto-silence dismiss failed", e) }
                 }
                 try {
                     withTimeoutOrNull(DISMISS_TIMEOUT) { d.await() } ?: log("auto-silence dismiss timed out", null)

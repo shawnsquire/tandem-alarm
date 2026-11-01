@@ -77,8 +77,10 @@ class RingingControllerImplTest {
         val ledger = InMemorySnoozeLedger()
     }
 
-    private fun H.controller(mirror: RingMirrorPort = NoOpRingMirrorPort) =
-        RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror) { now }
+    private fun H.controller(mirror: RingMirrorPort = NoOpRingMirrorPort, armer: SnoozeArmer = this.armer): RingingControllerImpl {
+        var splits = 0
+        return RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror, newRingId = { "split-${++splits}" }) { now }
+    }
 
     private class RecordingMirror : RingMirrorPort {
         val calls = mutableListOf<Triple<MirrorKind, List<RingMember>, Instant?>>()
@@ -606,6 +608,209 @@ class RingingControllerImplTest {
         val row = h.repo.get("a")!!
         assertTrue(row.enabled)
         assertFalse(row.link!!.joinerEnabled)
+    }
+
+    // ---- whole-ring dismiss and snooze: every member resolves, only LOCAL mirrors (I4) ----
+
+    private val occurrenceZ = Instant.parse("2026-03-02T07:20:00Z")
+    private val mergedRing = soundingX.copy(merged = listOf(RingMember("b", occurrenceY), RingMember("c", occurrenceZ)))
+    private val allMembers = listOf(RingMember("a", occurrenceX), RingMember("b", occurrenceY), RingMember("c", occurrenceZ))
+    private fun mergedH() = H(listOf(alarm("a", emptySet()), linkedAlarm("b"), alarm("c", setOf(DayOfWeek.MONDAY))), mergedRing)
+
+    private suspend fun H.assertEveryMemberResolved() {
+        assertNull(store.state.first())
+        assertFalse(repo.get("a")!!.enabled) // own one-shot: off
+        assertTrue(repo.get("b")!!.enabled) // linked one-shot: our side off, the owner's enabled untouched
+        assertFalse(repo.get("b")!!.link!!.joinerEnabled)
+        assertTrue(repo.get("c")!!.enabled) // repeating
+        assertEquals(1, scheduler.rescheduleCount)
+    }
+
+    @Test fun localDismissOfMergedRingResolvesEveryMemberAndMirrorsThemOnce() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-1", RingOrigin.LOCAL)
+        h.assertEveryMemberResolved()
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, allMembers, null as Instant?)), mirror.calls)
+    }
+
+    @Test fun remoteDismissOfMergedRingResolvesEveryMemberAndNeverMirrors() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-1", RingOrigin.REMOTE)
+        h.assertEveryMemberResolved()
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun localDismissLeavesOutAPrimaryWithoutOccurrence() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringing.copy(merged = listOf(RingMember("b", occurrenceY))))
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-1")
+        assertFalse(h.repo.get("b")!!.enabled)
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, listOf(RingMember("b", occurrenceY)), null as Instant?)), mirror.calls)
+    }
+
+    @Test fun localDismissWithNoKnownMemberSkipsTheMirror() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-1")
+        assertNull(h.store.state.first())
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun localDismissStillMirrorsWhenAStepFails() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        val failingRepo = object : AlarmRepository by h.repo {
+            override suspend fun setEnabled(id: String, enabled: Boolean) { throw IllegalStateException("db") }
+        }
+        val c = RingingControllerImpl(failingRepo, h.store, h.settings, h.scheduler, h.armer, h.notifier, h.ledger, mirror) { now }
+        var thrown = false
+        try { c.dismiss("ring-1") } catch (e: IllegalStateException) { thrown = true }
+        assertTrue(thrown)
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, allMembers, null as Instant?)), mirror.calls)
+    }
+
+    @Test fun mirrorFailureNeverFailsTheDismiss() = runTest {
+        val h = mergedH()
+        val throwing = object : RingMirrorPort {
+            override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) { error("port") }
+        }
+        h.controller(throwing).dismiss("ring-1")
+        h.assertEveryMemberResolved()
+    }
+
+    @Test fun localDismissOfSnoozedSlotRingMirrorsIt() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringA.copy(occurrenceAt = occurrenceX))
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-A")
+        assertNull(h.store.state.first())
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, listOf(RingMember("a", occurrenceX)), null as Instant?)), mirror.calls)
+    }
+
+    @Test fun localDismissOfParkedSnoozeMirrorsThatMember() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-A", RingOrigin.LOCAL)
+        assertNull(h.ledger.get("ring-A"))
+        assertEquals(ringB, h.store.state.first())
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, listOf(RingMember("a", occurrenceX)), null as Instant?)), mirror.calls)
+    }
+
+    @Test fun remoteDismissOfParkedSnoozeNeverMirrors() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-A", RingOrigin.REMOTE)
+        assertNull(h.ledger.get("ring-A"))
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun localDismissOfPreUpgradeParkedSnoozeSkipsTheMirror() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen) // no occurrence
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-A")
+        assertNull(h.ledger.get("ring-A"))
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun supersedeNeverMirrors() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        h.controller(mirror).claimFire(ringB) // no occurrence: supersedes the merged ring
+        assertEquals(ringB, h.store.state.first())
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun clearStaleNeverMirrors() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        h.controller(mirror).clearStale(isLive = { false })
+        assertNull(h.store.state.first())
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun localSnoozeOfMergedRingSplitsEachMemberIntoItsOwnSnooze() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        h.settings.setSnoozeMinutes(7)
+        h.controller(mirror).snooze(RingOrigin.LOCAL)
+        val t = Instant.parse("2026-03-02T10:07:00Z")
+        assertEquals(mergedRing.copy(snoozedUntil = t, merged = emptyList()), h.store.state.first())
+        assertEquals(
+            setOf(
+                SnoozeEntry("ring-1", "a", t, occurrenceX),
+                SnoozeEntry("split-1", "b", t, occurrenceY),
+                SnoozeEntry("split-2", "c", t, occurrenceZ),
+            ),
+            h.ledger.all().toSet(),
+        )
+        assertEquals(listOf(Triple("a", "ring-1", t), Triple("b", "split-1", t), Triple("c", "split-2", t)), h.armed)
+        assertEquals(listOf("ring-1" to t, "split-1" to t, "split-2" to t), h.notifier.snoozed)
+        assertEquals(1, h.scheduler.rescheduleCount)
+        // Not a dismiss: every one-shot stays on.
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertTrue(h.repo.get("b")!!.link!!.joinerEnabled)
+        assertEquals(listOf(Triple(MirrorKind.SNOOZE, allMembers, t as Instant?)), mirror.calls)
+    }
+
+    @Test fun splitMembersShowUpInRingContext() = runTest {
+        val h = mergedH()
+        val c = h.controller()
+        c.snooze()
+        val snoozes = c.ringContext("b").snoozes
+        assertEquals(setOf("a", "b", "c"), snoozes.map { it.alarmId }.toSet())
+        assertEquals(occurrenceY, snoozes.single { it.alarmId == "b" }.occurrenceAt)
+    }
+
+    @Test fun remoteSnoozeEndsAtTheGivenTAndNeverMirrors() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        val t = Instant.parse("2026-03-02T10:04:30Z")
+        h.controller(mirror).snooze(RingOrigin.REMOTE, until = t)
+        assertEquals(t, h.store.state.first()!!.snoozedUntil)
+        assertEquals(listOf(t, t, t), h.ledger.all().map { it.until })
+        assertEquals(listOf(t, t, t), h.armed.map { it.third })
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun snoozeMemberArmFailureRollsBackAndKeepsTheRingSounding() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        val failing = object : SnoozeArmer by h.armer {
+            override fun armSnooze(alarmId: String, ringId: String, at: Instant) {
+                if (alarmId == "c") throw IllegalStateException("alarm manager")
+                h.armer.armSnooze(alarmId, ringId, at)
+            }
+        }
+        var thrown = false
+        try { h.controller(mirror, armer = failing).snooze() } catch (e: IllegalStateException) { thrown = true }
+        assertTrue(thrown)
+        assertEquals(mergedRing, h.store.state.first()) // still sounding, merged list intact
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(listOf("ring-1", "split-1"), h.armed.map { it.second })
+        assertTrue(h.armed.map { it.second }.all { it in h.armer.cancelled }) // every armed snooze taken back
+        assertTrue(h.notifier.snoozed.isEmpty())
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun snoozeStateWriteFailureTakesEverySplitSnoozeBack() = runTest {
+        val h = mergedH()
+        val failingStore = object : RingStateStore by h.store {
+            override suspend fun set(state: RingState?) { throw IllegalStateException("disk") }
+        }
+        var splits = 0
+        val c = RingingControllerImpl(h.repo, failingStore, h.settings, h.scheduler, h.armer, h.notifier, h.ledger, newRingId = { "split-${++splits}" }) { now }
+        var thrown = false
+        try { c.snooze() } catch (e: IllegalStateException) { thrown = true }
+        assertTrue(thrown)
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(listOf("ring-1", "split-1", "split-2"), h.armer.cancelled)
+        assertTrue(h.notifier.snoozed.isEmpty())
     }
 
     @Test fun snoozeResumeNeverSupersedesItself() = runTest {
