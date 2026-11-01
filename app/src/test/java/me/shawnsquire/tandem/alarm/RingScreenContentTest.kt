@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
@@ -45,6 +46,8 @@ class RingScreenContentTest {
         cache = cache,
         defaultWallpaper = "/default.jpg",
         partnerName = partnerName,
+        // In place: a resolve on real IO would race runTest's virtual clock to the media timeout.
+        dispatcher = Dispatchers.Unconfined,
     )
 
     @Test fun mergedRingListsEveryLabelPrimaryFirstSkippingBlanks() = runTest {

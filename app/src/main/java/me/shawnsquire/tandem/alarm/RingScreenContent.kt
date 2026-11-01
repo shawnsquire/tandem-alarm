@@ -1,5 +1,7 @@
 package me.shawnsquire.tandem.alarm
 
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import me.shawnsquire.tandem.media.LinkedMediaCache
@@ -20,7 +22,8 @@ data class RingScreenContent(
  * Resolves the primary of [ring] and each merged member through [resolveRingMedia], one at a time
  * and each guarded: a member that can't be read or resolved shows nothing for itself. Blank labels
  * are skipped. [RingScreenContent.withPartner] is [partnerName] when any member is a joined copy
- * (`link != null`) and a name is known. Only the caller's own cancellation propagates.
+ * (`link != null`) and a name is known. Only the caller's own cancellation propagates. Each resolve
+ * runs on [dispatcher] (see [resolveRingMedia]).
  */
 suspend fun ringScreenContent(
     ring: RingState,
@@ -28,10 +31,11 @@ suspend fun ringScreenContent(
     cache: LinkedMediaCache,
     defaultWallpaper: String?,
     partnerName: String?,
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ): RingScreenContent {
     val resolved = (listOf(ring.alarmId) + ring.merged.map { it.alarmId }).map { id ->
         val alarm = guardedOrNull { readAlarm(id) }
-        alarm to guardedOrNull { resolveRingMedia(alarm, cache, null, defaultWallpaper) }
+        alarm to guardedOrNull { resolveRingMedia(alarm, cache, null, defaultWallpaper, dispatcher = dispatcher) }
     }
     val joined = resolved.any { (alarm, _) -> alarm?.link != null }
     return RingScreenContent(

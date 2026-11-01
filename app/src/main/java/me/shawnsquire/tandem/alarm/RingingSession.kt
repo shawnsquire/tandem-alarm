@@ -519,11 +519,11 @@ class RingingSession(
 
     /**
      * A linked ring's media comes from the cache (an unreadable override falls to the next candidate
-     * in the sound adapter); bounded, so a slow cache never delays sound. The wallpaper is only for
-     * the screen, so it isn't resolved here.
+     * in the sound adapter); bounded and off this (main) thread, so a slow cache never delays sound.
+     * The wallpaper is only for the screen, so it isn't resolved here.
      */
     private suspend fun resolveMedia(alarm: Alarm?, default: String?): RingMedia =
-        resolveRingMedia(alarm, linkedMediaCache, default, null)
+        resolveRingMedia(alarm, linkedMediaCache, default, null, dispatcher = ioDispatcher)
 
     /** The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it. */
     private suspend fun startRingOutputs(candidates: List<String>) {
@@ -570,7 +570,7 @@ class RingingSession(
         relabelJob?.let { it.cancel(); jobs -= it }
         relabelJob = scope.launch {
             val content = guarded("member labels", null as RingScreenContent?) {
-                withTimeoutOrNull(RELABEL_TIMEOUT) { ringScreenContent(s, { alarmRepository.get(it) }, linkedMediaCache, null, null) }
+                withTimeoutOrNull(RELABEL_TIMEOUT) { ringScreenContent(s, { alarmRepository.get(it) }, linkedMediaCache, null, null, ioDispatcher) }
             } ?: return@launch
             joinedLabel = content.labels.joinToString(LABEL_SEPARATOR).ifBlank { null }
             if (finished || silencing || !actionsPosted) return@launch
