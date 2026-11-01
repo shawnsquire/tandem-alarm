@@ -717,7 +717,10 @@ private class SmokeDevice(context: Context, val name: String, displayName: Strin
     fun close() {
         scope.cancel()
         runCatching { database.close() }
-        runCatching { app.delete() }
+        // Stops this app's listeners. The app itself is left alive: firebase-auth keeps a process-wide
+        // reference to it, and once it is deleted the next test's FirebaseAuth.useEmulator throws
+        // "FirebaseApp was deleted". Names are unique per test, so a live app is never reused.
+        runCatching { firestore.terminate() }
         dir.deleteRecursively()
     }
 
