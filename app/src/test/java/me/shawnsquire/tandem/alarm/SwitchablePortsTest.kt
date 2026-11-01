@@ -193,7 +193,6 @@ class SwitchablePortsTest {
         val link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null)
         val linked = alarm("l").copy(link = link)
         val repo = repo(mirrorOf(alarm("a"), linked))
-        // The in-memory mirror keeps the link; the on-disk mirror doesn't encode it until L2.
         assertEquals(listOf("a"), repo.ownAlarms.first().map { it.id })
         assertEquals(listOf("l"), repo.linkedAlarms.first().map { it.id })
         assertEquals(listOf("a", "l"), repo.alarms.first().map { it.id })

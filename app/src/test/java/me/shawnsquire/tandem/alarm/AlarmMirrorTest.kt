@@ -3,6 +3,10 @@ package me.shawnsquire.tandem.alarm
 import android.content.Context
 import me.shawnsquire.tandem.awaitTandemStartup
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.PendingBoth
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -59,6 +63,51 @@ class AlarmMirrorTest {
         val mirror = SharedPrefsAlarmMirror(context)
         mirror.write(MirrorSnapshot(listOf(MirroredAlarm(full.alarm.copy(wallpaperPath = "/data/files/w.jpg"), null)), null, null))
         assertNull(SharedPrefsAlarmMirror(context).read().alarms.single().alarm.wallpaperPath)
+    }
+
+    private val plainLink = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null)
+    private val links = listOf(
+        plainLink,
+        plainLink.copy(mode = LinkMode.NOTIFY, joinerEnabled = false),
+        plainLink.copy(
+            ownerSkippedOccurrenceAt = Instant.parse("2026-03-02T11:30:00Z"),
+            pendingBoth = PendingBoth(CommandType.SKIP_NEXT, Instant.parse("2026-03-04T11:30:00Z"), "c1"),
+            overrideLabel = "Mine", overrideRingtoneUri = "content://media/2",
+        ),
+        plainLink.copy(pendingBoth = PendingBoth(CommandType.DISABLE, null, "c2")),
+    )
+
+    @Test fun linkAndSoloSkipRoundTrip() {
+        val alarms = links.mapIndexed { i, link ->
+            MirroredAlarm(
+                full.alarm.copy(id = "l$i", link = link, soloSkippedOccurrenceAt = Instant.parse("2026-03-03T11:30:00Z").takeIf { i % 2 == 0 }),
+                nextTriggerAt = null,
+            )
+        }
+        val snap = MirrorSnapshot(alarms, null, null)
+        SharedPrefsAlarmMirror(context).write(snap)
+        assertEquals(snap, SharedPrefsAlarmMirror(context).readOrNull())
+    }
+
+    @Test fun linkOverrideWallpaperIsNeverMirrored() {
+        val link = plainLink.copy(overrideWallpaperPath = "/data/files/w.jpg")
+        val written = MirrorSnapshot(listOf(MirroredAlarm(full.alarm.copy(link = link), null)), null, null)
+        val expected = link.copy(overrideWallpaperPath = null)
+        SharedPrefsAlarmMirror(context).write(written)
+        assertEquals(expected, SharedPrefsAlarmMirror(context).read().alarms.single().alarm.link)
+        assertEquals(expected, InMemoryAlarmMirror(written).read().alarms.single().alarm.link)
+    }
+
+    @Test fun mirrorWithoutLinkKeysDecodesStrictlyAsUnlinked() {
+        SharedPrefsAlarmMirror(context).write(snapshot)
+        val root = org.json.JSONObject(raw()!!)
+        for (i in 0 until root.getJSONArray("alarms").length()) {
+            val o = root.getJSONArray("alarms").getJSONObject(i)
+            assertTrue(!o.has("link") && !o.has("soloSkippedOccurrenceAt"))
+        }
+        val alarm = SharedPrefsAlarmMirror(context).readOrNull()!!.alarms.first().alarm
+        assertNull(alarm.link)
+        assertNull(alarm.soloSkippedOccurrenceAt)
     }
 
     private fun putRaw(raw: String) = check(deviceProtectedPrefs(context, "alarm_mirror").edit().putString("snapshot", raw).commit())
