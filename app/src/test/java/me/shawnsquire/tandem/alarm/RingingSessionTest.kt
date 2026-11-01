@@ -223,6 +223,8 @@ class RingingSessionTest {
     private class ThrowingFired : FiredLedger {
         override fun lastRang(alarmId: String): Instant? = throw IllegalStateException("prefs")
         override fun markRang(alarmId: String, occurrence: Instant) = throw IllegalStateException("prefs")
+        override fun lateAt(alarmId: String): Instant? = throw IllegalStateException("prefs")
+        override fun markLate(alarmId: String, occurrence: Instant) = throw IllegalStateException("prefs")
     }
 
     private fun TestScope.harness(
@@ -655,6 +657,15 @@ class RingingSessionTest {
         h = harness(alarms = listOf(linked().copy(days = monday)), preFire = LambdaPreFire { h.moveTo600(); true })
         h.fire(occ = occurrence)
         assertRangAt(h)
+        // Marked late, so its dismiss leaves a linked one-shot on (RingingControllerImplTest).
+        assertEquals(occurrence, h.fired.lateAt("a"))
+    }
+
+    @Test fun linkedRingAtItsOwnTimeIsNotMarkedLate() = runTest {
+        val h = harness(alarms = listOf(linked().copy(days = monday)))
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+        assertNull(h.fired.lateAt("a"))
     }
 
     @Test fun linkedMovedLaterTheSameDayIsSuppressedAndArmsTheNewTime() = runTest {
@@ -676,12 +687,83 @@ class RingingSessionTest {
         assertQuiet(h)
     }
 
+    /** 6:00 the same Monday: the time the owner moved X to. */
+    private val sixAm = occurrence.minusSeconds(30 * 60)
+
+    /** A Monday row the pre-fire read moves to 6:00, after [stored] put a skip on it. */
+    private fun TestScope.movedEarlierWith(stored: (Alarm) -> Alarm): Harness {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(stored(linked().copy(days = monday))), preFire = LambdaPreFire { h.moveTo600(); true })
+        h.fire(occ = occurrence)
+        return h
+    }
+
+    @Test fun linkedMovedEarlierToATimeTheJoinerSkippedIsSuppressed() = runTest {
+        assertQuiet(movedEarlierWith { it.copy(skippedOccurrenceAt = sixAm) })
+    }
+
+    @Test fun linkedMovedEarlierToATimeTheOwnerSkippedForBothIsSuppressed() = runTest {
+        assertQuiet(movedEarlierWith { it.copy(link = it.link!!.copy(ownerSkippedOccurrenceAt = sixAm)) })
+    }
+
+    @Test fun linkedMovedEarlierToATimeWithAPendingBothSkipIsSuppressed() = runTest {
+        assertQuiet(movedEarlierWith { it.copy(link = it.link!!.copy(pendingBoth = PendingBoth(CommandType.SKIP_NEXT, sixAm, "c1"))) })
+    }
+
+    @Test fun linkedMovedEarlierToATimeTheOwnerSkippedJustForThemselvesStillRingsLate() = runTest {
+        // The owner's solo skip never applies to a linked row.
+        assertRangAt(movedEarlierWith { it.copy(soloSkippedOccurrenceAt = sixAm) })
+    }
+
     @Test fun linkedOneShotMovedEarlierRingsLateAtTheOldTime() = runTest {
         // The owner's copy is still on: its one-shot hadn't rung and turned itself off when the joiner read it.
         lateinit var h: Harness
         h = harness(alarms = listOf(linked()), preFire = LambdaPreFire { h.moveTo600(); true })
         h.fire(occ = occurrence)
         assertRangAt(h)
+    }
+
+    /**
+     * The owner edits the one-shot at 6:15, moving 6:30 to 6:00: the owner's copy stays on, next at
+     * 6:00 tomorrow. The joiner learns of it at 6:30 and rings late.
+     */
+    private fun TestScope.lateOneShot(): Harness {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked()), preFire = LambdaPreFire { h.moveTo600(); true })
+        h.fire(occ = occurrence)
+        return h
+    }
+
+    private val tomorrowSixAm = Instant.parse("2026-03-03T11:00:00Z")
+
+    @Test fun lateOneShotDismissedStaysArmedForTheOwnersNextOccurrence() = runTest {
+        val h = lateOneShot()
+        assertRangAt(h)
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        val row = h.repo.get("a")!!
+        assertTrue(row.link!!.joinerEnabled) // a late ring doesn't use up the one-shot
+        assertEquals(tomorrowSixAm, nextOccurrence(row, h.clock, TEST_ZONE))
+    }
+
+    @Test fun lateOneShotAutoSilencedStaysArmedForTheOwnersNextOccurrence() = runTest {
+        val h = lateOneShot()
+        assertRangAt(h)
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+        val row = h.repo.get("a")!!
+        assertTrue(row.link!!.joinerEnabled)
+        assertEquals(tomorrowSixAm, nextOccurrence(row, h.clock, TEST_ZONE))
+    }
+
+    @Test fun linkedOneShotAtItsOwnTimeIsStillUsedUpByItsDismiss() = runTest {
+        val h = harness(alarms = listOf(linked()))
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        assertFalse(h.repo.get("a")!!.link!!.joinerEnabled)
     }
 
     @Test fun linkedOneShotMovedEarlierAndTurnedOffIsSuppressed() = runTest {
@@ -711,6 +793,8 @@ class RingingSessionTest {
         val slot = h.controller.before { h.moveTo600() }
         slotSession(h, slot).start("a", occurrence, false, null, TEST_ZONE)
         assertRangAt(h)
+        // The read saw 6:30; the claim's re-check saw the move and marked it.
+        assertEquals(occurrence, h.fired.lateAt("a"))
     }
 
     @Test fun linkedMovedEarlierWithAFailedPreFireReadRingsAtX() = runTest {
@@ -1303,6 +1387,8 @@ class RingingSessionTest {
             val inner = InMemoryFiredLedger()
             override fun lastRang(alarmId: String) = inner.lastRang(alarmId)
             override fun markRang(alarmId: String, occurrence: Instant) { events += "mark"; inner.markRang(alarmId, occurrence) }
+            override fun lateAt(alarmId: String) = inner.lateAt(alarmId)
+            override fun markLate(alarmId: String, occurrence: Instant) = inner.markLate(alarmId, occurrence)
         }
         val h = ledgerHarness(fired)
         h.sound.events = events

@@ -709,6 +709,67 @@ class RingingControllerImplTest {
         assertFalse(row.link!!.joinerEnabled)
     }
 
+    // ---- a late ring (the owner moved the time earlier) doesn't use up a linked one-shot ----
+
+    @Test fun dismissOfALateLinkedOneShotLeavesItOn() = runTest {
+        val h = H(listOf(linkedAlarm("a")), soundingX)
+        h.fired.markLate("a", occurrenceX)
+        h.controller().dismiss("ring-1", RingOrigin.LOCAL)
+        assertNull(h.store.state.first())
+        assertTrue(h.repo.get("a")!!.link!!.joinerEnabled)
+        assertEquals(1, h.scheduler.rescheduleCount)
+    }
+
+    @Test fun dismissOfALinkedOneShotMarkedLateAtAnotherOccurrenceTurnsItOff() = runTest {
+        val h = H(listOf(linkedAlarm("a")), soundingX)
+        h.fired.markLate("a", occurrenceX.minusSeconds(86_400))
+        h.controller().dismiss("ring-1", RingOrigin.LOCAL)
+        assertFalse(h.repo.get("a")!!.link!!.joinerEnabled)
+    }
+
+    @Test fun dismissOfAnOwnOneShotMarkedLateStillTurnsItOff() = runTest {
+        // Only a linked row rings late; a stray mark never keeps an own one-shot on.
+        val h = H(listOf(alarm("a", emptySet())), soundingX)
+        h.fired.markLate("a", occurrenceX)
+        h.controller().dismiss("ring-1", RingOrigin.LOCAL)
+        assertFalse(h.repo.get("a")!!.enabled)
+    }
+
+    @Test fun lateLinkedOneShotMergedIntoARingStaysOnThroughALocalDismiss() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), linkedAlarm("b")), soundingX.copy(merged = listOf(RingMember("b", occurrenceY))))
+        h.fired.markLate("b", occurrenceY)
+        h.controller().dismiss("ring-1", RingOrigin.LOCAL)
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertTrue(h.repo.get("b")!!.link!!.joinerEnabled)
+    }
+
+    @Test fun lateLinkedOneShotMergedIntoARingStaysOnThroughARemoteStopByOccurrence() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), linkedAlarm("b")), soundingX.copy(merged = listOf(RingMember("b", occurrenceY))))
+        h.fired.markLate("b", occurrenceY)
+        h.controller().dismissOccurrence("b", occurrenceY, RingOrigin.REMOTE)
+        assertEquals(soundingX, h.store.state.first())
+        assertTrue(h.repo.get("b")!!.link!!.joinerEnabled)
+    }
+
+    @Test fun lateLinkedOneShotSnoozedThenDismissedStaysOn() = runTest {
+        val h = H(listOf(linkedAlarm("a")), soundingX)
+        h.fired.markLate("a", occurrenceX)
+        val c = h.controller()
+        c.snooze(RingOrigin.LOCAL, null)
+        assertNotNull(h.store.state.first()!!.snoozedUntil)
+        c.dismiss("ring-1", RingOrigin.LOCAL)
+        assertNull(h.store.state.first())
+        assertTrue(h.repo.get("a")!!.link!!.joinerEnabled)
+    }
+
+    @Test fun lateLinkedOneShotParkedBehindAnotherRingStaysOnWhenDismissed() = runTest {
+        val h = H(listOf(linkedAlarm("a"), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        h.fired.markLate("a", occurrenceX)
+        h.controller().dismiss("ring-A")
+        assertTrue(h.repo.get("a")!!.link!!.joinerEnabled)
+    }
+
     // ---- whole-ring dismiss and snooze: every member resolves, only LOCAL mirrors (I4) ----
 
     private val occurrenceZ = Instant.parse("2026-03-02T07:20:00Z")

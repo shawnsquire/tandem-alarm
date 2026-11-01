@@ -23,9 +23,9 @@ import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.earlierOccurrenceThatDay
 import me.shawnsquire.tandem.schedule.fallsOnSchedule
 import me.shawnsquire.tandem.schedule.isArmed
-import me.shawnsquire.tandem.schedule.movedEarlierThatDay
 import me.shawnsquire.tandem.schedule.skippedOccurrences
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
@@ -423,6 +423,10 @@ class RingingSession(
         // link read successfully doesn't vibrate; ring() still starts it if the ring turns out full.
         currentCoroutineContext().ensureActive()
         if (!isNotifyLink(alarm)) startVibration("vibration")
+        // After the vibration: a disk write mustn't delay it. A failed write only uses up a one-shot.
+        if (alarm != null && ringsLate(alarm, occurrence, armedZone)) {
+            guarded("late ring mark", Unit) { firedLedger.markLate(alarmId, occurrence) }
+        }
 
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
         register(ringId)
@@ -448,7 +452,12 @@ class RingingSession(
                 // Resolved in advance (ledger written under this lock): quiet, no skip to clear.
                 if (!ownLedgerWrite && firedLedger.lastRang(alarmId) == occurrence) return@claimFire false
                 suppressedAlarm = current
-                current != null && isArmed(current) && !isSkipped(current, occurrence) && !movedOff(current, occurrence, armedZone)
+                val due = current != null && isArmed(current) && !isSkipped(current, occurrence) && !movedOff(current, occurrence, armedZone)
+                // Under the lock, so the controller's dismiss of X (claimed or merged) sees it.
+                if (due && current != null && ringsLate(current, occurrence, armedZone)) {
+                    guardedNow("late ring mark") { firedLedger.markLate(alarmId, occurrence) }
+                }
+                due
             }
         }
         if (claim is Claim.Done && claim.value == SlotClaim.NotDue) {
@@ -476,10 +485,8 @@ class RingingSession(
      * can't suppress. Own rows are never checked: an edit there re-arms the alarm itself, and no
      * stored command asked to drop X (I1).
      *
-     * A time moved earlier the same day ([movedEarlierThatDay]) is not moved off: the joiner learned
-     * of it too late, so X rings late rather than not at all that day (Shawn's call, 2026-11-01). Its
-     * mirrored STOP or SNOOZE is stale on the owner and rejected there; RingMirror only logs that.
-     * Moved later, or off that day, suppresses: a later time rings at its own fire.
+     * A time moved earlier the same day is not moved off unless that time is skipped here
+     * ([ringsLate]). Moved later, or off that day, suppresses: a later time rings at its own fire.
      *
      * Checked in [armedZone], the zone X was computed in, so a zone change since arming never
      * suppresses (I1). A fire that carries no zone (a replay, a re-arm from the records, an intent
@@ -487,7 +494,22 @@ class RingingSession(
      */
     private fun movedOff(alarm: Alarm, occurrence: Instant, armedZone: ZoneId?): Boolean =
         alarm.link != null && armedZone != null && !fallsOnSchedule(alarm, occurrence, armedZone) &&
-            !movedEarlierThatDay(alarm, occurrence, armedZone)
+            !ringsLate(alarm, occurrence, armedZone)
+
+    /**
+     * A linked X off the row's schedule because the owner moved the time earlier the same day, to a
+     * time already passed ([earlierOccurrenceThatDay]): the joiner learned of it too late, so X rings
+     * late rather than not at all that day (Shawn's call, 2026-11-01). Not when that moved-to time is
+     * in [skippedOccurrences] (the joiner's own skip, the owner's shared one, a pending "both" skip):
+     * those are stored commands. The owner's solo skip never counts. A late ring is marked in
+     * [firedLedger] so its dismiss leaves a linked one-shot on. Its mirrored STOP or SNOOZE is stale
+     * on the owner and rejected there; RingMirror only logs that.
+     */
+    private fun ringsLate(alarm: Alarm, occurrence: Instant, armedZone: ZoneId?): Boolean {
+        if (alarm.link == null || armedZone == null || fallsOnSchedule(alarm, occurrence, armedZone)) return false
+        val moved = earlierOccurrenceThatDay(alarm, occurrence, armedZone) ?: return false
+        return moved !in alarm.skippedOccurrences()
+    }
 
     /**
      * Quiet end for a deleted, disabled or skipped occurrence, all of them commands already stored
