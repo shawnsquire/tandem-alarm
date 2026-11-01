@@ -16,7 +16,10 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.isArmed
+import me.shawnsquire.tandem.schedule.isOneShot
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 import java.util.UUID
@@ -47,6 +50,8 @@ class RingingSession(
     private val log: (String, Throwable?) -> Unit = { _, _ -> },
     private val firedLedger: FiredLedger = InMemoryFiredLedger(),
     private val liveRings: RingRegistry = SyncRingRegistry(),
+    private val isArmed: (Alarm) -> Boolean = ::isArmed,
+    private val isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
     private val onFinished: () -> Unit,
 ) {
     private val jobs = mutableListOf<Job>()
@@ -56,6 +61,7 @@ class RingingSession(
     private var vibrationStarted = false
     private var silencing = false
     private var registeredRingId: String? = null
+    @Volatile private var ownLedgerWrite = false
 
     /** The ring this session registered, once it has one. */
     val ringId: String? get() = registeredRingId ?: fallbackNotifiedId
@@ -109,9 +115,15 @@ class RingingSession(
         val notifyId = snoozeRingId ?: "fallback-" + UUID.randomUUID()
         fallbackNotifiedId = notifyId
         guarded("fallback notifier", Unit) { notifier.showFallbackRinging(notifyId) }
-        if (fire != null) guarded("fired ledger write", Unit) { firedLedger.markRang(fire.first, fire.second) }
+        if (fire != null) markRang(fire.first, fire.second)
         guarded("fallback reschedule", Unit) { alarmScheduler.rescheduleAll() }
         ensureAutoSilence(null)
+    }
+
+    /** This session's own ledger write; a claim that completes late must not mistake it for an early resolution. */
+    private fun markRang(alarmId: String, occurrence: Instant) {
+        ownLedgerWrite = true
+        guardedNow("fired ledger write") { firedLedger.markRang(alarmId, occurrence) }
     }
 
     /** Idempotent: the fire path vibrates before claiming the slot, and ring() must not start it again. */
@@ -208,7 +220,10 @@ class RingingSession(
             finish()
             return
         }
-        preFire()
+        // Read before the check so a linked row's owner doc can be fetched inside it; the ring decision
+        // still uses the read made after the check. A failed read just means no owner id.
+        val linkedOwnerAlarmId = if (isSnooze) null else guarded("alarm read", null as Alarm?) { alarmRepository.get(alarmId) }?.link?.ownerAlarmId
+        preFire(linkedOwnerAlarmId)
         if (isSnooze) executeSnooze(alarmId, snoozeRingId) else executeFire(alarmId, occurrence)
     }
 
@@ -254,12 +269,9 @@ class RingingSession(
             finish()
             return
         }
-        if (alarm != null) {
-            val skipped = alarm.skippedOccurrenceAt == occurrence
-            if (!alarm.enabled || skipped) {
-                suppressFire(alarmId, occurrence, skipped)
-                return
-            }
+        if (alarm != null && (!isArmed(alarm) || isSkipped(alarm, occurrence))) {
+            suppressFire(alarmId, occurrence, alarm)
+            return
         }
 
         // Re-checked after the pre-fire check: the original fire may have rung while a replay waited on it.
@@ -277,7 +289,7 @@ class RingingSession(
         // Newest alarm supersedes a sounding ring; a snoozed one is parked and keeps its snooze.
         // The decision is re-checked inside the claim's critical section, so a skip, disable or delete
         // stored since the read above still suppresses; a failed re-check counts as due (I1).
-        var skippedAtClaim = false
+        var suppressedAlarm: Alarm? = null
         val claim = boundedClaim(
             "ring slot claim",
             onLate = { written: Boolean ->
@@ -287,34 +299,42 @@ class RingingSession(
         ) {
             ringSlot.claimFire(RingState(alarmId, ringId, now(), null)) {
                 val current = alarmRepository.get(alarmId)
-                skippedAtClaim = current?.skippedOccurrenceAt == occurrence
-                current != null && current.enabled && !skippedAtClaim
+                // Resolved in advance (ledger written under this lock): quiet, no skip to clear.
+                if (!ownLedgerWrite && firedLedger.lastRang(alarmId) == occurrence) return@claimFire false
+                suppressedAlarm = current
+                current != null && isArmed(current) && !isSkipped(current, occurrence)
             }
         }
         if (claim is Claim.Done && !claim.value) {
-            suppressFire(alarmId, occurrence, skippedAtClaim) // finish() stops vibration and unregisters the ring
+            suppressFire(alarmId, occurrence, suppressedAlarm) // finish() stops vibration and unregisters the ring
             return
         }
         ring(alarm, ringId, observe = claim is Claim.Done, fire = alarmId to occurrence)
     }
 
     /** Quiet end for a deleted, disabled or skipped occurrence, all of them commands already stored locally. */
-    private suspend fun suppressFire(alarmId: String, occurrence: Instant, skipped: Boolean) {
-        if (skipped) {
+    private suspend fun suppressFire(alarmId: String, occurrence: Instant, alarm: Alarm?) {
+        if (alarm != null && isSkipped(alarm, occurrence)) {
             // Recorded as handled, so a replay of this skipped occurrence cannot ring once the skip is cleared.
             guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
-            guarded("clear skip", Unit) { alarmRepository.setSkip(alarmId, null) }
+            // Only the skip field(s) that matched; link fields belong to LinkSync.
+            if (alarm.skippedOccurrenceAt == occurrence) guarded("clear skip", Unit) { alarmRepository.setSkip(alarmId, null) }
+            if (alarm.soloSkippedOccurrenceAt == occurrence) {
+                // The occurrence has passed, so turning a one-shot off now is not copied to a joiner early.
+                if (alarm.isOneShot()) guarded("disable solo-skipped one-shot", Unit) { alarmRepository.setEnabled(alarmId, false) }
+                guarded("clear solo skip", Unit) { alarmRepository.setSoloSkip(alarmId, null) }
+            }
         }
         guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
         finish()
     }
 
     /** I1: hard 3 s bound that also holds when the check blocks a thread without cooperating. */
-    private suspend fun preFire() {
+    private suspend fun preFire(linkedOwnerAlarmId: String?) {
         try {
             val d = scope.async(ioDispatcher) {
                 try {
-                    preFireCheck.pullAndApply(3.seconds)
+                    preFireCheck.pullAndApply(3.seconds, linkedOwnerAlarmId)
                 } catch (e: Throwable) {
                     // Includes CancellationException: a check's own timeout or a cancelled Task is
                     // just "no new info". Only our own d.cancel() cancels this, and the value is ignored.
@@ -337,7 +357,7 @@ class RingingSession(
         startVibration("vibration")
         guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
         // Marked after the ring has begun, so a process death before this point still gets a boot replay.
-        if (fire != null) guarded("fired ledger write", Unit) { firedLedger.markRang(fire.first, fire.second) }
+        if (fire != null) markRang(fire.first, fire.second)
         // Without a stored RingState, Stop and Snooze would be silently ignored: post no actions.
         val claimed = observe || lateClaimed
         if (claimed) {
@@ -390,3 +410,15 @@ class RingingSession(
         val DISMISS_TIMEOUT = 5.seconds
     }
 }
+
+/**
+ * Whether [occurrence] is one of the skips stored on [alarm]: the shared skip, the owner's solo
+ * skip, the owner's skip copied onto a linked row, or a pending "both" skip. Lists the same skips
+ * `nextOccurrence` honors, but by exact stored instant, never by recomputing the next occurrence:
+ * a zone change, DST or a time edit must not suppress a ring no stored command asked for (I1).
+ */
+internal fun isSkippedOccurrence(alarm: Alarm, occurrence: Instant): Boolean =
+    alarm.skippedOccurrenceAt == occurrence ||
+        alarm.soloSkippedOccurrenceAt == occurrence ||
+        alarm.link?.ownerSkippedOccurrenceAt == occurrence ||
+        alarm.link?.pendingBoth?.let { it.type == CommandType.SKIP_NEXT && it.occurrenceAt == occurrence } == true

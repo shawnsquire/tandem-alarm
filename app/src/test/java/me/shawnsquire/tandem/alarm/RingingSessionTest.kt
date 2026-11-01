@@ -28,7 +28,12 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.sync.PreFireCheck
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -128,6 +133,8 @@ class RingingSessionTest {
         ids: Iterator<String> = listOf("ring-1", "ring-2", "ring-3").iterator(),
         val fired: FiredLedger = InMemoryFiredLedger(),
         val live: RingRegistry = SyncRingRegistry(),
+        isArmed: (Alarm) -> Boolean = ::isArmed,
+        isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
     ) {
         val repo = FakeAlarmRepository(alarms)
         val rawStore = FakeRingStateStore(state)
@@ -145,7 +152,7 @@ class RingingSessionTest {
         val session = RingingSession(
             repo, store, settings, preFire, scheduler, controller, controller, sound, vibration, notifier,
             scope.backgroundScope, dispatcher, { clock }, { ids.next() },
-            firedLedger = fired, liveRings = live,
+            firedLedger = fired, liveRings = live, isArmed = isArmed, isSkipped = isSkipped,
             onFinished = { finished++ },
         )
         fun fire(id: String = "a", occ: Instant) = session.start(id, occ, false, null)
@@ -170,7 +177,8 @@ class RingingSessionTest {
         ioDispatcher: CoroutineDispatcher? = null,
         settings: SettingsRepository = FakeSettingsRepository(),
         storeWrap: ((FakeRingStateStore) -> RingStateStore)? = null,
-    ) = Harness(this, alarms, state, preFire, clockNow, ioDispatcher, settings, storeWrap)
+        isArmed: (Alarm) -> Boolean = ::isArmed,
+    ) = Harness(this, alarms, state, preFire, clockNow, ioDispatcher, settings, storeWrap, isArmed = isArmed)
 
     // ---- I1 ----
 
@@ -391,6 +399,145 @@ class RingingSessionTest {
         assertEquals(1, h.finished)
     }
 
+    // ---- every stored skip, isArmed, solo skip on a one-shot ----
+
+    private fun linked(
+        ownerSkipped: Instant? = null,
+        pendingBoth: PendingBoth? = null,
+        ownerAlarmId: String = "owner-a",
+    ) = alarm().copy(
+        link = AlarmLink("owner", ownerAlarmId, LinkMode.RING, ownerSkipped, true, pendingBoth, null, null, null),
+    )
+
+    private suspend fun TestScope.assertQuiet(h: Harness) {
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun soloSkipSuppressesAndIsCleared() = runTest {
+        val h = harness(alarms = listOf(alarm(days = setOf(java.time.DayOfWeek.MONDAY)).copy(soloSkippedOccurrenceAt = occurrence)))
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+        assertNull(h.repo.get("a")!!.soloSkippedOccurrenceAt)
+        assertTrue(h.repo.get("a")!!.enabled) // a repeating alarm stays on
+        assertEquals(occurrence, h.fired.lastRang("a"))
+    }
+
+    @Test fun soloSkippedOneShotTurnsOffAtTheFire() = runTest {
+        val h = harness(alarms = listOf(alarm().copy(soloSkippedOccurrenceAt = occurrence)))
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertNull(h.repo.get("a")!!.soloSkippedOccurrenceAt)
+    }
+
+    @Test fun soloSkipForOtherOccurrenceRings() = runTest {
+        val h = harness(alarms = listOf(alarm().copy(soloSkippedOccurrenceAt = occurrence.plusSeconds(86_400))))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertTrue(h.repo.get("a")!!.enabled)
+    }
+
+    @Test fun ownerSkipOnLinkedRowSuppressesAndLeavesTheLinkAlone() = runTest {
+        val h = harness(alarms = listOf(linked(ownerSkipped = occurrence)))
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+        assertEquals(occurrence, h.repo.get("a")!!.link!!.ownerSkippedOccurrenceAt)
+        assertEquals(occurrence, h.fired.lastRang("a"))
+    }
+
+    @Test fun pendingBothSkipSuppresses() = runTest {
+        val h = harness(alarms = listOf(linked(pendingBoth = PendingBoth(CommandType.SKIP_NEXT, occurrence, "c1"))))
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+    }
+
+    @Test fun pendingBothSkipForOtherOccurrenceRings() = runTest {
+        val other = occurrence.plusSeconds(86_400)
+        val h = harness(alarms = listOf(linked(pendingBoth = PendingBoth(CommandType.SKIP_NEXT, other, "c1"))))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun pendingBothNonSkipDoesNotSuppress() = runTest {
+        val h = harness(alarms = listOf(linked(pendingBoth = PendingBoth(CommandType.DISABLE, occurrence, "c1"))))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun ownerSkipForOtherOccurrenceRings() = runTest {
+        val h = harness(alarms = listOf(linked(ownerSkipped = occurrence.plusSeconds(86_400))))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun notArmedSuppressesEvenWhenEnabled() = runTest {
+        val h = harness(isArmed = { false })
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+    }
+
+    @Test fun armedRingsEvenWhenNotEnabled() = runTest {
+        val h = harness(alarms = listOf(alarm(enabled = false)), isArmed = { true })
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun disarmedBetweenReadAndClaimSuppressesTheRing() = runTest {
+        var armed = true
+        val h = harness(isArmed = { armed })
+        val slot = h.controller.before { armed = false }
+        slotSession(h, slot, isArmed = { armed }).start("a", occurrence, false, null)
+        assertQuiet(h)
+    }
+
+    @Test fun soloSkipStoredBetweenReadAndClaimSuppressesAndTurnsOffAOneShot() = runTest {
+        val h = harness()
+        val slot = h.controller.before { h.repo.setSoloSkip("a", occurrence) }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        assertQuiet(h)
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertNull(h.repo.get("a")!!.soloSkippedOccurrenceAt)
+    }
+
+    @Test fun ledgerMarkedBeforeTheClaimSuppressesQuietlyWithoutClearingSkips() = runTest {
+        val h = harness(alarms = listOf(alarm(skip = occurrence.plusSeconds(86_400))))
+        val slot = h.controller.before { h.fired.markRang("a", occurrence) }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        assertQuiet(h)
+        assertEquals(occurrence.plusSeconds(86_400), h.repo.get("a")!!.skippedOccurrenceAt)
+    }
+
+    @Test fun ledgerMarkedDuringPreFireDoesNotRing() = runTest {
+        lateinit var h: Harness
+        h = harness(preFire = LambdaPreFire { h.fired.markRang("a", occurrence); true })
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+    }
+
+    @Test fun preFireReceivesTheLinkedOwnerAlarmId() = runTest {
+        val check = me.shawnsquire.tandem.fakes.FakePreFireCheck()
+        val h = harness(alarms = listOf(linked(ownerAlarmId = "owner-a")), preFire = check)
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf<String?>("owner-a"), check.linkedOwnerAlarmIds)
+    }
+
+    @Test fun preFireGetsNullForAnOwnRow() = runTest {
+        val check = me.shawnsquire.tandem.fakes.FakePreFireCheck()
+        val h = harness(preFire = check)
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf<String?>(null), check.linkedOwnerAlarmIds)
+    }
+
     // ---- quiet finishes ----
 
     @Test fun storedSkipSuppressesAndIsCleared() = runTest {
@@ -578,10 +725,10 @@ class RingingSessionTest {
     @Test fun claimReCheckReadFailureStillRings() = runTest {
         val h = harness()
         val reads = AtomicInteger()
-        // The first read succeeds; the re-check inside the claim (T2's stillDue) throws.
+        // The first two reads (pre-fire, decision) succeed; the re-check inside the claim (T2's stillDue) throws.
         val flakyRepo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
             override suspend fun get(id: String): Alarm? =
-                if (reads.incrementAndGet() == 1) h.repo.get(id) else throw IllegalStateException("db")
+                if (reads.incrementAndGet() <= 2) h.repo.get(id) else throw IllegalStateException("db")
         }
         val session = RingingSession(
             flakyRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
@@ -590,7 +737,7 @@ class RingingSessionTest {
         )
         session.start("a", occurrence, false, null)
         runCurrent()
-        assertEquals(2, reads.get()) // the re-check ran
+        assertEquals(3, reads.get()) // pre-fire read, decision read, then the re-check
         assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts) // the alarm from the first read
         assertEquals(RingState("a", "ring-1", clockNow, null), h.rawStore.state.first())
         assertEquals(0, h.finished)
@@ -850,11 +997,12 @@ class RingingSessionTest {
         slot: RingSlot,
         controller: RingingController = h.controller,
         ringId: String = "ring-1",
+        isArmed: (Alarm) -> Boolean = ::isArmed,
     ) = RingingSession(
         h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
         controller, slot, h.sound, h.vibration, h.notifier, backgroundScope,
         StandardTestDispatcher(testScheduler), { h.clock }, { ringId },
-        firedLedger = h.fired, liveRings = h.live, onFinished = { h.finished++ },
+        firedLedger = h.fired, liveRings = h.live, isArmed = isArmed, onFinished = { h.finished++ },
     )
 
     @Test fun stuckClaimFireVibratesAtOnceAndRingsWithinTwoSeconds() = runTest {
