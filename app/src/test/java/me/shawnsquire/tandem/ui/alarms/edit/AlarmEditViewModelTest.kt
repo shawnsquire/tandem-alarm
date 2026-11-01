@@ -62,6 +62,7 @@ class AlarmEditViewModelTest {
         val links = FakeLinkRepository()
         val pairing = FakePairingRepository()
         val partner = FakePartnerRepository(null)
+        val saved = mutableListOf<Pair<Alarm?, Alarm>>()
         val vm = AlarmEditViewModel(
             alarmId = id,
             repository = vmRepo,
@@ -84,6 +85,7 @@ class AlarmEditViewModelTest {
             pairing = pairing,
             partnerRepository = partner,
             inviteFailedReason = "invite failed",
+            onSaved = { previous, saved -> this.saved += previous to saved },
         )
     }
 
@@ -409,6 +411,30 @@ class AlarmEditViewModelTest {
         assertEquals(EditError.Save, e.vm.state.value.error)
         assertFalse(e.vm.state.value.closed)
         assertTrue(e.deletedRingtones.isEmpty() && e.deletedWallpapers.isEmpty())
+    }
+
+    @Test fun onSavedGetsThePreviousAndSavedRowsOnceAfterATimeEdit() = runTest {
+        val e = edit()
+        e.vm.setTime(6, 0)
+        e.vm.save()
+        val (previous, saved) = e.saved.single()
+        assertEquals(existing, previous)
+        assertEquals(6, saved.hour)
+        assertEquals(0, saved.minute)
+        assertEquals(e.repo.get("a1"), saved)
+    }
+
+    @Test fun onSavedGetsNullPreviousForANewAlarm() = runTest {
+        val e = fresh()
+        e.vm.save()
+        assertEquals(null, e.saved.single().first)
+    }
+
+    @Test fun onSavedIsNotCalledWhenTheSaveFailed() = runTest {
+        val e = failingEnv()
+        e.vm.setTime(8, 15)
+        e.vm.save()
+        assertTrue(e.saved.isEmpty())
     }
 
     // --- Invite / joined row ---

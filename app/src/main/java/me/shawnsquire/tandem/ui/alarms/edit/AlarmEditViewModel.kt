@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.ui.alarms.edit
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -67,6 +68,8 @@ class AlarmEditViewModel(
     partnerRepository: PartnerRepository,
     /** Shown when an invite is rejected without a reason. */
     private val inviteFailedReason: String,
+    /** Called once the write committed, with the row as it was before the edit (null for a new alarm). */
+    private val onSaved: (previous: Alarm?, saved: Alarm) -> Unit = { _, _ -> },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AlarmEditUiState())
@@ -336,6 +339,12 @@ class AlarmEditViewModel(
         finished = true
         previous?.ringtoneUri?.takeIf { it != alarm.ringtoneUri }?.let(deleteRingtoneFile)
         previous?.wallpaperPath?.takeIf { it != alarm.wallpaperPath }?.let(deleteWallpaperFile)
+        // A throw here must not break the save flow.
+        try {
+            onSaved(previous, alarm)
+        } catch (e: Exception) {
+            Log.w(TAG, "post-save hook failed", e)
+        }
     }
 
     private suspend fun settleInterrupted(alarm: Alarm?, previous: Alarm?) {
@@ -381,5 +390,9 @@ class AlarmEditViewModel(
         sessionWallpaper?.let(deleteWallpaperFile)
         sessionRingtone = null
         sessionWallpaper = null
+    }
+
+    private companion object {
+        const val TAG = "AlarmEditViewModel"
     }
 }

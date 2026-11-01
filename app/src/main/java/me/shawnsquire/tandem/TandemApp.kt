@@ -141,6 +141,7 @@ class TandemApp : Application() {
         syncStart("media publisher") { container.mediaPublisher.start() }
         syncStart("link sync") { container.linkSync.start() }
         syncStart("link repository") { container.linkRepositoryImpl.start() }
+        syncStart("late ring prompts") { container.lateRingPrompts.start() }
         syncStart("initial publish") { container.syncScope.launch { container.statePublisherImpl.publishNow() } }
         syncStart("ringing command listener") { container.ringingCommandListener.start() }
         // WorkManager's provider is only installed at unlock; schedule() catches its absence too.

@@ -140,17 +140,20 @@ class AndroidCommandNotifier(private val context: Context) : CommandNotifier {
         NotificationManagerCompat.from(context).notify(id, builder.build())
     }
 
-    private fun ensureChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            context.getString(R.string.partner_commands_channel_name),
-            NotificationManager.IMPORTANCE_DEFAULT,
-        )
-        context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-    }
+    private fun ensureChannel() = ensureChannel(context)
 
     companion object {
         const val CHANNEL_ID = "partner_commands"
+
+        /** Creates the partner-commands channel (idempotent); shared with [AndroidLateRingNotifier]. */
+        internal fun ensureChannel(context: Context) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                context.getString(R.string.partner_commands_channel_name),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            )
+            context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
 
         /** Stable per command so a re-delivered invite updates its notification instead of stacking. */
         internal fun inviteNotificationId(commandId: String) = "invite:$commandId".hashCode()

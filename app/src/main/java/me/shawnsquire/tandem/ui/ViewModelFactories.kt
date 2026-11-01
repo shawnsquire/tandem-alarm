@@ -75,6 +75,7 @@ val alarmEditViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             pairing = container.pairingRepository,
             partnerRepository = container.partnerRepository,
             inviteFailedReason = app.getString(R.string.link_invite_failed),
+            onSaved = container.lateRingPrompts::onEdited,
         )
     }
 }

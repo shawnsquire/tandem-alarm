@@ -47,6 +47,9 @@ import me.shawnsquire.tandem.sync.HouseholdSource
 import me.shawnsquire.tandem.sync.householdOnServer
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration.Companion.seconds
+import me.shawnsquire.tandem.sync.AndroidLateRingNotifier
+import me.shawnsquire.tandem.sync.LateRingCheckWorker
+import me.shawnsquire.tandem.sync.LateRingPrompts
 import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.sync.PairingRepositoryImpl
 import me.shawnsquire.tandem.sync.PartnerRepositoryImpl
@@ -115,6 +118,11 @@ class AppContainer private constructor(
     val fcmTokenStore = FcmTokenStore(context.syncDataStore)
     private val commandRemote = FirestoreCommandRemote(firestore)
     val partnerRepository: PartnerRepository = PartnerRepositoryImpl(householdFlow, firestore)
+    // L8: asks the owner whether a joiner that hasn't picked up an earlier move should ring late.
+    val lateRingPrompts = LateRingPrompts(
+        alarmRepository, partnerRepository, AndroidLateRingNotifier(context),
+        { LateRingCheckWorker.enqueue(context, it) }, { LateRingCheckWorker.cancel(context, it) }, LiveZoneClock, syncScope,
+    )
     val pairingRepository: PairingRepository =
         PairingRepositoryImpl(authManager, householdFlow, partnerRepository.partner, Firebase.functions)
     val commandNotifier: CommandNotifier = AndroidCommandNotifier(context)
