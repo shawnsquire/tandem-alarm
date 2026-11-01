@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
+import me.shawnsquire.tandem.fakes.FakeLinkRepository
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.schedule.Alarm
@@ -48,7 +49,8 @@ class AlarmsViewModelTest {
         val partner = FakePartnerRepository(null)
         val purged = mutableListOf<Alarm>()
         val ticker = MutableStateFlow(Unit)
-        val vm = AlarmsViewModel(repo, AlarmEdits(repo, scheduler), pairing, partner, clock, ticker) { purged += it }
+        val links = FakeLinkRepository()
+        val vm = AlarmsViewModel(repo, AlarmEdits(repo, scheduler), links, pairing, partner, clock, ticker) { purged += it }
     }
 
     private fun env(vararg alarms: Alarm) = Env(alarms.toList(), clock)
@@ -340,5 +342,74 @@ class AlarmsViewModelTest {
         e.vm.unskip("j")
         assertEquals(linkedAlarm("j", skip = future), e.repo.get("j"))
         assertEquals(0, e.scheduler.rescheduleCount)
+    }
+
+    // The joined row's switch: "just me or both of us?".
+
+    private val ownerNext = Instant.parse("2026-11-03T06:30:00Z")
+
+    private fun ownerAlarm(next: Instant? = ownerNext) = PartnerAlarm("o-j", "x", 6, 30, weekdays, true, next, null)
+
+    @Test fun linkedSwitchJustMeTurnsMyCopyOffAndOn() = runTest {
+        val e = env(linkedAlarm("j"))
+        e.vm.setLinkedJustMe("j")
+        e.repo.upsert(linkedAlarm("j", joinerEnabled = false))
+        e.vm.setLinkedJustMe("j")
+        assertEquals(
+            listOf<FakeLinkRepository.Call>(
+                FakeLinkRepository.Call.SetJoinerEnabled("j", false),
+                FakeLinkRepository.Call.SetJoinerEnabled("j", true),
+            ),
+            e.links.calls,
+        )
+        assertEquals(0, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun linkedSwitchJustMeCannotTurnOnWhileTheOwnerIsOff() = runTest {
+        val e = env(linkedAlarm("j", enabled = false, joinerEnabled = false))
+        e.vm.setLinkedJustMe("j")
+        assertTrue(e.links.calls.isEmpty())
+        e.vm.state.test {
+            assertEquals(false, expectMostRecentItem().rows.single().linked!!.switchOptions.justMe)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test fun linkedSwitchBothOffSendsDisablePinnedToTheOwnersOccurrence() = runTest {
+        val e = env(linkedAlarm("j"))
+        e.partner.set(partnerWith(ownerAlarm()))
+        e.vm.setLinkedBoth("j")
+        assertEquals(
+            listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.SendBoth("j", CommandType.DISABLE, ownerNext)),
+            e.links.calls,
+        )
+    }
+
+    @Test fun linkedSwitchBothOffNeedsAnOccurrence() = runTest {
+        val e = env(linkedAlarm("j"))
+        e.partner.set(partnerWith(ownerAlarm(next = null)))
+        e.vm.setLinkedBoth("j")
+        assertTrue(e.links.calls.isEmpty())
+        e.vm.state.test {
+            assertEquals(false, expectMostRecentItem().rows.single().linked!!.switchOptions.both)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test fun linkedSwitchBothOnSendsEnable() = runTest {
+        val e = env(linkedAlarm("j", enabled = false))
+        e.vm.setLinkedBoth("j")
+        assertEquals(
+            listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.SendBoth("j", CommandType.ENABLE, null)),
+            e.links.calls,
+        )
+    }
+
+    @Test fun linkedSwitchIgnoresOwnRows() = runTest {
+        val e = env(alarm("w"))
+        e.vm.setLinkedJustMe("w")
+        e.vm.setLinkedBoth("w")
+        assertTrue(e.links.calls.isEmpty())
+        assertTrue(e.repo.get("w")!!.enabled)
     }
 }

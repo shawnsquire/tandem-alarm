@@ -8,12 +8,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.isArmed
+import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.sync.PartnerRepository
@@ -21,6 +23,9 @@ import me.shawnsquire.tandem.ui.partner.FALLBACK_NAME
 import me.shawnsquire.tandem.ui.resolvePartnerName
 import me.shawnsquire.tandem.schedule.isOneShot
 import me.shawnsquire.tandem.schedule.nextOccurrence
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmActions
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedSwitchOptions
+import me.shawnsquire.tandem.ui.alarms.linked.linkedSwitchOptions
 import me.shawnsquire.tandem.ui.formatDays
 import me.shawnsquire.tandem.ui.formatRingsIn
 import java.time.Clock
@@ -57,6 +62,8 @@ data class LinkedRowState(
     val ownerSkippingSolo: Boolean,
     /** A "both of us" command is waiting on the owner's phone. */
     val pendingBoth: Boolean,
+    /** What the row's switch offers when asked "Just me or both of us?". */
+    val switchOptions: LinkedSwitchOptions = LinkedSwitchOptions(justMe = true, both = true),
 )
 
 data class AlarmsUiState(
@@ -93,6 +100,7 @@ internal fun buildAlarmsState(
                     ownerSkippingSolo = armed &&
                         partnerAlarms[it.ownerAlarmId]?.soloSkippedOccurrenceAt?.let { t -> t > now } == true,
                     pendingBoth = it.pendingBoth != null,
+                    switchOptions = linkedSwitchOptions(a, partnerAlarms[it.ownerAlarmId]),
                 )
             }
             AlarmRowState(
@@ -110,13 +118,16 @@ internal fun buildAlarmsState(
 class AlarmsViewModel(
     private val repository: AlarmRepository,
     private val edits: AlarmEdits,
+    links: LinkRepository,
     pairing: PairingRepository,
-    partnerRepository: PartnerRepository,
+    private val partnerRepository: PartnerRepository,
     private val clock: Clock,
     /** Must emit once immediately, then on each refresh (see tickerFlow). */
     ticker: Flow<Unit>,
     private val onAlarmPurged: (Alarm) -> Unit,
 ) : ViewModel() {
+
+    private val actions = LinkedAlarmActions(links, edits)
 
     val state: StateFlow<AlarmsUiState> =
         combine(repository.alarms, pairing.status, partnerRepository.partner, ticker) { alarms, status, partner, _ ->
@@ -144,6 +155,23 @@ class AlarmsViewModel(
         viewModelScope.launch {
             if (repository.get(id)?.link != null) return@launch
             edits.setEnabled(id, enabled)
+        }
+    }
+
+    /** A joined row's switch, "just me": flips this phone's own on/off. */
+    fun setLinkedJustMe(id: String) {
+        viewModelScope.launch {
+            val row = repository.get(id)?.takeIf { it.link != null } ?: return@launch
+            actions.setJustMe(row, on = !isArmed(row))
+        }
+    }
+
+    /** A joined row's switch, "both of us": asks the owner to flip theirs too. */
+    fun setLinkedBoth(id: String) {
+        viewModelScope.launch {
+            val row = repository.get(id)?.takeIf { it.link != null } ?: return@launch
+            val owner = partnerRepository.partner.first()?.alarms?.firstOrNull { it.id == row.link?.ownerAlarmId }
+            actions.setBoth(row, owner, on = !isArmed(row))
         }
     }
 

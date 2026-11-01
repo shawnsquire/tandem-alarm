@@ -40,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,6 +58,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmSheetRoute
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedSwitchQuestion
 import me.shawnsquire.tandem.ui.alarmsViewModelFactory
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
@@ -75,8 +78,6 @@ fun AlarmsRoute(
     deletedAlarmId: String? = null,
     onDeletedConsumed: () -> Unit = {},
     onOpenHealth: () -> Unit = {},
-    /** Opens the Linked alarm sheet for a joined row. */
-    onOpenLinked: (String) -> Unit = {},
     viewModel: AlarmsViewModel = viewModel(factory = alarmsViewModelFactory),
     bannerViewModel: HealthBannerViewModel = viewModel(factory = healthBannerViewModelFactory),
 ) {
@@ -87,6 +88,8 @@ fun AlarmsRoute(
         bannerViewModel.refresh()
         onPauseOrDispose {}
     }
+    // The Linked alarm sheet is hosted here; the id survives rotation.
+    var openLinkedId by rememberSaveable { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val message = stringResource(R.string.alarm_deleted)
     val undo = stringResource(R.string.alarm_deleted_undo)
@@ -119,7 +122,9 @@ fun AlarmsRoute(
         snackbarHostState = snackbarHostState,
         onAddAlarm = onAddAlarm,
         onEditAlarm = onEditAlarm,
-        onOpenLinked = onOpenLinked,
+        onOpenLinked = { openLinkedId = it },
+        onLinkedJustMe = viewModel::setLinkedJustMe,
+        onLinkedBoth = viewModel::setLinkedBoth,
         onToggleEnabled = viewModel::setEnabled,
         onSkipNext = viewModel::skipNext,
         onUnskip = viewModel::unskip,
@@ -131,6 +136,8 @@ fun AlarmsRoute(
         onSetupBannerDismiss = bannerViewModel::dismiss,
         modifier = modifier,
     )
+
+    openLinkedId?.let { id -> LinkedAlarmSheetRoute(alarmId = id, onDismiss = { openLinkedId = null }) }
 }
 
 @Composable
@@ -144,6 +151,8 @@ fun AlarmsScreen(
     onUnskip: (String) -> Unit,
     modifier: Modifier = Modifier,
     onOpenLinked: (String) -> Unit = {},
+    onLinkedJustMe: (String) -> Unit = {},
+    onLinkedBoth: (String) -> Unit = {},
     showSetupBanner: Boolean = false,
     onSetupBannerClick: () -> Unit = {},
     onSetupBannerDismiss: () -> Unit = {},
@@ -184,8 +193,10 @@ fun AlarmsScreen(
                             is24Hour = is24Hour,
                             // A joined row's time belongs to the owner, so it never opens the editor.
                             onClick = { if (row.linked != null) onOpenLinked(row.id) else onEditAlarm(row.id) },
-                            // Its on/off and skip are "just me or both of us?" questions, answered in the sheet.
-                            onToggleEnabled = { if (row.linked != null) onOpenLinked(row.id) else onToggleEnabled(row.id, it) },
+                            onToggleEnabled = { onToggleEnabled(row.id, it) },
+                            // A joined row's on/off is a "just me or both of us?" question instead.
+                            onLinkedJustMe = { onLinkedJustMe(row.id) },
+                            onLinkedBoth = { onLinkedBoth(row.id) },
                             onSkipNext = { onSkipNext(row.id) },
                             onUnskip = { onUnskip(row.id) },
                         )
@@ -231,10 +242,13 @@ private fun AlarmRow(
     is24Hour: Boolean,
     onClick: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
+    onLinkedJustMe: () -> Unit,
+    onLinkedBoth: () -> Unit,
     onSkipNext: () -> Unit,
     onUnskip: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var switchQuestionOpen by remember { mutableStateOf(false) }
     val dim = if (row.enabled) 1f else 0.6f
     Row(
         modifier = Modifier
@@ -291,11 +305,22 @@ private fun AlarmRow(
             }
         }
         val switchDescription = stringResource(R.string.alarm_enabled_switch)
-        Switch(
-            checked = row.enabled,
-            onCheckedChange = onToggleEnabled,
-            modifier = Modifier.semantics { contentDescription = switchDescription },
-        )
+        Box {
+            Switch(
+                checked = row.enabled,
+                onCheckedChange = { if (row.linked != null) switchQuestionOpen = true else onToggleEnabled(it) },
+                modifier = Modifier.semantics { contentDescription = switchDescription },
+            )
+            row.linked?.let { linked ->
+                DropdownMenu(expanded = switchQuestionOpen, onDismissRequest = { switchQuestionOpen = false }) {
+                    LinkedSwitchQuestion(
+                        options = linked.switchOptions,
+                        onJustMe = { switchQuestionOpen = false; onLinkedJustMe() },
+                        onBoth = { switchQuestionOpen = false; onLinkedBoth() },
+                    )
+                }
+            }
+        }
         val hasMenu = row.linked == null && (row.skipped || row.enabled)
         if (hasMenu) Box {
             IconButton(onClick = { menuOpen = true }) {

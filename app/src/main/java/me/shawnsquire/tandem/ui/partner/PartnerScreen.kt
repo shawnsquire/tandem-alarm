@@ -364,7 +364,7 @@ private fun AlarmCard(
 }
 
 @Composable
-private fun CommandStatusLine(status: CommandUiStatus?, partnerName: String, onContainer: Boolean) {
+internal fun CommandStatusLine(status: CommandUiStatus?, partnerName: String, onContainer: Boolean) {
     if (status == null) return
     val neutral = if (onContainer) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

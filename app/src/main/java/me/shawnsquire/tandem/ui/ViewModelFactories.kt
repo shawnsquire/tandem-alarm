@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import me.shawnsquire.tandem.AppContainer
+import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.TandemApp
 import me.shawnsquire.tandem.media.RingtoneImporter
 import me.shawnsquire.tandem.media.WallpaperImporter
@@ -18,6 +19,8 @@ import me.shawnsquire.tandem.ui.alarms.AlarmsViewModel
 import me.shawnsquire.tandem.ui.alarms.HealthBannerViewModel
 import me.shawnsquire.tandem.ui.alarms.SharedPrefsBannerPrefs
 import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditViewModel
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmActions
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmViewModel
 import me.shawnsquire.tandem.ui.partner.PartnerViewModel
 import me.shawnsquire.tandem.ui.settings.SettingsViewModel
 import me.shawnsquire.tandem.ui.settings.health.AndroidHealthProbe
@@ -35,6 +38,7 @@ val alarmsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
         AlarmsViewModel(
             repository = container.alarmRepository,
             edits = AlarmEdits(container.alarmRepository, container.alarmScheduler),
+            links = container.linkRepository,
             pairing = container.pairingRepository,
             partnerRepository = container.partnerRepository,
             clock = LiveZoneClock,
@@ -67,6 +71,31 @@ val alarmEditViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
             newId = { UUID.randomUUID().toString() },
+        )
+    }
+}
+
+/** The Linked alarm sheet's ViewModel for the joined row [alarmId]; key it per row (`linked:$alarmId`). */
+fun linkedAlarmViewModelFactory(alarmId: String): ViewModelProvider.Factory = viewModelFactory {
+    initializer {
+        val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as TandemApp
+        val container = container()
+        val ringtones = RingtoneImporter(app)
+        val wallpapers = WallpaperImporter(app)
+        LinkedAlarmViewModel(
+            alarmId = alarmId,
+            repository = container.alarmRepository,
+            links = container.linkRepository,
+            actions = LinkedAlarmActions(container.linkRepository, AlarmEdits(container.alarmRepository, container.alarmScheduler)),
+            pairing = container.pairingRepository,
+            partnerRepository = container.partnerRepository,
+            clock = LiveZoneClock,
+            ringtoneTitle = { ringtoneTitle(app, it) },
+            importRingtone = { ringtones.import(Uri.parse(it)) },
+            deleteRingtoneFile = { ringtones.delete(it) },
+            importWallpaper = { wallpapers.import(Uri.parse(it)) },
+            deleteWallpaperFile = { wallpapers.delete(it) },
+            rejectedReason = app.getString(R.string.link_both_rejected),
         )
     }
 }
