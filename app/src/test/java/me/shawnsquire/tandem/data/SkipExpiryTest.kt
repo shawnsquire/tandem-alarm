@@ -5,8 +5,11 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.schedule.LinkMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.DayOfWeek
 import java.time.Instant
 import kotlin.time.toJavaDuration
 
@@ -71,5 +74,37 @@ class SkipExpiryTest {
         assertNull(result.skippedOccurrenceAt)
         assertNull(result.link!!.ownerSkippedOccurrenceAt)
         assertEquals(live, result.soloSkippedOccurrenceAt)
+    }
+
+    private fun ownOneShot(solo: Instant?) = solo(solo).copy(days = emptySet())
+
+    @Test
+    fun ownOneShotWithLiveSoloSkipStaysEnabledAndKeepsSkip() {
+        val live = cutoff.plusMillis(1)
+        assertEquals(ownOneShot(live), ownOneShot(live).withoutExpiredSkip(now))
+    }
+
+    @Test
+    fun ownOneShotWithExpiredSoloSkipTurnsOff() {
+        for (at in listOf(cutoff, cutoff.minusSeconds(1))) {
+            val result = ownOneShot(at).withoutExpiredSkip(now)
+            assertFalse(result.enabled)
+            assertNull(result.soloSkippedOccurrenceAt)
+        }
+    }
+
+    @Test
+    fun repeatingOwnAlarmWithExpiredSoloSkipStaysEnabled() {
+        val result = solo(cutoff).copy(days = setOf(DayOfWeek.MONDAY)).withoutExpiredSkip(now)
+        assertNull(result.soloSkippedOccurrenceAt)
+        assertTrue(result.enabled)
+    }
+
+    @Test
+    fun linkedOneShotWithExpiredSoloSkipKeepsEnabled() {
+        val linked = ownerSkip(null).copy(days = emptySet(), soloSkippedOccurrenceAt = cutoff)
+        val result = linked.withoutExpiredSkip(now)
+        assertNull(result.soloSkippedOccurrenceAt)
+        assertTrue(result.enabled)
     }
 }

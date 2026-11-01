@@ -44,13 +44,17 @@ internal fun Alarm.skippedOccurrences(): Set<Instant> {
  *   has already passed is ignored. Own rows skip [Alarm.skippedOccurrenceAt] and
  *   [Alarm.soloSkippedOccurrenceAt]; linked rows skip their own [Alarm.skippedOccurrenceAt],
  *   `link.ownerSkippedOccurrenceAt` and a pending "both" SKIP_NEXT, and never the solo skip.
- * - A one-shot whose single candidate is skipped returns null (the engine then turns it off).
+ * - A one-shot whose single candidate is skipped returns null. An own one-shot with any
+ *   [Alarm.soloSkippedOccurrenceAt] returns null: before X it is skipped, and after X (while the
+ *   solo skip is still present, until X + [FIRE_GRACE]) tomorrow's time must not ring. Skip expiry
+ *   turns it off once X has passed.
  */
 fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
     if (!isArmed(alarm)) return null
     val oneShot = alarm.days.isEmpty()
     val time = LocalTime.of(alarm.hour, alarm.minute)
     val today = now.atZone(zone).toLocalDate()
+    if (oneShot && alarm.link == null && alarm.soloSkippedOccurrenceAt != null) return null
     val skips = alarm.skippedOccurrences()
     // One-shot: only today or tomorrow. Weekly: up to three skips can stack on one weekday
     // (own, owner, pending). Counting from today the first candidate can be day 7 (today's

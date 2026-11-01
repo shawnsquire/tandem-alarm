@@ -217,6 +217,15 @@ class NextOccurrenceTest {
     }
 
     @Test
+    fun soloSkippedOneShotStaysNullAfterXUntilSkipExpiryTurnsItOff() {
+        val a = alarm(8, soloSkippedOccurrenceAt = satEight)
+        assertNull(next(a, satEight.plusSeconds(60)))
+        assertNull(next(a, satEight.plusSeconds(119)))
+        // Never tomorrow's time, at any point while the solo skip is still present.
+        assertNull(next(a, satEight.plusSeconds(3600)))
+    }
+
+    @Test
     fun linkedRowWithNoSkipsSchedulesNormally() {
         assertEquals(satEight, next(alarm(8, days = satMonDays, link = link()), saturdayMorning))
     }
