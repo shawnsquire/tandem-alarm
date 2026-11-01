@@ -36,4 +36,16 @@ class AlarmEdits(
     suspend fun setSkip(id: String, occurrence: Instant?) {
         write { repository.setSkip(id, occurrence) }
     }
+
+    suspend fun setSoloSkip(id: String, occurrence: Instant?) {
+        write { repository.setSoloSkip(id, occurrence) }
+    }
+
+    /** Unskip: clears the shared and the "just me" skip together, so there is still one reschedule. */
+    suspend fun clearSkips(id: String) {
+        write {
+            repository.setSkip(id, null)
+            repository.setSoloSkip(id, null)
+        }
+    }
 }

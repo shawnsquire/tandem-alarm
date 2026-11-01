@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -39,10 +40,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -54,6 +57,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmSheetRoute
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedSwitchOptions
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedSwitchQuestion
 import me.shawnsquire.tandem.ui.alarmsViewModelFactory
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
@@ -82,6 +89,8 @@ fun AlarmsRoute(
         bannerViewModel.refresh()
         onPauseOrDispose {}
     }
+    // The Linked alarm sheet is hosted here; the id survives rotation.
+    var openLinkedId by rememberSaveable { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val message = stringResource(R.string.alarm_deleted)
     val undo = stringResource(R.string.alarm_deleted_undo)
@@ -114,8 +123,12 @@ fun AlarmsRoute(
         snackbarHostState = snackbarHostState,
         onAddAlarm = onAddAlarm,
         onEditAlarm = onEditAlarm,
+        onOpenLinked = { openLinkedId = it },
+        onLinkedJustMe = viewModel::setLinkedJustMe,
+        onLinkedBoth = viewModel::setLinkedBoth,
         onToggleEnabled = viewModel::setEnabled,
         onSkipNext = viewModel::skipNext,
+        onSkipJustMe = viewModel::skipJustMe,
         onUnskip = viewModel::unskip,
         showSetupBanner = showBanner,
         onSetupBannerClick = {
@@ -125,6 +138,8 @@ fun AlarmsRoute(
         onSetupBannerDismiss = bannerViewModel::dismiss,
         modifier = modifier,
     )
+
+    openLinkedId?.let { id -> LinkedAlarmSheetRoute(alarmId = id, onDismiss = { openLinkedId = null }) }
 }
 
 @Composable
@@ -137,6 +152,10 @@ fun AlarmsScreen(
     onSkipNext: (String) -> Unit,
     onUnskip: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onOpenLinked: (String) -> Unit = {},
+    onLinkedJustMe: (String) -> Unit = {},
+    onLinkedBoth: (String) -> Unit = {},
+    onSkipJustMe: (String) -> Unit = {},
     showSetupBanner: Boolean = false,
     onSetupBannerClick: () -> Unit = {},
     onSetupBannerDismiss: () -> Unit = {},
@@ -175,9 +194,14 @@ fun AlarmsScreen(
                             row = row,
                             zone = state.zone,
                             is24Hour = is24Hour,
-                            onClick = { onEditAlarm(row.id) },
+                            // A joined row's time belongs to the owner, so it never opens the editor.
+                            onClick = { if (row.linked != null) onOpenLinked(row.id) else onEditAlarm(row.id) },
                             onToggleEnabled = { onToggleEnabled(row.id, it) },
+                            // A joined row's on/off is a "just me or both of us?" question instead.
+                            onLinkedJustMe = { onLinkedJustMe(row.id) },
+                            onLinkedBoth = { onLinkedBoth(row.id) },
                             onSkipNext = { onSkipNext(row.id) },
+                            onSkipJustMe = { onSkipJustMe(row.id) },
                             onUnskip = { onUnskip(row.id) },
                         )
                     }
@@ -222,10 +246,16 @@ private fun AlarmRow(
     is24Hour: Boolean,
     onClick: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
+    onLinkedJustMe: () -> Unit,
+    onLinkedBoth: () -> Unit,
     onSkipNext: () -> Unit,
+    onSkipJustMe: () -> Unit,
     onUnskip: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    // On an own row the partner joined, Skip asks "Just me or both of us?" inside the same menu.
+    var skipQuestionOpen by remember { mutableStateOf(false) }
+    var switchQuestionOpen by remember { mutableStateOf(false) }
     val dim = if (row.enabled) 1f else 0.6f
     Row(
         modifier = Modifier
@@ -257,19 +287,37 @@ private fun AlarmRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            SuggestionChip(onClick = onClick, label = { Text(row.daysText) })
+            row.linked?.let { LinkedChips(it) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                SuggestionChip(onClick = onClick, label = { Text(row.daysText) })
+                row.partnerJoined?.let { name ->
+                    AssistChip(
+                        onClick = {},
+                        enabled = false,
+                        label = { Text(stringResource(R.string.link_joined, name)) },
+                    )
+                }
+            }
             Text(
-                row.ringsInText ?: stringResource(R.string.alarm_off),
+                row.ringsInText ?: when {
+                    // On but nothing left to ring (an own one-shot skipped "just me"): not "Off" beside an on switch.
+                    row.enabled && row.skipped ->
+                        stringResource(if (row.skippedSolo) R.string.link_state_skipped_for_you else R.string.alarm_skipped)
+                    else -> stringResource(R.string.alarm_off)
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (row.skipped) {
+            row.linked?.let { LinkedState(it) }
+            if (row.skipped && row.linked == null) {
                 val next = row.nextRing
                 AssistChip(
                     onClick = onUnskip,
                     label = {
                         Text(
-                            if (next != null) {
+                            if (row.skippedSolo) {
+                                stringResource(R.string.link_state_skipped_for_you)
+                            } else if (next != null) {
                                 stringResource(R.string.alarm_skipped_next, formatWeekdayTime(next, zone, is24Hour))
                             } else {
                                 stringResource(R.string.alarm_skipped)
@@ -280,18 +328,38 @@ private fun AlarmRow(
             }
         }
         val switchDescription = stringResource(R.string.alarm_enabled_switch)
-        Switch(
-            checked = row.enabled,
-            onCheckedChange = onToggleEnabled,
-            modifier = Modifier.semantics { contentDescription = switchDescription },
-        )
-        val hasMenu = row.skipped || row.enabled
+        Box {
+            Switch(
+                checked = row.enabled,
+                onCheckedChange = { if (row.linked != null) switchQuestionOpen = true else onToggleEnabled(it) },
+                modifier = Modifier.semantics { contentDescription = switchDescription },
+            )
+            row.linked?.let { linked ->
+                DropdownMenu(expanded = switchQuestionOpen, onDismissRequest = { switchQuestionOpen = false }) {
+                    LinkedSwitchQuestion(
+                        options = linked.switchOptions,
+                        onJustMe = { switchQuestionOpen = false; onLinkedJustMe() },
+                        onBoth = { switchQuestionOpen = false; onLinkedBoth() },
+                    )
+                }
+            }
+        }
+        val hasMenu = row.linked == null && (row.skipped || row.enabled)
         if (hasMenu) Box {
             IconButton(onClick = { menuOpen = true }) {
                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.alarm_more_options))
             }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                if (row.skipped) {
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false; skipQuestionOpen = false },
+            ) {
+                if (skipQuestionOpen) {
+                    LinkedSwitchQuestion(
+                        options = LinkedSwitchOptions(justMe = true, both = true),
+                        onJustMe = { menuOpen = false; skipQuestionOpen = false; onSkipJustMe() },
+                        onBoth = { menuOpen = false; skipQuestionOpen = false; onSkipNext() },
+                    )
+                } else if (row.skipped) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.alarm_unskip)) },
                         onClick = { menuOpen = false; onUnskip() },
@@ -299,11 +367,68 @@ private fun AlarmRow(
                 } else if (row.enabled) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.alarm_skip_next)) },
-                        onClick = { menuOpen = false; onSkipNext() },
+                        onClick = {
+                            if (row.partnerJoined != null) {
+                                skipQuestionOpen = true
+                            } else {
+                                menuOpen = false
+                                onSkipNext()
+                            }
+                        },
                     )
                 }
             }
         }
+    }
+}
+
+/** The partner chip, link icon and Ring/Notify tag of a joined row. */
+@Composable
+private fun LinkedChips(linked: LinkedRowState) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            painterResource(R.drawable.ic_link),
+            contentDescription = stringResource(R.string.link_icon_description),
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        AssistChip(
+            onClick = {},
+            enabled = false,
+            label = { Text(stringResource(R.string.link_partner_possessive, linked.partnerName)) },
+        )
+        SuggestionChip(
+            onClick = {},
+            enabled = false,
+            label = {
+                Text(
+                    stringResource(
+                        if (linked.mode == LinkMode.RING) R.string.link_mode_ring else R.string.link_mode_notify,
+                    ),
+                )
+            },
+        )
+    }
+}
+
+/** The one skip state a joined row shows, plus the "Waiting for ..." line while a both-of-us command is out. */
+@Composable
+private fun LinkedState(linked: LinkedRowState) {
+    val text = when {
+        linked.ownerSkipped -> stringResource(R.string.link_state_owner_skipped, linked.partnerName)
+        linked.skippedForYou -> stringResource(R.string.link_state_skipped_for_you)
+        linked.ownerSkippingSolo -> stringResource(R.string.link_state_owner_skipping_solo, linked.partnerName)
+        else -> null
+    }
+    text?.let {
+        Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary)
+    }
+    if (linked.pendingBoth) {
+        Text(
+            stringResource(R.string.link_waiting_for_partner, linked.partnerName),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -351,5 +476,71 @@ private fun AlarmsScreenFromFakesPreview() {
     val state = buildAlarmsState(SAMPLE_ALARMS, Instant.now(), ZoneId.systemDefault())
     TandemTheme {
         AlarmsScreen(state, remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {})
+    }
+}
+
+private fun joinedPreviewRow(id: String, mode: LinkMode, linked: LinkedRowState.() -> LinkedRowState) = AlarmRowState(
+    id, 7, 15, "Gym", "Mon–Fri", true, Instant.parse("2026-11-03T07:15:00Z"), "Rings in 1 d 2 h", false, false,
+    linked = LinkedRowState("Shawn", mode, false, false, false, false).linked(),
+)
+
+private fun joinedPreviewState(row: AlarmRowState) = AlarmsUiState(loaded = true, zone = ZoneId.of("UTC"), rows = listOf(row))
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinedRingOwnerSkippedPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(joinedPreviewRow("j1", LinkMode.RING) { copy(ownerSkipped = true) }.copy(skipped = true)),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinedNotifySkippedForYouPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(joinedPreviewRow("j2", LinkMode.NOTIFY) { copy(skippedForYou = true) }.copy(skipped = true)),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinedOwnerSkippingSoloPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(joinedPreviewRow("j3", LinkMode.RING) { copy(ownerSkippingSolo = true) }),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
+    }
+}
+
+private fun ownJoinedPreviewRow(id: String, change: AlarmRowState.() -> AlarmRowState = { this }) = AlarmRowState(
+    id, 6, 30, "Work", "Mon–Fri", true, Instant.parse("2026-11-03T06:30:00Z"), "Rings in 1 d 1 h", false, false,
+    partnerJoined = "Shawn",
+).change()
+
+/** An own alarm the partner joined. */
+@Preview(showBackground = true)
+@Composable
+private fun OwnJoinedPreview() {
+    TandemTheme {
+        AlarmsScreen(joinedPreviewState(ownJoinedPreviewRow("p1")), remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {})
+    }
+}
+
+/** An own alarm with only the owner's "just me" skip. */
+@Preview(showBackground = true)
+@Composable
+private fun OwnJoinedSkippedForYouPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(ownJoinedPreviewRow("p2") { copy(skipped = true, skippedSolo = true) }),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
     }
 }
