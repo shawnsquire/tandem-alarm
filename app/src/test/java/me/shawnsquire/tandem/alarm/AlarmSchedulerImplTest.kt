@@ -91,6 +91,8 @@ class AlarmSchedulerImplTest {
         val intentA = shadowOf(a.operation!!).savedIntent
         assertEquals("a", intentA.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
         assertEquals(at(2, 6, 30).toEpochMilli(), intentA.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
+        // The zone the occurrence was computed in travels with it (RingingSession.movedOff).
+        assertEquals(zone.id, intentA.getStringExtra(AlarmIntents.EXTRA_ZONE))
         assertEquals("b", shadowOf(b.operation!!).savedIntent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
         assertNotNull(a.showIntent)
     }
@@ -555,6 +557,8 @@ class AlarmSchedulerImplTest {
         assertEquals("a", intent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
         assertEquals(at(2, 5, 0).toEpochMilli(), intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
         assertEquals("tandem://alarm/a/replay", intent.data.toString())
+        // A replay comes from the records, which hold no zone: its fire is never treated as moved.
+        assertNull(intent.getStringExtra(AlarmIntents.EXTRA_ZONE))
     }
 
     @Test

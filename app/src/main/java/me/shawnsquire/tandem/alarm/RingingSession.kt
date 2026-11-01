@@ -61,8 +61,6 @@ class RingingSession(
     private val isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
     /** The system alarm sound's Uri as the media cache places it; see [startRingOutputs]. */
     private val systemAlarmUri: () -> String? = ::systemDefaultAlarmUri,
-    /** The scheduler's zone, read at each fire; see [movedOff]. */
-    private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val onFinished: () -> Unit,
 ) {
     private val jobs = mutableListOf<Job>()
@@ -126,10 +124,11 @@ class RingingSession(
         try { block() } catch (e: Throwable) { log("$what failed", e) }
     }
 
-    fun start(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?) {
+    /** [armedZone] is the zone the scheduler computed [occurrence] in, if the fire carried one; see [movedOff]. */
+    fun start(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?, armedZone: ZoneId? = null) {
         jobs += scope.launch {
             try {
-                execute(alarmId, occurrence, isSnooze, snoozeRingId)
+                execute(alarmId, occurrence, isSnooze, snoozeRingId, armedZone)
             } catch (e: Throwable) {
                 currentCoroutineContext().ensureActive() // only real session cancellation propagates
                 // I1: an unexpected error never silences a ring, started or not.
@@ -338,7 +337,7 @@ class RingingSession(
         }
     }
 
-    private suspend fun execute(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?) {
+    private suspend fun execute(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?, armedZone: ZoneId?) {
         // Same occurrence already rang (a replay racing AlarmManager's own fire): quiet, before the network check.
         if (!isSnooze && guarded("fired ledger read", null as Instant?) { firedLedger.lastRang(alarmId) } == occurrence) {
             finish()
@@ -348,7 +347,7 @@ class RingingSession(
         // still uses the read made after the check. A failed read just means no owner id.
         val linkedOwnerAlarmId = if (isSnooze) null else guarded("alarm read", null as Alarm?) { alarmRepository.get(alarmId) }?.link?.ownerAlarmId
         preFire(linkedOwnerAlarmId)
-        if (isSnooze) executeSnooze(alarmId, snoozeRingId) else executeFire(alarmId, occurrence)
+        if (isSnooze) executeSnooze(alarmId, snoozeRingId) else executeFire(alarmId, occurrence, armedZone)
     }
 
     private suspend fun executeSnooze(alarmId: String, snoozeRingId: String?) {
@@ -390,7 +389,7 @@ class RingingSession(
         ring(alarm, snoozeRingId, observe = claimed)
     }
 
-    private suspend fun executeFire(alarmId: String, occurrence: Instant) {
+    private suspend fun executeFire(alarmId: String, occurrence: Instant, armedZone: ZoneId?) {
         var readFailed = false
         val alarm: Alarm? = try {
             alarmRepository.get(alarmId)
@@ -404,7 +403,7 @@ class RingingSession(
             finish()
             return
         }
-        if (alarm != null && (!isArmed(alarm) || isSkipped(alarm, occurrence) || movedOff(alarm, occurrence))) {
+        if (alarm != null && (!isArmed(alarm) || isSkipped(alarm, occurrence) || movedOff(alarm, occurrence, armedZone))) {
             suppressFire(alarmId, occurrence, alarm)
             return
         }
@@ -444,7 +443,7 @@ class RingingSession(
                 // Resolved in advance (ledger written under this lock): quiet, no skip to clear.
                 if (!ownLedgerWrite && firedLedger.lastRang(alarmId) == occurrence) return@claimFire false
                 suppressedAlarm = current
-                current != null && isArmed(current) && !isSkipped(current, occurrence) && !movedOff(current, occurrence)
+                current != null && isArmed(current) && !isSkipped(current, occurrence) && !movedOff(current, occurrence, armedZone)
             }
         }
         if (claim is Claim.Done && claim.value == SlotClaim.NotDue) {
@@ -471,9 +470,13 @@ class RingingSession(
      * occurrence any more and the owner would reject this ring's mirrored STOP. By the schedule alone,
      * never `nextOccurrence`, so the owner's solo skip can't suppress. Own rows are never checked: an
      * edit there re-arms the alarm itself, and no stored command asked to drop X (I1).
+     *
+     * Checked in [armedZone], the zone X was computed in, so a zone change since arming never
+     * suppresses (I1). A fire that carries no zone (a replay, a re-arm from the records, an intent
+     * from an older build) is never treated as moved.
      */
-    private fun movedOff(alarm: Alarm, occurrence: Instant): Boolean =
-        alarm.link != null && !fallsOnSchedule(alarm, occurrence, zone())
+    private fun movedOff(alarm: Alarm, occurrence: Instant, armedZone: ZoneId?): Boolean =
+        alarm.link != null && armedZone != null && !fallsOnSchedule(alarm, occurrence, armedZone)
 
     /**
      * Quiet end for a deleted, disabled or skipped occurrence, all of them commands already stored
@@ -768,8 +771,7 @@ class RingingSession(
  * so a pending "unskip for both" re-arms and rings X, and a linked row's solo skip is ignored. By
  * exact stored instant, never by recomputing the next occurrence: a zone change, DST or a time
  * edit must not suppress a ring no stored command asked for (I1). The one exception is a linked
- * row, which [RingingSession] also checks against its copied hour, minute and days in the current
- * zone (`movedOff`): an owner's move suppresses there, and so does a zone change racing the fire.
+ * row whose owner moved the time or days, which [RingingSession] checks separately (`movedOff`).
  */
 internal fun isSkippedOccurrence(alarm: Alarm, occurrence: Instant): Boolean =
     occurrence in alarm.skippedOccurrences()

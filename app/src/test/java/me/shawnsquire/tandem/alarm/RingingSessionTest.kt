@@ -207,9 +207,10 @@ class RingingSessionTest {
             repo, store, settings, preFire, scheduler, controller, sound, vibration, notifier,
             scope.backgroundScope, dispatcher, { clock }, { ids.next() },
             firedLedger = fired, linkedMediaCache = cache, liveRings = live, isArmed = isArmed, isSkipped = isSkipped,
-            systemAlarmUri = systemAlarmUri, zone = { TEST_ZONE }, onFinished = { finished++ },
+            systemAlarmUri = systemAlarmUri, onFinished = { finished++ },
         )
-        fun fire(id: String = "a", occ: Instant) = session.start(id, occ, false, null)
+        /** Armed in [TEST_ZONE], as the scheduler's fire intent carries it. */
+        fun fire(id: String = "a", occ: Instant, zone: java.time.ZoneId? = TEST_ZONE) = session.start(id, occ, false, null, zone)
     }
 
     private class RecordingRegistry(val events: MutableList<String>) : RingRegistry {
@@ -303,7 +304,7 @@ class RingingSessionTest {
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { throw IllegalStateException("uuid") },
-            zone = { TEST_ZONE }, onFinished = {},
+            onFinished = {},
         )
         session.start("a", occurrence, false, null)
         runCurrent()
@@ -321,7 +322,7 @@ class RingingSessionTest {
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
             scheduler ?: h.scheduler, h.controller, h.sound, h.vibration, notifier ?: h.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
-            zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            onFinished = { h.finished++ },
         )
         return h to session
     }
@@ -390,7 +391,7 @@ class RingingSessionTest {
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { awaitCancellation() },
             h.scheduler, h.controller, h.sound, h.vibration, h.notifier,
             CoroutineScope(StandardTestDispatcher(testScheduler) + job),
-            StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, zone = { TEST_ZONE }, onFinished = {},
+            StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = {},
         )
         session.start("a", occurrence, false, null)
         runCurrent()
@@ -406,7 +407,7 @@ class RingingSessionTest {
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
             h.scheduler, slot, h.sound, h.vibration, h.notifier, backgroundScope,
-            StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = { h.finished++ },
         )
         session.start("a", occurrence, false, null)
         runCurrent()
@@ -579,7 +580,7 @@ class RingingSessionTest {
     @Test fun linkedTimeMovedBetweenReadAndClaimSuppressesTheRing() = runTest {
         val h = harness(alarms = listOf(linked()))
         val slot = h.controller.before { h.moveTo715() }
-        slotSession(h, slot).start("a", occurrence, false, null)
+        slotSession(h, slot).start("a", occurrence, false, null, TEST_ZONE)
         runCurrent()
         assertTrue(h.sound.starts.isEmpty())
         assertTrue(h.vibration.stops >= 1)
@@ -597,6 +598,40 @@ class RingingSessionTest {
         })
         h.fire(occ = occurrence)
         assertQuiet(h)
+    }
+
+    @Test fun linkedFireCheckedInItsArmedZoneRingsWhateverTheCurrentZone() = runTest {
+        // Armed at 6:30 New York (11:30Z); the phone has since moved to Chicago, where 11:30Z is 5:30.
+        // A zone change is no stored command, so the fire still rings (I1).
+        val saved = java.util.TimeZone.getDefault()
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/Chicago"))
+        try {
+            val h = harness(alarms = listOf(linked()))
+            h.fire(occ = occurrence)
+            runCurrent()
+            assertEquals(1, h.sound.starts.size)
+            assertEquals(0, h.finished)
+        } finally {
+            java.util.TimeZone.setDefault(saved)
+        }
+    }
+
+    @Test fun linkedFireIsCheckedInTheZoneItWasArmedIn() = runTest {
+        // The same instant checked in the zone it was armed in matches; only that zone counts.
+        val h = harness(alarms = listOf(linked().copy(hour = 5, minute = 30)))
+        h.fire(occ = occurrence, zone = java.time.ZoneId.of("America/Chicago"))
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun linkedFireWithoutAZoneRingsEvenWhenTheOwnerMovedIt() = runTest {
+        // A replay, a re-arm from the records or an intent from an older build carries no zone.
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked()), preFire = LambdaPreFire { h.moveTo715(); true })
+        h.fire(occ = occurrence, zone = null)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.finished)
     }
 
     @Test fun ownAlarmWhoseTimeChangedBeforeTheFireStillRings() = runTest {
@@ -848,7 +883,7 @@ class RingingSessionTest {
             shared.repo, shared.store, FakeSettingsRepository(), LambdaPreFire { true },
             shared.scheduler, shared.controller, bSound, bVibration, shared.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { clockNow },
-            { "ring-2" }, firedLedger = shared.fired, zone = { TEST_ZONE }, onFinished = { bFinished++ },
+            { "ring-2" }, firedLedger = shared.fired, onFinished = { bFinished++ },
         )
         sessionB.start("b", bOccurrence, false, null)
         runCurrent()
@@ -924,7 +959,7 @@ class RingingSessionTest {
         val session = RingingSession(
             failingRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
-            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-9" }, zone = { TEST_ZONE }, onFinished = {},
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-9" }, onFinished = {},
         )
         session.start("a", occurrence, false, null)
         runCurrent()
@@ -942,7 +977,7 @@ class RingingSessionTest {
         val session = RingingSession(
             flakyRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
-            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = { h.finished++ },
         )
         session.start("a", occurrence, false, null)
         runCurrent()
@@ -962,7 +997,7 @@ class RingingSessionTest {
     ) = RingingSession(
         h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
         h.controller, sound, RecordingVibration(), h.notifier, backgroundScope,
-        StandardTestDispatcher(testScheduler), { h.clock }, { ringId }, zone = { TEST_ZONE }, onFinished = onFinished,
+        StandardTestDispatcher(testScheduler), { h.clock }, { ringId }, onFinished = onFinished,
     )
 
     @Test fun managerScenario_parkedSnoozeRingsAfterSupersedingRingIsStopped() = runTest {
@@ -1162,7 +1197,7 @@ class RingingSessionTest {
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler, h.controller,
             object : AlarmSound { override fun start(candidates: List<String>, appendSystemDefaults: Boolean) = throw IllegalStateException("audio"); override fun stop() {} },
             vib, h.notifier, backgroundScope, StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" },
-            zone = { TEST_ZONE }, onFinished = {},
+            onFinished = {},
         )
         session.start("a", occurrence, false, null)
         runCurrent()
@@ -1216,7 +1251,7 @@ class RingingSessionTest {
         h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
         slot, h.sound, h.vibration, h.notifier, backgroundScope,
         StandardTestDispatcher(testScheduler), { h.clock }, { ringId },
-        firedLedger = h.fired, linkedMediaCache = cache, liveRings = h.live, isArmed = isArmed, zone = { TEST_ZONE }, onFinished = { h.finished++ },
+        firedLedger = h.fired, linkedMediaCache = cache, liveRings = h.live, isArmed = isArmed, onFinished = { h.finished++ },
     )
 
     @Test fun stuckClaimFireVibratesAtOnceAndRingsWithinTwoSeconds() = runTest {
@@ -1574,7 +1609,7 @@ class RingingSessionTest {
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             slot, h.sound, h.vibration, h.notifier, CoroutineScope(backgroundScope.coroutineContext + immediate),
-            immediate, { h.clock }, { "ring-1" }, firedLedger = h.fired, zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            immediate, { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
         ).start("a", occurrence, false, null)
         runCurrent()
         advanceTimeBy(10.minutes + 1.seconds); runCurrent()
@@ -1735,7 +1770,7 @@ class RingingSessionTest {
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, replaySound, RecordingVibration(), h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "ring-R" },
-            firedLedger = h.fired, liveRings = h.live, zone = { TEST_ZONE }, onFinished = { replayFinished++ },
+            firedLedger = h.fired, liveRings = h.live, onFinished = { replayFinished++ },
         ).start("a", occurrence, false, null)
         runCurrent()
         assertTrue(replaySound.starts.isEmpty())
@@ -1876,7 +1911,7 @@ class RingingSessionTest {
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
             h.scheduler, h.controller, j.sound, j.vibration, h.notifier,
             backgroundScope, StandardTestDispatcher(testScheduler), { h.clock },
-            { "ring-2" }, firedLedger = h.fired, zone = { TEST_ZONE }, onFinished = { j.finished++ },
+            { "ring-2" }, firedLedger = h.fired, onFinished = { j.finished++ },
         ).start(alarmId, occ, false, null)
         return j
     }
@@ -2024,7 +2059,7 @@ class RingingSessionTest {
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, notifier, backgroundScope,
-            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
         ).start("a", occurrence, false, null)
         runCurrent()
         assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
@@ -2046,7 +2081,7 @@ class RingingSessionTest {
             repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired,
-            linkedMediaCache = StubMediaCache(hang = true), zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            linkedMediaCache = StubMediaCache(hang = true), onFinished = { h.finished++ },
         ).start("a", occurrence, false, null)
         advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds + 1); runCurrent()
         assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
@@ -2068,7 +2103,7 @@ class RingingSessionTest {
         RingingSession(
             repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
-            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
         ).start("a", occurrence, false, null)
         runCurrent()
         assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
@@ -2119,7 +2154,7 @@ class RingingSessionTest {
         RingingSession(
             failingRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
-            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, zone = { TEST_ZONE }, onFinished = {},
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = {},
         ).start("a", occurrence, false, null)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
@@ -2136,7 +2171,7 @@ class RingingSessionTest {
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, throwing, backgroundScope,
-            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, zone = { TEST_ZONE }, onFinished = {},
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = {},
         ).start("a", occurrence, false, null)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
@@ -2192,7 +2227,7 @@ class RingingSessionTest {
         RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
             h.controller, h.sound, h.vibration, notifier, backgroundScope,
-            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, zone = { TEST_ZONE }, onFinished = { h.finished++ },
+            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
         ).start("a", occurrence, false, null)
         runCurrent()
         assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))

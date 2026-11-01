@@ -142,7 +142,7 @@ class AlarmSchedulerImpl(
                 }
                 // Added before arming: if setAlarmClock throws, the existing PendingIntent survives cleanup.
                 scheduledNow[alarm.id] = at.toEpochMilli()
-                val operation = AlarmIntents.firePendingIntent(context, alarm.id, at)
+                val operation = AlarmIntents.firePendingIntent(context, alarm.id, at, zoneId)
                 alarmManager.setAlarmClock(
                     AlarmManager.AlarmClockInfo(at.toEpochMilli(), AlarmIntents.showPendingIntent(context)),
                     operation,
