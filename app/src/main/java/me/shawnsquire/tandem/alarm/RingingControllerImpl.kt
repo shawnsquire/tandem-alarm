@@ -84,17 +84,17 @@ class RingingControllerImpl(
         } catch (e: Exception) {
             DEFAULT_SNOOZE_MINUTES
         }
-        val until = now().plus(minutes.toLong(), ChronoUnit.MINUTES)
+        val end = now().plus(minutes.toLong(), ChronoUnit.MINUTES)
         // Arm first: if this throws nothing is written and the ring continues.
-        snoozeArmer.armSnooze(state.alarmId, state.ringId, until)
+        snoozeArmer.armSnooze(state.alarmId, state.ringId, end)
         try {
-            ledger.put(state.ringId, state.alarmId, until)
+            ledger.put(state.ringId, state.alarmId, end)
         } catch (e: Throwable) {
             runCatching { snoozeArmer.cancelSnooze(state.ringId) }
             throw e
         }
         try {
-            ringStateStore.set(state.copy(snoozedUntil = until))
+            ringStateStore.set(state.copy(snoozedUntil = end))
         } catch (e: Throwable) {
             // Not snoozed after all: the ring keeps sounding, so take the snooze back.
             runCatching { ledger.remove(state.ringId) }
@@ -107,7 +107,7 @@ class RingingControllerImpl(
             // The snooze is already armed; the rest of the schedule is best effort.
             log("rescheduleAll failed after arming snooze", e)
         }
-        runCatching { notifier.showSnoozed(state.ringId, until) }
+        runCatching { notifier.showSnoozed(state.ringId, end) }
         Unit
     } }
 
