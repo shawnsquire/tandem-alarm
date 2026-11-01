@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.alarm.RingingController
 import me.shawnsquire.tandem.data.AlarmRepository
+import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingOrigin
@@ -77,7 +78,15 @@ data class RingingBanner(
     val snoozedHour: Int?,
     val snoozedMinute: Int?,
     val stopStatus: CommandUiStatus?,
+    /**
+     * This phone's own alarms the partner's ring joined: the slot ring and merged members whose
+     * published id is one of ours (a joiner publishes its linked rows under the owner's alarm id).
+     */
+    val joined: List<JoinedOwnAlarm> = emptyList(),
 )
+
+/** One of this phone's own alarms, shown on the partner's ringing banner as "Your 6:30, joined". */
+data class JoinedOwnAlarm(val hour: Int, val minute: Int, val label: String)
 
 data class PartnerUiState(
     /** True until the first real emission, so a paired user never sees the unpaired UI for a frame. */
@@ -157,7 +166,8 @@ internal sealed interface JoinUi {
 }
 
 /**
- * Whether this phone's copy of the partner's ring `(rowId, x)` is still live: the slot ring
+ * Whether this phone's copy of the partner's ring `(rowId, x)` is still live (rowId is the joiner's
+ * linked row, or on the owner its own alarm): the slot ring
  * (sounding or snoozed), folded into it, or a parked snooze. Then stopping it locally lets the
  * mirror send the one STOP_RINGING.
  */
@@ -216,15 +226,21 @@ class PartnerViewModel(
             .map { rows -> rows.mapNotNull { r -> r.link?.let { it.ownerAlarmId to r.id } }.toMap() }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
+    /** This phone's own alarms by id; a partner ring naming one of them is a joiner ringing our alarm. */
+    private val ownAlarms: StateFlow<Map<String, Alarm>> =
+        alarmRepository.ownAlarms
+            .map { rows -> rows.associateBy { it.id } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
     val state: StateFlow<PartnerUiState> = combine(
-        pairing.status, partner, local, alarmStatuses, stopStatuses, sentActions, linkedRows, joins, ticker,
+        pairing.status, partner, local, alarmStatuses, stopStatuses, sentActions, linkedRows, joins, ownAlarms, ticker,
     ) { values ->
         @Suppress("UNCHECKED_CAST")
         build(
             values[0] as PairingStatus, values[1] as PartnerState?, values[2] as UnpairedLocal,
             values[3] as Map<String, CommandUiStatus>, values[4] as Map<String, CommandUiStatus>,
             values[5] as Map<String, PartnerAction>, values[6] as Map<String, String>,
-            values[7] as Map<String, JoinUi>,
+            values[7] as Map<String, JoinUi>, values[8] as Map<String, Alarm>,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PartnerUiState())
 
@@ -249,6 +265,7 @@ class PartnerViewModel(
         sentActions: Map<String, PartnerAction>,
         linkedRows: Map<String, String>,
         joins: Map<String, JoinUi>,
+        ownAlarms: Map<String, Alarm>,
     ): PartnerUiState {
         if (status !is PairingStatus.Paired) {
             return PartnerUiState(
@@ -266,6 +283,8 @@ class PartnerViewModel(
                 partnerName = name, alarmId = r.alarmId, ringId = r.ringId,
                 snoozedHour = snooze?.hour, snoozedMinute = snooze?.minute,
                 stopStatus = stopStatuses[r.ringId],
+                joined = (listOf(r.alarmId) + r.merged.map { it.alarmId }).distinct()
+                    .mapNotNull { id -> ownAlarms[id]?.let { JoinedOwnAlarm(it.hour, it.minute, it.label) } },
             )
         }
         val rows = partner?.alarms.orEmpty()
@@ -349,7 +368,11 @@ class PartnerViewModel(
         val jobKey = "stoplocal:${ring.ringId}"
         if (ring.ringId in dismissedLocally || jobs[jobKey]?.isActive == true) return
         val x = ring.occurrenceAt
-        val rowId = linkedRows.value[ring.alarmId]
+        // Our copy of the ring: the linked row that joined the partner's alarm, or, when the partner is
+        // a joiner ringing one of our own alarms (published under its id), that alarm itself. Only the
+        // slot ring's id counts: if ours is just a merged member there, a local dismiss would mirror a
+        // stop for that member alone and leave the partner's ring sounding, so send the STOP instead.
+        val rowId = linkedRows.value[ring.alarmId] ?: ring.alarmId.takeIf { it in ownAlarms.value }
         // A command already sent for this ring is the one STOP; never dismiss locally on top of it.
         if (x == null || rowId == null || ring.ringId in sentStops) {
             sendStop(ring)

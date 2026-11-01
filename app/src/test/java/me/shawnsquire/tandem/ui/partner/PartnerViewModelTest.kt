@@ -477,6 +477,82 @@ class PartnerViewModelTest {
         assertEquals(listOf(Sent(CommandType.STOP_RINGING, "a", null, "ring-1")), e.sender.sent)
     }
 
+    // Owner side: the partner (joiner) rings one of this phone's own alarms, published under its id.
+
+    private fun ownAlarm(id: String = "A", label: String = "", solo: Instant? = null) =
+        Alarm(id, label, 6, 30, setOf(DayOfWeek.MONDAY), true, null, null, null, soloSkippedOccurrenceAt = solo)
+
+    private val joinerRing = RingState("A", "joiner-ring", now, null, occurrenceAt = ringAt)
+
+    private fun ownerEnv(
+        context: RingContext, own: Alarm = ownAlarm(), ring: RingState = joinerRing, sender: RecordingSender = RecordingSender(),
+    ): Env {
+        val e = env(partner(alarm("b"), ringing = ring), sender = sender, localAlarms = listOf(own))
+        e.ringing.ringContextResult = context
+        return e
+    }
+
+    @Test fun ownerStopAfterSoloSkipSendsStopWithOwnIdAndJoinerRingId() = runTest {
+        // The owner solo-skipped A at X, so only the joiner rings: nothing local to dismiss.
+        // The joiner's applier maps A to its linked row and dismisses that ring (CommandApplierImplTest).
+        val sender = RecordingSender { flowOf(CommandStatus.PENDING to null, CommandStatus.APPLIED to null) }
+        val e = ownerEnv(ctx(), own = ownAlarm(solo = ringAt), sender = sender)
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(listOf("A"), e.ringing.ringContextAlarmIds)
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        assertEquals(listOf(Sent(CommandType.STOP_RINGING, "A", null, "joiner-ring")), e.sender.sent)
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+    }
+
+    @Test fun ownerStopWhileOwnCopySoundsDismissesLocallyAndSendsNothing() = runTest {
+        val e = ownerEnv(ctx(ring = RingState("A", "own-ring", now, null, occurrenceAt = ringAt)))
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        // The owner's RingMirror sends the one STOP_RINGING{A, X} to the joiner.
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("A", ringAt, RingOrigin.LOCAL)), e.ringing.dismissedOccurrences)
+        assertTrue(e.sender.sent.isEmpty())
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+    }
+
+    @Test fun ownerStopWhileOwnCopySnoozedDismissesLocally() = runTest {
+        val e = ownerEnv(ctx(ring = RingState("A", "own-ring", now, ringAt.plusSeconds(600), occurrenceAt = ringAt)))
+        e.vm.stopRinging()
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun ownerRepeatTapAfterLocalDismissSendsNothing() = runTest {
+        val e = ownerEnv(ctx(ring = RingState("A", "own-ring", now, null, occurrenceAt = ringAt)))
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.ringing.ringContextResult = ctx()
+        e.vm.stopRinging()
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun ownerRepeatTapAfterSentStopNeverDismissesLocally() = runTest {
+        val e = ownerEnv(ctx())
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.ringing.ringContextResult = ctx(ring = RingState("A", "own-ring", now, null, occurrenceAt = ringAt))
+        e.vm.stopRinging()
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        assertEquals(2, e.sender.sent.size)
+    }
+
+    @Test fun bannerNamesOwnAlarmsTheJoinerIsRinging() = runTest {
+        val ring = joinerRing.copy(alarmId = "b", merged = listOf(RingMember("A", ringAt), RingMember("c", ringAt)))
+        val e = ownerEnv(ctx(), own = ownAlarm(label = "Work"), ring = ring)
+        val state = e.collect(backgroundScope)
+        assertEquals(listOf(JoinedOwnAlarm(6, 30, "Work")), state().ringing!!.joined)
+        e.repo.flow.value = partner(alarm("b"), ringing = joinerRing)
+        assertEquals(listOf(JoinedOwnAlarm(6, 30, "Work")), state().ringing!!.joined)
+        e.repo.flow.value = partner(alarm("b"), ringing = joinerRing.copy(alarmId = "b"))
+        assertEquals(emptyList<JoinedOwnAlarm>(), state().ringing!!.joined)
+    }
+
     // Repeat taps and failures.
 
     private fun joinedEnvWith(
