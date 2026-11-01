@@ -715,6 +715,15 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
+    fun replayArmedThisRunSurvivesWhenTheAlarmHasNoNextOccurrence() = runTest {
+        // An own one-shot solo-skipped for tomorrow has no next fire, but today's missed X still rings.
+        val stored = alarm("a", 5, 0).copy(soloSkippedOccurrenceAt = replayAt.plusSeconds(86_400))
+        assertEquals(1, replaysWith(stored).size)
+        assertNotNull(AlarmIntents.existingReplayPendingIntent(context, "a"))
+        assertNull(AlarmIntents.existingFirePendingIntent(context, "a")) // its old fire is still cancelled
+    }
+
+    @Test
     fun noReplayForDisabledOrDeletedAlarm() = runTest {
         val repo = FakeAlarmRepository(listOf(alarm("a", 5, 0), alarm("b", 5, 0)))
         val s = armedThenLater(repo, at(2, 5, 0).plusSeconds(180))
