@@ -4,13 +4,16 @@ import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.schedule.Alarm
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
+
+/** Outcome of [LinkedMediaCacheImpl.downloadMissing]: [retryable] is set when a failure may succeed later (network, I/O), not for a missing or tampered blob. */
+data class DownloadResult(val allPresent: Boolean, val retryable: Boolean)
 
 /**
  * The joiner's cache of the owner's media: the refs live in [storeFile] (replaced atomically, kept
@@ -23,6 +26,7 @@ class LinkedMediaCacheImpl(
     private val storage: MediaStorage,
     private val enqueueDownload: () -> Unit,
     private val systemAlarmSound: String? = Settings.System.DEFAULT_ALARM_ALERT_URI?.toString(),
+    private val io: CoroutineDispatcher = Dispatchers.IO,
     /** Fire-and-forget report of (distinct referenced files, those not cached) after [update] and [downloadMissing]. */
     private val onStatus: (referenced: Int, missing: Int) -> Unit = { _, _ -> },
 ) : LinkedMediaCache {
@@ -75,73 +79,85 @@ class LinkedMediaCacheImpl(
 
     override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?): RingMedia {
         val link = alarm.link ?: return DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
-        return try {
-            val refs = try { refs() } catch (e: Exception) { Log.w(TAG, "reading linked media refs failed", e); null }
-                ?.takeIf { it.ownerUid == link.ownerUid }
-            val owner = refs?.alarms?.get(link.ownerAlarmId)
+        return withContext(io) {
+            try {
+                val refs = try { refs() } catch (e: Exception) { Log.w(TAG, "reading linked media refs failed", e); null }
+                    ?.takeIf { it.ownerUid == link.ownerUid }
+                val owner = refs?.alarms?.get(link.ownerAlarmId)
 
-            val photos = listOfNotNull(
-                link.overrideWallpaperPath?.takeIf { readable(it) },
-                owner?.wallpaper?.let { pathFor(it.sha) },
-                refs?.defaultWallpaper?.let { pathFor(it.sha) },
-                joinerDefaultWallpaper,
-            )
-            val sounds = listOfNotNull(
-                link.overrideRingtoneUri?.takeIf(::soundUsable),
-                owner?.ringtone?.let { pathFor(it.sha) }?.let { Uri.fromFile(File(it)).toString() },
-                systemAlarmSound,
-                joinerDefaultRingtone,
-            )
-            RingMedia(
-                label = link.overrideLabel?.takeIf { it.isNotBlank() } ?: alarm.label,
-                soundCandidates = sounds.filter { it.isNotBlank() }.distinct(),
-                wallpaperPaths = photos.filter { it.isNotBlank() }.distinct(),
-            )
-        } catch (e: Exception) {
-            if (e is CancellationException) throw e
-            Log.w(TAG, "resolving linked media failed", e)
-            DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
+                val photos = listOfNotNull(
+                    link.overrideWallpaperPath?.takeIf { readable(it) },
+                    owner?.wallpaper?.let { pathFor(it.sha) },
+                    refs?.defaultWallpaper?.let { pathFor(it.sha) },
+                    joinerDefaultWallpaper,
+                )
+                val sounds = listOfNotNull(
+                    link.overrideRingtoneUri?.takeIf(::soundUsable),
+                    owner?.ringtone?.let { pathFor(it.sha) }?.let { Uri.fromFile(File(it)).toString() },
+                    systemAlarmSound,
+                    joinerDefaultRingtone,
+                )
+                RingMedia(
+                    label = link.overrideLabel?.takeIf { it.isNotBlank() } ?: alarm.label,
+                    soundCandidates = sounds.filter { it.isNotBlank() }.distinct(),
+                    wallpaperPaths = photos.filter { it.isNotBlank() }.distinct(),
+                )
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Log.w(TAG, "resolving linked media failed", e)
+                DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
+            }
         }
     }
 
     /**
      * Downloads every referenced blob that is not cached, re-reading the refs until nothing new is
-     * missing (an [update] during a run is not enqueued again). Returns true if all are present.
+     * missing (an [update] during a run is not enqueued again).
      */
-    suspend fun downloadMissing(hid: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun downloadMissing(hid: String): DownloadResult = withContext(io) {
         val tried = mutableSetOf<String>()
         var failed = false
+        var retryable = false
         while (true) {
             val refs = refs()
             val missing = refs.shas().filter { it !in tried && pathFor(it) == null }
             if (missing.isEmpty()) break
             for (sha in missing) {
                 tried += sha
-                if (!fetch(hid, refs.ownerUid, sha)) failed = true
+                when (fetch(hid, refs.ownerUid, sha)) {
+                    Fetch.OK -> Unit
+                    Fetch.RETRY -> { failed = true; retryable = true }
+                    Fetch.PERMANENT -> failed = true
+                }
             }
         }
         report(refs())
-        !failed
+        DownloadResult(allPresent = !failed, retryable = retryable)
     }
 
-    private suspend fun fetch(hid: String, ownerUid: String, sha: String): Boolean {
+    private enum class Fetch { OK, RETRY, PERMANENT }
+
+    private suspend fun fetch(hid: String, ownerUid: String, sha: String): Fetch {
         linkedDir.mkdirs()
         val tmp = File(linkedDir, "$sha.tmp")
         return try {
-            storage.download(hid, ownerUid, sha, tmp, MAX_BYTES)
-            if (sha256(tmp) != sha) {
+            storage.download(hid, ownerUid, sha, tmp, MAX_MEDIA_BYTES)
+            if (sha256Hex(tmp) != sha) {
                 Log.w(TAG, "downloaded $sha does not match its hash; discarding")
-                false
+                Fetch.PERMANENT
             } else if (tmp.renameTo(File(linkedDir, sha))) {
-                true
+                Fetch.OK
             } else {
                 Log.w(TAG, "cannot move $sha into place")
-                false
+                Fetch.RETRY
             }
+        } catch (e: MediaNotFoundException) {
+            Log.w(TAG, "$sha is not in Storage", e)
+            Fetch.PERMANENT
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w(TAG, "downloading $sha failed", e)
-            false
+            Fetch.RETRY
         } finally {
             tmp.delete()
         }
@@ -165,18 +181,16 @@ class LinkedMediaCacheImpl(
 
     private fun encode(r: Refs): JSONObject = JSONObject().apply {
         put("ownerUid", r.ownerUid)
-        r.defaultWallpaper?.let { put("defaultWallpaper", encode(it)) }
+        r.defaultWallpaper?.let { put("defaultWallpaper", it.toJson()) }
         put("alarms", JSONObject().apply {
             r.alarms.forEach { (id, m) ->
                 put(id, JSONObject().apply {
-                    m.wallpaper?.let { put("wallpaper", encode(it)) }
-                    m.ringtone?.let { put("ringtone", encode(it)) }
+                    m.wallpaper?.let { put("wallpaper", it.toJson()) }
+                    m.ringtone?.let { put("ringtone", it.toJson()) }
                 })
             }
         })
     }
-
-    private fun encode(r: MediaRef) = JSONObject().put("sha", r.sha).put("size", r.size).apply { r.title?.let { put("title", it) } }
 
     private fun decode(o: JSONObject): Refs {
         val alarms = o.getJSONObject("alarms")
@@ -184,13 +198,11 @@ class LinkedMediaCacheImpl(
             ownerUid = o.getString("ownerUid"),
             alarms = alarms.keys().asSequence().associateWith { id ->
                 val m = alarms.getJSONObject(id)
-                AlarmMedia(m.optJSONObject("wallpaper")?.let(::ref)?.takeIf(::valid), m.optJSONObject("ringtone")?.let(::ref)?.takeIf(::valid))
+                AlarmMedia(m.optJSONObject("wallpaper")?.let(::mediaRefFromJson)?.takeIf(::valid), m.optJSONObject("ringtone")?.let(::mediaRefFromJson)?.takeIf(::valid))
             },
-            defaultWallpaper = o.optJSONObject("defaultWallpaper")?.let(::ref)?.takeIf(::valid),
+            defaultWallpaper = o.optJSONObject("defaultWallpaper")?.let(::mediaRefFromJson)?.takeIf(::valid),
         )
     }
-
-    private fun ref(o: JSONObject) = MediaRef(o.getString("sha"), o.getLong("size"), if (o.has("title")) o.getString("title") else null)
 
     /** Refs come from the partner's document: only a bare SHA-256 may become a file name. */
     private fun valid(r: MediaRef) = SHA.matches(r.sha)
@@ -205,19 +217,6 @@ class LinkedMediaCacheImpl(
         else -> readable(s)
     }
 
-    private fun sha256(f: File): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        f.inputStream().use { input ->
-            val buf = ByteArray(64 * 1024)
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                md.update(buf, 0, n)
-            }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
-
     private data class Refs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val defaultWallpaper: MediaRef?) {
         fun shas(): Set<String> = buildSet {
             alarms.values.forEach { m -> m.wallpaper?.let { add(it.sha) }; m.ringtone?.let { add(it.sha) } }
@@ -229,7 +228,6 @@ class LinkedMediaCacheImpl(
         /** Directory under filesDir holding the owner's cached media; also swept by [MediaOrphanSweeper]. */
         const val LINKED_DIR = "linked"
         private const val TAG = "LinkedMediaCache"
-        private const val MAX_BYTES = 15_728_640L
         private val SHA = Regex("^[0-9a-f]{64}$")
     }
 }

@@ -11,6 +11,9 @@ import me.shawnsquire.tandem.sync.await
 import java.io.File
 import java.io.IOException
 
+/** The blob is not in Storage; permanent until the owner uploads it again. */
+class MediaNotFoundException(message: String, cause: Throwable? = null) : IOException(message, cause)
+
 /** Cloud Storage access for `households/{hid}/media/{ownerUid}/{sha}`. All calls throw on failure. */
 interface MediaStorage {
     /** Creates the blob; the rules deny updates, so re-uploading an existing sha is only for retries after a lost result. */
@@ -19,7 +22,7 @@ interface MediaStorage {
     /** A blob that is already gone counts as deleted. */
     suspend fun delete(hid: String, ownerUid: String, sha: String)
 
-    /** Writes the blob to [dest]; throws [IOException] (and leaves no [dest]) if it is larger than [maxBytes]. */
+    /** Writes the blob to [dest]; throws [MediaNotFoundException] if absent, [IOException] (and leaves no [dest]) if larger than [maxBytes]. */
     suspend fun download(hid: String, ownerUid: String, sha: String, dest: File, maxBytes: Long)
 }
 
@@ -50,31 +53,50 @@ class FirebaseMediaStorage(
         } catch (e: CancellationException) {
             throw e
         } catch (e: StorageException) {
-            // The server answered, so Storage is reachable.
-            if (e.errorCode == StorageException.ERROR_OBJECT_NOT_FOUND) {
-                report(true)
-            } else {
-                report(false)
-                throw e
-            }
+            // The server answered, so Storage is reachable; a missing blob is a success.
+            report(answeredByServer(e.errorCode, e.httpResultCode))
+            if (e.errorCode != StorageException.ERROR_OBJECT_NOT_FOUND) throw e
         } catch (e: Exception) {
             report(false)
             throw e
         }
     }
 
-    override suspend fun download(hid: String, ownerUid: String, sha: String, dest: File, maxBytes: Long) = reported {
+    override suspend fun download(hid: String, ownerUid: String, sha: String, dest: File, maxBytes: Long) {
+        var oversize = false
+        reported(answered = { oversize || it is MediaNotFoundException }) {
+            try {
+                ref(hid, ownerUid, sha).getStream { _, stream ->
+                    dest.outputStream().use { out ->
+                        val copied = stream.copyToLimited(out, maxBytes)
+                        if (copied > maxBytes) {
+                            oversize = true
+                            throw IOException("$sha is larger than $maxBytes bytes")
+                        }
+                    }
+                }.await()
+                Unit
+            } catch (e: StorageException) {
+                dest.delete()
+                if (e.errorCode == StorageException.ERROR_OBJECT_NOT_FOUND) throw MediaNotFoundException("$sha is not in Storage", e)
+                throw e
+            } catch (t: Throwable) {
+                dest.delete()
+                throw t
+            }
+        }
+    }
+
+    /** Reports the outcome; a failure still counts as reachable when [answered] says the server replied. */
+    private suspend fun reported(answered: (Throwable) -> Boolean = { false }, block: suspend () -> Unit) {
         try {
-            ref(hid, ownerUid, sha).getStream { _, stream ->
-                dest.outputStream().use { out ->
-                    val copied = stream.copyToLimited(out, maxBytes)
-                    if (copied > maxBytes) throw IOException("$sha is larger than $maxBytes bytes")
-                }
-            }.await()
-            Unit
-        } catch (t: Throwable) {
-            dest.delete()
-            throw t
+            block()
+            report(true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            report(answered(e) || (e is StorageException && answeredByServer(e.errorCode, e.httpResultCode)))
+            throw e
         }
     }
 
@@ -94,6 +116,19 @@ class FirebaseMediaStorage(
         try { withContext(Dispatchers.Default) { onResult(ok) } } catch (e: CancellationException) { throw e } catch (_: Exception) { /* a listener must not fail a Storage call */ }
     }
 }
+
+/** True when a [StorageException]'s codes show a server reply (HTTP status or a server-side error), false for network and unknown failures. */
+internal fun answeredByServer(errorCode: Int, httpResultCode: Int): Boolean =
+    httpResultCode in 100..599 || errorCode in SERVER_ERRORS
+
+private val SERVER_ERRORS = setOf(
+    StorageException.ERROR_OBJECT_NOT_FOUND,
+    StorageException.ERROR_BUCKET_NOT_FOUND,
+    StorageException.ERROR_PROJECT_NOT_FOUND,
+    StorageException.ERROR_QUOTA_EXCEEDED,
+    StorageException.ERROR_NOT_AUTHENTICATED,
+    StorageException.ERROR_NOT_AUTHORIZED,
+)
 
 /** Copies at most [limit] + 1 bytes and returns how many were copied, so a caller can tell "over the limit" without reading the rest. */
 internal fun java.io.InputStream.copyToLimited(out: java.io.OutputStream, limit: Long): Long {

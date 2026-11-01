@@ -25,7 +25,6 @@ import me.shawnsquire.tandem.sync.MediaPublisher
 import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PublishedMedia
 import java.io.File
-import java.security.MessageDigest
 
 private const val TAG = "MediaPublisher"
 
@@ -41,6 +40,10 @@ private const val MAX_RETRY_MS = 60 * 60_000L
  *
  * Refs and the uploaded shas (per household id, since unpair deletes the household's media) are
  * persisted in [store]. Nothing is uploaded or deleted while [household] is null.
+ *
+ * A Firebase task keeps running when its coroutine is cancelled, so a sha is persisted as "may be in
+ * Storage" ([MediaPublishState.pendingDelete]) before an upload or delete starts and only moved to
+ * or out of `uploaded` once it finishes. Cleanup deletes every unreferenced sha in either set.
  */
 class MediaPublisherImpl(
     private val alarms: AlarmRepository,
@@ -116,11 +119,14 @@ class MediaPublisherImpl(
     private suspend fun pass(hh: Household, input: Input): Boolean {
         var failed = false
         val prev = state.value.published
-        val uploaded = state.value.uploaded[hh.id].orEmpty().toMutableSet()
+        val tracked = Tracked(
+            state.value.uploaded[hh.id].orEmpty().toMutableSet(),
+            state.value.pendingDelete[hh.id].orEmpty().toMutableSet(),
+        )
 
         suspend fun resolve(path: String?, kind: MediaKind, previous: MediaRef?): MediaRef? {
             if (path == null) return null
-            return when (val o = publish(hh, path, kind, uploaded)) {
+            return when (val o = publish(hh, path, kind, tracked)) {
                 is Outcome.Ok -> o.ref
                 Outcome.Failed -> { failed = true; previous }
             }
@@ -142,13 +148,19 @@ class MediaPublisherImpl(
             refs?.defaultWallpaper?.let { add(it.sha) }
             refs?.alarms?.values?.forEach { m -> m.wallpaper?.let { add(it.sha) }; m.ringtone?.let { add(it.sha) } }
         }
-        commit { it.copy(published = refs, uploaded = mapOf(hh.id to uploaded.toSet())) }
+        commit { it.copy(published = refs) }
+        commitTracked(hh, tracked)
 
-        for (sha in uploaded - referenced) {
+        // Never delete what the refs just emitted point at, even if it is still in a set.
+        for (sha in (tracked.uploaded + tracked.pending) - referenced) {
             try {
+                // Persist "might be gone" first: the delete can finish server-side and still be cancelled or lose its result.
+                tracked.uploaded -= sha
+                tracked.pending += sha
+                commitTracked(hh, tracked)
                 storage.delete(hh.id, hh.myUid, sha)
-                uploaded -= sha
-                commit { it.copy(uploaded = mapOf(hh.id to uploaded.toSet())) }
+                tracked.pending -= sha
+                commitTracked(hh, tracked)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -159,8 +171,14 @@ class MediaPublisherImpl(
         return failed
     }
 
-    /** Copies, hashes and (unless [uploaded] has it) uploads one file. Records the sha as uploaded right away. */
-    private suspend fun publish(hh: Household, path: String, kind: MediaKind, uploaded: MutableSet<String>): Outcome {
+    /** The shas of one household: [uploaded] is known to be in Storage, [pending] may be and is not to be skipped by an upload. */
+    private class Tracked(val uploaded: MutableSet<String>, val pending: MutableSet<String>)
+
+    private fun commitTracked(hh: Household, t: Tracked) =
+        commit { it.copy(uploaded = mapOf(hh.id to t.uploaded.toSet()), pendingDelete = mapOf(hh.id to t.pending.toSet())) }
+
+    /** Copies, hashes and (unless [t] has it uploaded) uploads one file, recording the sha as pending before and as uploaded after. */
+    private suspend fun publish(hh: Household, path: String, kind: MediaKind, t: Tracked): Outcome {
         val tmp = File(tmpDir, "publish-${System.nanoTime()}.tmp")
         try {
             check(tmpDir.isDirectory || tmpDir.mkdirs()) { "Cannot create $tmpDir" }
@@ -170,16 +188,20 @@ class MediaPublisherImpl(
                 Log.w(TAG, "skipping oversized $kind")
                 return Outcome.Ok(null)
             }
-            val sha = sha256(tmp)
-            if (sha !in uploaded) {
+            val sha = sha256Hex(tmp)
+            if (sha !in t.uploaded) {
                 val contentType = when (kind) {
                     MediaKind.WALLPAPER -> "image/jpeg"
                     // Files named by hash have no extension, so Storage would infer octet-stream, which the rules deny.
                     MediaKind.RINGTONE -> info.contentType?.takeIf { it.startsWith("audio/") } ?: "audio/mpeg"
                 }
+                // A cancelled upload may still finish server-side; pending makes cleanup delete it if nothing references it.
+                t.pending += sha
+                commitTracked(hh, t)
                 storage.upload(hh.id, hh.myUid, sha, tmp, contentType)
-                uploaded += sha
-                commit { it.copy(uploaded = mapOf(hh.id to uploaded.toSet())) }
+                t.pending -= sha
+                t.uploaded += sha
+                commitTracked(hh, t)
             }
             return Outcome.Ok(MediaRef(sha, size, if (kind == MediaKind.RINGTONE) info.title else null))
         } catch (e: CancellationException) {
@@ -199,18 +221,5 @@ class MediaPublisherImpl(
         // In-memory first: a failed write costs a re-upload after a restart, not a lost ref.
         state.value = next
         try { store.save(next) } catch (e: Exception) { Log.w(TAG, "cannot save media state", e) }
-    }
-
-    private fun sha256(file: File): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buf = ByteArray(64 * 1024)
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                md.update(buf, 0, n)
-            }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
     }
 }

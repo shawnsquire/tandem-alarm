@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.media
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -42,13 +43,22 @@ private class FakeMediaStorage : MediaStorage {
     val deletes = mutableListOf<Triple<String, String, String>>()
     var failUploads = false
 
+    /** What is in Storage "server-side"; the hooks run after the effect, like a call whose result is lost. */
+    val server = mutableSetOf<String>()
+    var afterUpload: (suspend (sha: String) -> Unit)? = null
+    var afterDelete: (suspend (sha: String) -> Unit)? = null
+
     override suspend fun upload(hid: String, ownerUid: String, sha: String, file: File, contentType: String) {
         if (failUploads) throw IOException("offline")
         uploads += Upload(hid, ownerUid, sha, file.readBytes().size, contentType)
+        server += sha
+        afterUpload?.invoke(sha)
     }
 
     override suspend fun delete(hid: String, ownerUid: String, sha: String) {
         deletes += Triple(hid, ownerUid, sha)
+        server -= sha
+        afterDelete?.invoke(sha)
     }
 
     override suspend fun download(hid: String, ownerUid: String, sha: String, dest: File, maxBytes: Long) = Unit
@@ -296,13 +306,14 @@ class MediaPublisherImplTest {
         alarms.upsert(alarm("a", wallpaper = "/w/a2.jpg"))
         runCurrent() // not advanceUntilIdle: the retry timer would spin forever while Storage is down
         assertEquals(old, p.published.first()!!.alarms.getValue("a").wallpaper!!.sha)
-        assertTrue(storage.deletes.isEmpty())
+        // The failed upload's sha may exist (lost result), so it is cleaned up; the referenced old blob never is.
+        assertTrue(storage.deletes.none { it.third == old })
 
         storage.failUploads = false
         advanceTimeBy(61_000)
         advanceUntilIdle()
         assertEquals(sha(changed), p.published.first()!!.alarms.getValue("a").wallpaper!!.sha)
-        assertEquals(listOf(Triple("hid-1", "me", old)), storage.deletes)
+        assertEquals(Triple("hid-1", "me", old), storage.deletes.last())
     }
 
     @Test
@@ -328,5 +339,97 @@ class MediaPublisherImplTest {
         p.start()
         advanceUntilIdle()
         assertEquals(1, storage.uploads.size)
+    }
+
+    private val bytesA = "aaa".toByteArray()
+    private val bytesB = "bbb".toByteArray()
+    private val bytesC = "ccc".toByteArray()
+
+    private suspend fun linkedWallpaper(path: String) {
+        alarms.upsert(alarm("a", wallpaper = path))
+    }
+
+    @Test
+    fun aDeleteCancelledAfterItFinishedServerSideDoesNotLeaveADanglingRef() = runTest {
+        source.put("/w/a.jpg", bytesA)
+        source.put("/w/b.jpg", bytesB)
+        linkedWallpaper("/w/a.jpg")
+        partner.set(link("a"))
+        val p = publisher()
+        p.start()
+        advanceUntilIdle()
+        assertEquals(setOf(sha(bytesA)), storage.server)
+
+        // Switch to B; while A is being deleted the owner switches back, which cancels the pass.
+        storage.afterDelete = { sha ->
+            if (sha == sha(bytesA)) {
+                storage.afterDelete = null
+                linkedWallpaper("/w/a.jpg")
+                awaitCancellation()
+            }
+        }
+        linkedWallpaper("/w/b.jpg")
+        advanceUntilIdle()
+
+        assertEquals(sha(bytesA), p.published.first()!!.alarms.getValue("a").wallpaper!!.sha)
+        assertEquals(setOf(sha(bytesA)), storage.server)
+        assertEquals(2, storage.uploads.count { it.sha == sha(bytesA) })
+    }
+
+    @Test
+    fun aFailedDeleteIsRetriedAndASurvivingStateRemembersIt() = runTest {
+        source.put("/w/a.jpg", bytesA)
+        source.put("/w/b.jpg", bytesB)
+        linkedWallpaper("/w/a.jpg")
+        partner.set(link("a"))
+        val p = publisher()
+        p.start()
+        advanceUntilIdle()
+
+        var failDeletes = true
+        storage.afterDelete = { if (failDeletes) throw IOException("lost result") }
+        linkedWallpaper("/w/b.jpg")
+        runCurrent()
+        // The blob is gone server-side but the state says it might be: not "uploaded", still to delete.
+        val persisted = MediaPublishStore(stateFile).load()
+        assertEquals(emptySet<String>() + sha(bytesB), persisted.uploaded.getValue("hid-1"))
+        assertEquals(setOf(sha(bytesA)), persisted.pendingDelete.getValue("hid-1"))
+
+        failDeletes = false
+        advanceTimeBy(61_000)
+        advanceUntilIdle()
+        assertEquals(emptySet<String>(), MediaPublishStore(stateFile).load().pendingDelete.getValue("hid-1"))
+        assertEquals(setOf(sha(bytesB)), storage.server)
+    }
+
+    @Test
+    fun aCancelledUploadsBlobIsDeletedByALaterCleanup() = runTest {
+        source.put("/w/b.jpg", bytesB)
+        source.put("/w/c.jpg", bytesC)
+        linkedWallpaper("/w/b.jpg")
+        partner.set(link("a"))
+        // The upload finishes server-side, then the inputs change and the pass is cancelled.
+        storage.afterUpload = { sha ->
+            if (sha == sha(bytesB)) {
+                storage.afterUpload = null
+                linkedWallpaper("/w/c.jpg")
+                awaitCancellation()
+            }
+        }
+        val p = publisher()
+        p.start()
+        advanceUntilIdle()
+
+        assertEquals(setOf(sha(bytesC)), storage.server)
+        assertEquals(sha(bytesC), p.published.first()!!.alarms.getValue("a").wallpaper!!.sha)
+        assertEquals(emptySet<String>(), MediaPublishStore(stateFile).load().pendingDelete.getValue("hid-1"))
+    }
+
+    @Test
+    fun oldStateFilesWithoutPendingDeleteLoad() {
+        stateFile.writeText("""{"uploaded":{"hid-1":["x"]}}""")
+        val s = MediaPublishStore(stateFile).load()
+        assertEquals(setOf("x"), s.uploaded.getValue("hid-1"))
+        assertTrue(s.pendingDelete.isEmpty())
     }
 }

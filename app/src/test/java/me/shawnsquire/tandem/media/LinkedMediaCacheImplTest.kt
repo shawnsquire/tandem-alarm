@@ -25,11 +25,13 @@ private fun sha256(b: ByteArray) = MessageDigest.getInstance("SHA-256").digest(b
 private class FakeStorage : MediaStorage {
     val blobs = mutableMapOf<String, ByteArray>()
     val failing = mutableSetOf<String>()
+    val notFound = mutableSetOf<String>()
     val downloads = mutableListOf<String>()
     override suspend fun upload(hid: String, ownerUid: String, sha: String, file: File, contentType: String) = Unit
     override suspend fun delete(hid: String, ownerUid: String, sha: String) = Unit
     override suspend fun download(hid: String, ownerUid: String, sha: String, dest: File, maxBytes: Long) {
         downloads += "$hid/$ownerUid/$sha"
+        if (sha in notFound) throw MediaNotFoundException("gone")
         if (sha in failing) throw IOException("boom")
         dest.writeBytes(blobs.getValue(sha))
     }
@@ -257,7 +259,7 @@ class LinkedMediaCacheImplTest {
         val c = LinkedMediaCacheImpl(tmp.root, storage, { enqueued++ }, sys) { r, m -> reports += r to m }
         fullRefs(c)
         assertEquals(listOf(3 to 3), reports)
-        assertTrue(c.downloadMissing("hid"))
+        assertTrue(c.downloadMissing("hid").allPresent)
         assertEquals(listOf(3 to 3, 3 to 0), reports)
     }
 
@@ -267,7 +269,7 @@ class LinkedMediaCacheImplTest {
         storage.failing += sha256(ringBytes)
         val c = LinkedMediaCacheImpl(tmp.root, storage, { enqueued++ }, sys) { r, m -> reports += r to m }
         c.update("owner", mapOf("a" to AlarmMedia(ref(photoBytes), ref(ringBytes)), "b" to AlarmMedia(ref(photoBytes), null)), null)
-        assertFalse(c.downloadMissing("hid"))
+        assertFalse(c.downloadMissing("hid").allPresent)
         assertEquals(listOf(2 to 2, 2 to 1), reports)
     }
 
@@ -283,13 +285,13 @@ class LinkedMediaCacheImplTest {
         storage.blobs[sha256(ringBytes)] = ringBytes
         storage.blobs[sha256(defBytes)] = defBytes
         val c = cache().also(::fullRefs)
-        assertTrue(c.downloadMissing("hid"))
+        assertTrue(c.downloadMissing("hid").allPresent)
         assertEquals(path(photoBytes), c.pathFor(sha256(photoBytes)))
         assertEquals(3, storage.downloads.size)
         assertTrue(storage.downloads.all { it.startsWith("hid/owner/") })
         assertEquals(emptyList<String>(), linked.list()!!.filter { it.endsWith(".tmp") })
         storage.downloads.clear()
-        assertTrue(c.downloadMissing("hid"))
+        assertTrue(c.downloadMissing("hid").allPresent)
         assertTrue(storage.downloads.isEmpty())
     }
 
@@ -297,7 +299,7 @@ class LinkedMediaCacheImplTest {
         storage.blobs[sha256(photoBytes)] = "tampered".toByteArray()
         val c = cache()
         c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), null)), null)
-        assertFalse(c.downloadMissing("hid"))
+        assertFalse(c.downloadMissing("hid").allPresent)
         assertNull(c.pathFor(sha256(photoBytes)))
         assertEquals(emptyList<String>(), linked.list()!!.toList())
     }
@@ -307,7 +309,7 @@ class LinkedMediaCacheImplTest {
         storage.blobs[sha256(defBytes)] = defBytes
         storage.failing += sha256(ringBytes)
         val c = cache().also(::fullRefs)
-        assertFalse(c.downloadMissing("hid"))
+        assertFalse(c.downloadMissing("hid").allPresent)
         assertNotNull(c.pathFor(sha256(photoBytes)))
         assertNotNull(c.pathFor(sha256(defBytes)))
         assertNull(c.pathFor(sha256(ringBytes)))
@@ -328,7 +330,39 @@ class LinkedMediaCacheImplTest {
         }
         c = LinkedMediaCacheImpl(tmp.root, racing, { enqueued++ }, sys)
         c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), null)), null)
-        assertTrue(c.downloadMissing("hid"))
+        assertTrue(c.downloadMissing("hid").allPresent)
         assertNotNull(c.pathFor(sha256(late)))
+    }
+
+    @Test fun aMissingBlobIsAPermanentFailure() = runTest {
+        storage.blobs[sha256(photoBytes)] = photoBytes
+        storage.notFound += sha256(ringBytes)
+        val c = cache()
+        c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), ref(ringBytes))), null)
+        val r = c.downloadMissing("hid")
+        assertFalse(r.allPresent)
+        assertFalse(r.retryable)
+        assertNotNull(c.pathFor(sha256(photoBytes)))
+    }
+
+    @Test fun aHashMismatchIsNotRetryable() = runTest {
+        storage.blobs[sha256(photoBytes)] = "tampered".toByteArray()
+        val c = cache()
+        c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), null)), null)
+        assertFalse(c.downloadMissing("hid").retryable)
+    }
+
+    @Test fun anIoFailureIsRetryableEvenAlongsideAMissingBlob() = runTest {
+        storage.notFound += sha256(photoBytes)
+        storage.failing += sha256(ringBytes)
+        val c = cache()
+        c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), ref(ringBytes))), null)
+        assertTrue(c.downloadMissing("hid").retryable)
+    }
+
+    @Test fun resolveWorksOnAnInjectedDispatcher() = runTest {
+        val c = LinkedMediaCacheImpl(tmp.root, storage, {}, sys, io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), null)), null)
+        assertEquals("Owner label", c.resolve(alarm(), null, null).label)
     }
 }

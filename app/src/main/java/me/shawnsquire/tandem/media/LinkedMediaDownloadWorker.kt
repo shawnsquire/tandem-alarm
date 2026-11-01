@@ -28,7 +28,8 @@ class LinkedMediaDownloadWorker(context: Context, params: WorkerParameters) : Co
                 ?: withTimeoutOrNull(HOUSEHOLD_WAIT) { c.householdFlow.first()?.id.orEmpty() }
                 ?: return Result.retry()
             if (hid.isEmpty()) return Result.success()
-            return if (cache.downloadMissing(hid)) Result.success() else Result.retry()
+            // Not-found and hash-mismatch blobs are not retried here: the next update() enqueues again.
+            return if (cache.downloadMissing(hid).retryable) Result.retry() else Result.success()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Throwable) {
