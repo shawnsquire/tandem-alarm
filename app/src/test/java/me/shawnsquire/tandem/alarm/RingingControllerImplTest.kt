@@ -717,12 +717,41 @@ class RingingControllerImplTest {
         assertEquals(listOf(Triple(MirrorKind.DISMISS, allMembers, null as Instant?)), mirror.calls)
     }
 
-    @Test fun remoteDismissOfMergedRingResolvesEveryMemberAndNeverMirrors() = runTest {
-        val h = mergedH()
+    @Test fun remoteRingIdStopOfAMergedRingResolvesOnlyThePrimaryTheRestSoundOn() = runTest {
+        // a rings as ring-1, the partner taps Stop on it, and b merges before the command lands:
+        // b was never seen by the partner, so it sounds on under the same ringId.
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX)
         val mirror = RecordingMirror()
-        h.controller(mirror).dismiss("ring-1", RingOrigin.REMOTE)
-        h.assertEveryMemberResolved()
+        val c = h.controller(mirror)
+        assertEquals(SlotClaim.Merged, c.claimFire(RingState("b", "ring-B", now, null, occurrenceY)))
+        c.dismiss("ring-1", RingOrigin.REMOTE)
+        assertEquals(RingState("b", "ring-1", ringing.startedAt, null, occurrenceY), h.store.state.first())
+        assertFalse(h.repo.get("a")!!.enabled) // the one-shot the partner stopped is off
+        assertTrue(h.repo.get("b")!!.enabled)
         assertTrue(mirror.calls.isEmpty())
+        assertEquals(RemoteRingEnd("ring-1", RingMember("a", occurrenceX), MirrorKind.DISMISS, null, endsRing = false, seq = 1), h.notices.latest.value)
+    }
+
+    @Test fun aSecondRemoteRingIdStopResolvesThePromotedPrimary() = runTest {
+        // After the promotion validate takes a stop only for the new primary: it resolves that one.
+        val h = mergedH()
+        val c = h.controller()
+        c.dismiss("ring-1", RingOrigin.REMOTE)
+        assertEquals(promoted, h.store.state.first())
+        c.dismiss("ring-1", RingOrigin.REMOTE)
+        assertEquals(RingState("c", "ring-1", ringing.startedAt, null, occurrenceZ), h.store.state.first())
+        assertFalse(h.repo.get("b")!!.link!!.joinerEnabled)
+        c.dismiss("ring-1", RingOrigin.REMOTE) // c alone: the ring ends
+        assertNull(h.store.state.first())
+    }
+
+    @Test fun remoteRingIdStopOfAMergedRingWithALegacyPrimaryStillPromotes() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringing.copy(merged = listOf(RingMember("b", occurrenceY))))
+        h.controller().dismiss("ring-1", RingOrigin.REMOTE)
+        assertEquals(RingState("b", "ring-1", ringing.startedAt, null, occurrenceY), h.store.state.first())
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertTrue(h.repo.get("b")!!.enabled)
+        assertEquals(RemoteRingEnd("ring-1", null, MirrorKind.DISMISS, null, endsRing = false, seq = 1), h.notices.latest.value)
     }
 
     @Test fun localDismissLeavesOutAPrimaryWithoutOccurrence() = runTest {
@@ -1594,12 +1623,22 @@ class RingingControllerImplTest {
     }
 
     @Test fun remoteDismissOfTheSlotRingEmitsAnEndingNoticeBeforeClearingIt() = runTest {
-        val h = mergedH()
+        val h = H(listOf(alarm("a", emptySet())), soundingX)
         val seen = mutableListOf<RemoteRingEnd?>()
         h.controller(store = h.noticeRecordingStore(seen)).dismiss("ring-1", RingOrigin.REMOTE)
         val expected = RemoteRingEnd("ring-1", RingMember("a", occurrenceX), MirrorKind.DISMISS, null, endsRing = true, seq = 1)
         assertEquals(expected, h.notices.latest.value)
         assertEquals(listOf<RemoteRingEnd?>(expected), seen)
+    }
+
+    @Test fun remoteDismissOfAMergedSlotRingEmitsAPromotionNoticeBeforeTheWrite() = runTest {
+        val h = mergedH()
+        val seen = mutableListOf<RemoteRingEnd?>()
+        h.controller(store = h.noticeRecordingStore(seen)).dismiss("ring-1", RingOrigin.REMOTE)
+        val expected = RemoteRingEnd("ring-1", RingMember("a", occurrenceX), MirrorKind.DISMISS, null, endsRing = false, seq = 1)
+        assertEquals(expected, h.notices.latest.value)
+        assertEquals(listOf<RemoteRingEnd?>(expected), seen)
+        assertEquals(promoted, h.store.state.first())
     }
 
     @Test fun remoteDismissOfAnotherRingEmitsNothing() = runTest {

@@ -61,15 +61,27 @@ class RingingControllerImpl(
         )
     }
 
-    /** Resolves the primary and every merged member; see [RingingController.dismiss]. */
+    /**
+     * Resolves the primary and every merged member; see [RingingController.dismiss]. Except a REMOTE
+     * stop of a sounding merged ring: the partner stopped what it saw, and a member that merged
+     * before the command landed was never part of that. Only the primary (the alarm `validate`
+     * matched the command to) resolves, as a REMOTE stop of its occurrence does: the next member is
+     * promoted under the same ringId, so a stale repeat of the stop no longer validates.
+     */
     override suspend fun dismiss(ringId: String, origin: RingOrigin) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         val local = origin == RingOrigin.LOCAL
-        if (state != null && state.ringId == ringId) {
-            val notice = if (!local) RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = true) else null
-            dismissCurrentLocked(state, local, notice)
-        } else {
-            dismissNotInSlotLocked(ringId, local)
+        when {
+            state == null || state.ringId != ringId -> dismissNotInSlotLocked(ringId, local)
+            !local && state.snoozedUntil == null && state.merged.isNotEmpty() -> {
+                // A legacy primary (no occurrence) promotes too; its notice just names no member.
+                val notice = RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = false)
+                dismissMemberLocked(state.alarmId, state.promoteFirstMember(), mirroredAs = null, notice)
+            }
+            else -> {
+                val notice = if (!local) RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = true) else null
+                dismissCurrentLocked(state, local, notice)
+            }
         }
     } }
 
@@ -118,8 +130,8 @@ class RingingControllerImpl(
             // Snoozed or solo, the slot ring is X alone: its members() is just X.
             state != null && state.isPrimary(x) && (state.snoozedUntil != null || state.merged.isEmpty()) ->
                 dismissCurrentLocked(state, local, remote(endsRing = true))
-            state != null && state.isPrimary(x) -> dismissMemberLocked(x, state.promoteFirstMember(), local, remote(endsRing = false))
-            state != null && x in state.merged -> dismissMemberLocked(x, state.copy(merged = state.merged - x), local, remote(endsRing = false))
+            state != null && state.isPrimary(x) -> dismissMemberLocked(alarmId, state.promoteFirstMember(), x.takeIf { local }, remote(endsRing = false))
+            state != null && x in state.merged -> dismissMemberLocked(alarmId, state.copy(merged = state.merged - x), x.takeIf { local }, remote(endsRing = false))
             else -> {
                 val parked = parkedEntryLocked(x, state)
                 when {
@@ -449,16 +461,16 @@ class RingingControllerImpl(
     }
 
     /**
-     * Ends only [member] of the sounding ring and writes [rest], the ring left sounding. Like
-     * [dismissCurrentLocked], once [rest] is written every step runs and [mirrored] still reports
-     * [member]; [notice] goes out with the write.
+     * Ends only [alarmId]'s member of the sounding ring and writes [rest], the ring left sounding.
+     * Like [dismissCurrentLocked], once [rest] is written every step runs and [mirroredAs] (a LOCAL
+     * stop's member, null for REMOTE) is still reported; [notice] goes out with the write.
      */
-    private suspend fun dismissMemberLocked(member: RingMember, rest: RingState, mirrored: Boolean, notice: RemoteRingEnd?) {
+    private suspend fun dismissMemberLocked(alarmId: String, rest: RingState, mirroredAs: RingMember?, notice: RemoteRingEnd?) {
         writeNoticed(notice) { ringStateStore.set(rest) }
         val steps = Steps()
-        steps.run { disableIfOneShot(member.alarmId) }
+        steps.run { disableIfOneShot(alarmId) }
         steps.run { alarmScheduler.rescheduleAll() }
-        if (mirrored) mirrorLocal(MirrorKind.DISMISS, listOf(member), null)
+        mirroredAs?.let { mirrorLocal(MirrorKind.DISMISS, listOf(it), null) }
         steps.rethrow()
     }
 
