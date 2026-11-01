@@ -134,6 +134,70 @@ class NotificationActionsTest {
     }
 
     @Test
+    fun notifyRingingIsAHeadsUpAlarmWithActionsAndNoFullScreenIntent() {
+        val reported = mutableListOf<Triple<String, Int, Notification>>()
+        AndroidRingingNotifier(context) { r, id, n -> reported += Triple(r, id, n) }.showNotifyRinging(null, "r1")
+
+        val id = AndroidRingingNotifier.notifyNotificationId("r1")
+        val posted = shadowOf(manager).getNotification(id)
+        assertEquals(AndroidRingingNotifier.NOTIFY_CHANNEL, posted.channelId)
+        assertEquals(Notification.CATEGORY_ALARM, posted.category)
+        assertNull(posted.fullScreenIntent)
+        assertNotNull(posted.contentIntent)
+        assertEquals(listOf("Stop", "Snooze"), posted.actions.map { it.title.toString() })
+        assertEquals(listOf("r1" to id), reported.map { it.first to it.second }) // promoted like a ring
+        assertTrue(id != AndroidRingingNotifier.ringingNotificationId("r1"))
+
+        val channel = manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
+        assertEquals(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI, channel.sound)
+        assertEquals(android.media.AudioAttributes.USAGE_ALARM, channel.audioAttributes.usage)
+    }
+
+    @Test
+    fun showRingingAfterNotifyPostsAFreshFullScreenNotificationThenRemovesTheNotifyOne() {
+        val events = mutableListOf<String>()
+        val notifyId = AndroidRingingNotifier.notifyNotificationId("r1")
+        val ringingId = AndroidRingingNotifier.ringingNotificationId("r1")
+        val notifier = AndroidRingingNotifier(context) { _, id, _ ->
+            // The service promotes here; the Notify one must still be posted (it is still the foreground one).
+            events += "foreground:$id:notifyPosted=${shadowOf(manager).getNotification(notifyId) != null}"
+        }
+        notifier.showNotifyRinging(null, "r1")
+        notifier.showRinging(null, "r1")
+
+        assertEquals(listOf("foreground:$notifyId:notifyPosted=true", "foreground:$ringingId:notifyPosted=true"), events)
+        assertNull(shadowOf(manager).getNotification(notifyId))
+        assertNotNull(shadowOf(manager).getNotification(ringingId).fullScreenIntent)
+    }
+
+    @Test
+    fun cancelRingingRemovesTheNotifyNotification() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showNotifyRinging(null, "r1")
+        notifier.cancelRinging("r1")
+        assertNull(shadowOf(manager).getNotification(AndroidRingingNotifier.notifyNotificationId("r1")))
+    }
+
+    @Test
+    fun serviceForegroundFollowsANotifyRingUpgradedToTheFullSurface() {
+        val controller = Robolectric.buildService(RingingService::class.java, fireIntent()).create()
+        controller.startCommand(0, 1)
+        val service = controller.get()
+        val notifier = AndroidRingingNotifier(context, service::onRingingPosted)
+        notifier.showNotifyRinging(null, "ring-A")
+        assertEquals(AndroidRingingNotifier.notifyNotificationId("ring-A"), shadowOf(service).lastForegroundNotificationId)
+
+        notifier.showRinging(null, "ring-A")
+        val ringingId = AndroidRingingNotifier.ringingNotificationId("ring-A")
+        assertEquals(ringingId, shadowOf(service).lastForegroundNotificationId)
+        assertNull(shadowOf(manager).getNotification(AndroidRingingNotifier.notifyNotificationId("ring-A")))
+
+        controller.startCommand(0, 2) // re-entry keeps the upgraded notification as the foreground one
+        assertEquals(ringingId, shadowOf(service).lastForegroundNotificationId)
+    }
+
+    @Test
     fun fallbackRingingHasFullScreenButNoActions() {
         AndroidRingingNotifier(context).showFallbackRinging("fallback-1")
         val posted = shadowOf(manager).getNotification(AndroidRingingNotifier.ringingNotificationId("fallback-1"))

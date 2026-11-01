@@ -150,7 +150,11 @@ class RingingSessionTest {
         var clock: Instant = now
         val ledger = InMemorySnoozeLedger()
         val armer = RecordingArmer()
-        val controller = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, firedLedger = fired) { clock }
+        val mirrored = mutableListOf<Pair<MirrorKind, List<RingMember>>>()
+        private val mirror = object : RingMirrorPort {
+            override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) { mirrored += kind to members }
+        }
+        val controller = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror, firedLedger = fired) { clock }
         private val dispatcher = ioDispatcher ?: StandardTestDispatcher(scope.testScheduler)
         val session = RingingSession(
             repo, store, settings, preFire, scheduler, controller, controller, sound, vibration, notifier,
@@ -1459,5 +1463,199 @@ class RingingSessionTest {
         slotSession(h, slot).start("a", occurrence, false, null)
         assertQuiet(h)
         assertEquals(snoozeEnd, h.ledger.all().single().until)
+    }
+
+    // ---- Notify mode ----
+
+    private fun linkedAs(mode: LinkMode, id: String = "a") = alarm(id).copy(
+        link = AlarmLink("owner", "owner-$id", mode, null, true, null, null, null, null),
+    )
+
+    /** A second session on [h]'s stores, with its own adapters, as the service builds one per start. */
+    private class Joiner(val sound: RecordingSound, val vibration: RecordingVibration) { var finished = 0 }
+
+    private fun TestScope.join(h: Harness, alarmId: String, occ: Instant): Joiner {
+        val j = Joiner(RecordingSound { currentTime }, RecordingVibration())
+        RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
+            h.scheduler, h.controller, h.controller, j.sound, j.vibration, h.notifier,
+            backgroundScope, StandardTestDispatcher(testScheduler), { h.clock },
+            { "ring-2" }, firedLedger = h.fired, onFinished = { j.finished++ },
+        ).start(alarmId, occ, false, null)
+        return j
+    }
+
+    @Test fun notifyLinkedFirePostsTheNotifyNotificationWithoutSoundOrVibration() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.notify)
+        assertTrue(h.notifier.ringing.isEmpty())
+        assertTrue(h.notifier.fallback.isEmpty())
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, h.vibration.starts)
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
+        assertEquals(0, h.finished)
+
+        // Same auto-silence as a ring: a LOCAL dismiss at ten minutes, which mirrors.
+        advanceTimeBy(10.minutes - 1.seconds); runCurrent()
+        assertNotNull(h.rawStore.state.first())
+        advanceTimeBy(2.seconds); runCurrent()
+        assertNull(h.rawStore.state.first())
+        assertEquals(listOf(MirrorKind.DISMISS to listOf(RingMember("a", occurrence))), h.mirrored)
+        assertEquals(1, h.finished)
+        assertTrue(h.sound.starts.isEmpty())
+    }
+
+    @Test fun ringLinkedFireRingsInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.RING)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertTrue(h.notifier.notify.isEmpty())
+    }
+
+    @Test fun ownFireRingsInFull() = runTest {
+        val h = harness()
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertTrue(h.notifier.notify.isEmpty())
+    }
+
+    @Test fun notifyRingSnoozedThenResumedAtTPostsTheNotifyNotificationAgain() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        h.controller.snooze(RingOrigin.LOCAL, snoozeEnd)
+        runCurrent()
+        assertEquals(1, h.finished) // the session (so its notification) ends
+        val entry = h.ledger.all().single()
+        assertEquals("ring-1", entry.ringId)
+        assertEquals(listOf(MirrorKind.SNOOZE to listOf(RingMember("a", occurrence))), h.mirrored)
+
+        h.clock = snoozeEnd
+        slotSession(h, h.controller).start("a", snoozeEnd, true, entry.ringId)
+        runCurrent()
+        assertEquals(listOf("ring-1", "ring-1"), h.notifier.notify)
+        assertTrue(h.notifier.ringing.isEmpty())
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, h.vibration.starts)
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
+    }
+
+    @Test fun ringFireMergingIntoANotifyRingUpgradesItToTheFullSurface() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), alarm("b", ringtone = "content://tone/b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+
+        val b = join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(RingMember("b", bOccurrence)), h.rawStore.state.first()!!.merged)
+        // The sounding session switches surface: the primary's tone, vibration, full notification.
+        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.notify)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertEquals(0, h.finished)
+        // The merging session plays nothing (its pre-claim vibration share ends with it).
+        assertTrue(b.sound.starts.isEmpty())
+        assertEquals(1, b.finished)
+
+        advanceTimeBy(10.minutes); runCurrent()
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun unreadableMemberMergingIntoANotifyRingCountsAsRing() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("gone", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+    }
+
+    @Test fun notifyFireMergingIntoANotifyRingKeepsItNotify() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        val b = join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(RingMember("b", bOccurrence)), h.rawStore.state.first()!!.merged)
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, h.vibration.starts)
+        assertTrue(h.notifier.ringing.isEmpty())
+        assertEquals(0, b.vibration.starts)
+        assertEquals(1, b.finished)
+    }
+
+    @Test fun notifyFireMergingIntoARingRingChangesNothing() = runTest {
+        val h = harness(alarms = listOf(alarm("a"), linkedAs(LinkMode.NOTIFY, "b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        val b = join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(RingMember("b", bOccurrence)), h.rawStore.state.first()!!.merged)
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertTrue(h.notifier.notify.isEmpty())
+        assertEquals(0, h.sound.stops)
+        // No early vibration for a Notify fire, and nothing played.
+        assertTrue(b.sound.starts.isEmpty())
+        assertEquals(0, b.vibration.starts)
+        assertEquals(1, b.finished)
+    }
+
+    @Test fun notifyAlarmReadFailureRingsInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        val failingRepo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
+            override suspend fun get(id: String): Alarm? = throw IllegalStateException("db")
+        }
+        RingingSession(
+            failingRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = {},
+        ).start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertTrue(h.notifier.notify.isEmpty())
+    }
+
+    @Test fun notifyNotifierFailureRingsInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        val throwing = object : RingingNotifier by h.notifier {
+            override fun showNotifyRinging(alarm: Alarm?, ringId: String) = throw IllegalStateException("notification")
+        }
+        RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.controller, h.sound, h.vibration, throwing, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-1" }, onFinished = {},
+        ).start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+    }
+
+    @Test fun notifyClaimTimeoutRingsInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        slotSession(h, GatedSlot(h.controller)).start("a", occurrence, false, null) // gate never opens
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.fallback)
+        assertTrue(h.notifier.notify.isEmpty())
     }
 }

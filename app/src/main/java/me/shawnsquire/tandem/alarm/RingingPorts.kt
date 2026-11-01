@@ -114,6 +114,12 @@ interface RingingNotifier {
      */
     fun showFallbackRinging(ringId: String) {}
 
+    /**
+     * Foreground notification for a Notify-mode ring: heads-up with Stop and Snooze, no full-screen
+     * intent. A later [showRinging] for the same [ringId] replaces it with the full ringing notification.
+     */
+    fun showNotifyRinging(alarm: Alarm?, ringId: String) {}
+
     /** Removes [ringId]'s ringing notification (a stale ring cleared without a session to do it). */
     fun cancelRinging(ringId: String) {}
 

@@ -37,6 +37,8 @@ class RecordingNotifier : RingingNotifier {
     override fun showRinging(alarm: Alarm?, ringId: String) { ringing += ringId }
     val fallback = mutableListOf<String>()
     override fun showFallbackRinging(ringId: String) { fallback += ringId }
+    val notify = mutableListOf<String>()
+    override fun showNotifyRinging(alarm: Alarm?, ringId: String) { notify += ringId }
     val cancelledRinging = mutableListOf<String>()
     override fun cancelRinging(ringId: String) { cancelledRinging += ringId }
     override fun showSnoozed(ringId: String, until: Instant) { snoozed += ringId to until }

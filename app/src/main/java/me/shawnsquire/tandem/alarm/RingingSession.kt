@@ -17,6 +17,7 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
@@ -290,9 +291,10 @@ class RingingSession(
             return
         }
 
-        // The ring is decided. Vibrate now: nothing below (lock, disk, audio) may delay it.
+        // The ring is decided. Vibrate now: nothing below (lock, disk, audio) may delay it. A Notify
+        // link read successfully doesn't vibrate; ring() still starts it if the ring turns out full.
         currentCoroutineContext().ensureActive()
-        startVibration("vibration")
+        if (!isNotifyLink(alarm)) startVibration("vibration")
 
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
         register(ringId)
@@ -366,22 +368,32 @@ class RingingSession(
         }
     }
 
-    /** [fire] is set on the fire path: the occurrence is marked as rung only once sound has started. */
+    /**
+     * [fire] is set on the fire path: the occurrence is marked as rung only once the ring has begun.
+     *
+     * Two surfaces for the same session. Ring: full-screen notification, looping sound and
+     * vibration. Notify (a claimed ring whose only member is a Notify link): a heads-up notification
+     * whose channel alerts once, no looping sound or vibration. A ring without a claim is always
+     * full (I1), and so is a Notify ring whose notification couldn't be posted.
+     */
     private suspend fun ring(alarm: Alarm?, ringId: String, observe: Boolean, fire: Pair<String, Instant>? = null) {
-        val default = guarded("settings read", null as String?) { settingsRepository.defaultRingtoneUri.first() }
+        val notify = observe && isNotifyLink(alarm)
+        val default = if (notify) null else readDefaultRingtone()
         currentCoroutineContext().ensureActive() // never start sound after the session was cancelled
         ringStarted = true
-        // Vibration first: sound setup must never delay or prevent it.
-        startVibration("vibration")
-        guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
+        if (!notify) startRingOutputs(alarm, default)
         // Marked after the ring has begun, so a process death before this point still gets a boot replay.
         if (fire != null) markRang(fire.first, fire.second)
         // Without a stored RingState, Stop and Snooze would be silently ignored: post no actions.
         val claimed = observe || lateClaimed
-        if (claimed) {
-            guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
-        } else {
-            guarded("notifier", Unit) { notifier.showFallbackRinging(ringId) }
+        when {
+            notify -> {
+                val shown = guarded("notifier", false) { notifier.showNotifyRinging(alarm, ringId); true }
+                // I1: a Notify ring nobody can see must still be heard.
+                if (shown) watchMembers(alarm, ringId) else ringInFull(alarm, ringId)
+            }
+            claimed -> guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
+            else -> guarded("notifier", Unit) { notifier.showFallbackRinging(ringId) }
         }
         ringPosted = true
         // Before the reschedule: a slow scheduler must never leave a started ring without its end.
@@ -389,6 +401,57 @@ class RingingSession(
         if (claimed || lateClaimed) observe(ringId)
         // NonCancellable: the ring may end (and cancel this job) while the reschedule is mid-write.
         guarded("reschedule", Unit) { withContext(NonCancellable) { alarmScheduler.rescheduleAll() } }
+    }
+
+    private suspend fun readDefaultRingtone(): String? =
+        guarded("settings read", null as String?) { settingsRepository.defaultRingtoneUri.first() }
+
+    /** The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it. */
+    private suspend fun startRingOutputs(alarm: Alarm?, default: String?) {
+        startVibration("vibration")
+        guarded("sound", Unit) { sound.start(listOfNotNull(alarm?.ringtoneUri, default)) }
+    }
+
+    /**
+     * Switches a sounding Notify ring to the full surface: sound, vibration and the full ringing
+     * notification, whose fresh post launches the full-screen intent and replaces the Notify one.
+     */
+    private suspend fun ringInFull(primary: Alarm?, ringId: String) {
+        val default = readDefaultRingtone()
+        if (finished || silencing) return
+        currentCoroutineContext().ensureActive()
+        startRingOutputs(primary, default)
+        guarded("notifier", Unit) { notifier.showRinging(primary, ringId) }
+    }
+
+    /**
+     * A Notify ring stays Notify only while every member is a Notify link. Reads each member that
+     * joins [ringId] (its `merged`, or a promoted primary) once; the first that is not a Notify
+     * link, or can't be read (I1), switches the ring to the full surface for good. Its own job, not
+     * part of [observe]: auto-silence cancels that one before its dismiss.
+     */
+    private fun watchMembers(primary: Alarm?, ringId: String) {
+        jobs += scope.launch {
+            val members = mutableMapOf<String, Alarm?>()
+            primary?.let { members[it.id] = it }
+            var full: RingState? = null
+            try {
+                ringStateStore.state.first { s ->
+                    if (s == null || s.ringId != ringId || s.snoozedUntil != null) return@first true // observe() ends it
+                    for (id in listOf(s.alarmId) + s.merged.map { it.alarmId }) {
+                        if (id in members) continue
+                        val member = guarded("member alarm read", null as Alarm?) { alarmRepository.get(id) }
+                        members[id] = member
+                        if (!isNotifyLink(member)) full = s
+                    }
+                    full != null
+                }
+            } catch (e: Throwable) {
+                currentCoroutineContext().ensureActive()
+                log("ring member observation failed", e)
+            }
+            full?.let { ringInFull(members[it.alarmId], ringId) }
+        }
     }
 
     private var observing = false
@@ -422,6 +485,8 @@ class RingingSession(
         registeredRingId?.let { id -> guardedNow("live ring unregister") { liveRings.unregister(id) } }
         onFinished()
     }
+
+    private fun isNotifyLink(alarm: Alarm?) = alarm?.link?.mode == LinkMode.NOTIFY
 
     private companion object {
         val CLAIM_TIMEOUT = 2.seconds
