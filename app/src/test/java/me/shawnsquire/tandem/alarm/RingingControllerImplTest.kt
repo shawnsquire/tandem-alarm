@@ -1180,15 +1180,45 @@ class RingingControllerImplTest {
     }
 
     @Test fun autoSilenceLeavesARingSnoozedMeanwhileSnoozed() = runTest {
-        val h = snoozedA()
+        val snoozed = ringA.copy(snoozedUntil = tenOhFive) // still pending at 10:00
+        val h = H(listOf(alarm("a", emptySet())), snoozed).also { it.ledger.put("ring-A", "a", tenOhFive) }
         assertTrue(h.controller().autoSilence("ring-A", emptyList()))
-        assertEquals(ringA, h.store.state.first())
+        assertEquals(snoozed, h.store.state.first())
         assertNotNull(h.ledger.get("ring-A"))
         assertTrue(h.armer.cancelled.isEmpty())
         assertTrue(h.repo.get("a")!!.enabled)
     }
 
+    @Test fun autoSilenceDismissesARingWhoseSnoozeAlreadyFired() = runTest {
+        // The snooze fired at 7:10 but its claim couldn't write: the fallback ring under ring-A
+        // still finds its snoozed slot. Nothing is pending, so this is an ordinary auto-silence.
+        val occ = Instant.parse("2026-03-02T07:00:00Z")
+        val h = H(listOf(alarm("a", emptySet())), ringA.copy(occurrenceAt = occ)).also { it.ledger.put("ring-A", "a", sevenTen, occ) }
+        val mirror = RecordingMirror()
+        assertTrue(h.controller(mirror).autoSilence("ring-A", emptyList()))
+        assertNull(h.store.state.first())
+        assertNull(h.ledger.get("ring-A"))
+        assertEquals(listOf("ring-A"), h.armer.cancelled)
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, listOf(RingMember("a", occ)), null as Instant?)), mirror.calls)
+    }
+
+    @Test fun autoSilenceLeavesASnoozeParkedMeanwhileAlone() = runTest {
+        // Snoozed while auto-silence waited, then parked behind a newer ring: the snooze stands.
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX.copy(alarmId = "b", ringId = "ring-B"))
+        h.ledger.put("ring-P", "a", tenOhFive, occurrenceX)
+        val mirror = RecordingMirror()
+        assertTrue(h.controller(mirror).autoSilence("ring-P", emptyList()))
+        assertNotNull(h.ledger.get("ring-P"))
+        assertTrue(h.armer.cancelled.isEmpty())
+        assertTrue(h.notifier.cancelledSnoozed.isEmpty())
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertEquals("ring-B", h.store.state.first()!!.ringId)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
     @Test fun autoSilenceOfARingNotInTheSlotDropsItsParkedSnoozeAsADismissWould() = runTest {
+        // A parked snooze whose time (7:10) has passed: nothing of it is pending any more.
         val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX.copy(alarmId = "b", ringId = "ring-B"))
         h.ledger.put("ring-P", "a", sevenTen, occurrenceX)
         val mirror = RecordingMirror()
@@ -1575,6 +1605,49 @@ class RingingControllerImplTest {
         val expected = RemoteRingEnd("ring-1", RingMember("a", occurrenceX), MirrorKind.SNOOZE, tenOhFive, endsRing = true, seq = 1)
         assertEquals(expected, h.notices.latest.value)
         assertEquals(listOf<RemoteRingEnd?>(expected), seen)
+    }
+
+    /** [h]'s store, but every write throws. */
+    private fun H.failingWrites() = object : RingStateStore by store {
+        override suspend fun set(state: RingState?) = throw IllegalStateException("disk")
+    }
+
+    @Test fun remoteDismissWhoseWriteFailsTakesItsNoticeBack() = runTest {
+        // Left up, a later LOCAL Stop (or auto-silence) clearing the ring would read as the partner's.
+        val h = mergedH()
+        assertTrue(runCatching { h.controller(store = h.failingWrites()).dismiss("ring-1", RingOrigin.REMOTE) }.isFailure)
+        assertEquals(mergedRing, h.store.state.first())
+        assertNull(h.notices.latest.value)
+    }
+
+    @Test fun remoteOccurrenceDismissWhoseWriteFailsTakesItsNoticeBack() = runTest {
+        val solo = H(listOf(alarm("a", emptySet())), soundingX)
+        assertTrue(runCatching { solo.controller(store = solo.failingWrites()).dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE) }.isFailure)
+        assertNull(solo.notices.latest.value)
+        val merged = mergedH()
+        assertTrue(runCatching { merged.controller(store = merged.failingWrites()).dismissOccurrence("b", occurrenceY, RingOrigin.REMOTE) }.isFailure)
+        assertNull(merged.notices.latest.value)
+    }
+
+    @Test fun remoteDismissWhoseLaterStepFailsKeepsItsNotice() = runTest {
+        // The ring did end: the notice explains it even though a step after the write threw.
+        val h = H(listOf(alarm("a", emptySet())), soundingX)
+        val failingScheduler = object : AlarmScheduler { override suspend fun rescheduleAll() = throw IllegalStateException("alarm manager") }
+        val c = RingingControllerImpl(h.repo, h.store, h.settings, failingScheduler, h.armer, h.notifier, h.ledger, remoteNotices = h.notices) { now }
+        assertTrue(runCatching { c.dismiss("ring-1", RingOrigin.REMOTE) }.isFailure)
+        assertNull(h.store.state.first())
+        assertEquals(RemoteRingEnd("ring-1", RingMember("a", occurrenceX), MirrorKind.DISMISS, null, endsRing = true, seq = 1), h.notices.latest.value)
+    }
+
+    @Test fun aNoticeAfterAWithdrawnOneIsStillNewer() = runTest {
+        val notices = RemoteRingNotices()
+        val first = notices.emit(RemoteRingEnd("r", null, MirrorKind.DISMISS, null, endsRing = true))
+        notices.withdraw(first)
+        assertNull(notices.latest.value)
+        val second = notices.emit(RemoteRingEnd("r", null, MirrorKind.DISMISS, null, endsRing = true))
+        assertTrue(second.seq > first.seq) // a screen that handled the first still shows this one
+        notices.withdraw(first) // only the notice it names
+        assertEquals(second, notices.latest.value)
     }
 
     @Test fun remoteNoticeForALegacyPrimaryHasNoMember() = runTest {

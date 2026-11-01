@@ -66,8 +66,8 @@ class RingingControllerImpl(
         val state = ringStateStore.state.first()
         val local = origin == RingOrigin.LOCAL
         if (state != null && state.ringId == ringId) {
-            if (!local) notifyRemote(state, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = true)
-            dismissCurrentLocked(state, local)
+            val notice = if (!local) RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = true) else null
+            dismissCurrentLocked(state, local, notice)
         } else {
             dismissNotInSlotLocked(ringId, local)
         }
@@ -77,9 +77,15 @@ class RingingControllerImpl(
     override suspend fun autoSilence(ringId: String, expected: List<RingMember>): Boolean = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         when {
-            state == null || state.ringId != ringId -> dismissNotInSlotLocked(ringId, local = true)
-            state.snoozedUntil != null -> Unit // snoozed while auto-silence waited: the snooze stands
-            !expected.containsAll(state.members()) -> return@withLock false
+            state == null || state.ringId != ringId -> {
+                // Snoozed, then parked behind a newer ring while auto-silence waited: the snooze stands.
+                val parked = ledger.get(ringId)
+                if (parked == null || !parked.until.isAfter(now())) dismissNotInSlotLocked(ringId, local = true)
+            }
+            // Snoozed while auto-silence waited: the snooze stands. One already due is no snooze any
+            // more (it fired, and its claim couldn't write): the ring ends like any other.
+            state.snoozedUntil != null && state.snoozedUntil.isAfter(now()) -> Unit
+            state.snoozedUntil == null && !expected.containsAll(state.members()) -> return@withLock false
             else -> dismissCurrentLocked(state, mirrored = true)
         }
         true
@@ -107,21 +113,13 @@ class RingingControllerImpl(
         val x = RingMember(alarmId, occurrenceAt)
         val local = origin == RingOrigin.LOCAL
         val state = ringStateStore.state.first()
-        fun remote(endsRing: Boolean) { if (!local && state != null) notifyRemote(state, x, MirrorKind.DISMISS, null, endsRing) }
+        fun remote(endsRing: Boolean) = if (!local && state != null) RemoteRingEnd(state.ringId, x, MirrorKind.DISMISS, null, endsRing) else null
         when {
             // Snoozed or solo, the slot ring is X alone: its members() is just X.
-            state != null && state.isPrimary(x) && (state.snoozedUntil != null || state.merged.isEmpty()) -> {
-                remote(endsRing = true)
-                dismissCurrentLocked(state, local)
-            }
-            state != null && state.isPrimary(x) -> {
-                remote(endsRing = false)
-                dismissMemberLocked(x, state.promoteFirstMember(), local)
-            }
-            state != null && x in state.merged -> {
-                remote(endsRing = false)
-                dismissMemberLocked(x, state.copy(merged = state.merged - x), local)
-            }
+            state != null && state.isPrimary(x) && (state.snoozedUntil != null || state.merged.isEmpty()) ->
+                dismissCurrentLocked(state, local, remote(endsRing = true))
+            state != null && state.isPrimary(x) -> dismissMemberLocked(x, state.promoteFirstMember(), local, remote(endsRing = false))
+            state != null && x in state.merged -> dismissMemberLocked(x, state.copy(merged = state.merged - x), local, remote(endsRing = false))
             else -> {
                 val parked = parkedEntryLocked(x, state)
                 when {
@@ -433,10 +431,11 @@ class RingingControllerImpl(
     /**
      * Ends [state], the ring in the slot: clear it, drop any snooze, disable every one-shot member,
      * reschedule. When [mirrored], reports every member to [mirror] once the state is cleared, even
-     * if a later step failed: the ring has stopped either way.
+     * if a later step failed: the ring has stopped either way. [notice] (a REMOTE dismiss) goes out
+     * with the clear ([writeNoticed]).
      */
-    private suspend fun dismissCurrentLocked(state: RingState, mirrored: Boolean) {
-        ringStateStore.set(null)
+    private suspend fun dismissCurrentLocked(state: RingState, mirrored: Boolean, notice: RemoteRingEnd? = null) {
+        writeNoticed(notice) { ringStateStore.set(null) }
         // Once state is cleared every remaining step must still run; surface the first failure last.
         val steps = Steps()
         // Ledger before the PendingIntent and the reschedule: the scheduler arms from the ledger.
@@ -453,10 +452,11 @@ class RingingControllerImpl(
 
     /**
      * Ends only [member] of the sounding ring and writes [rest], the ring left sounding. Like
-     * [dismissCurrentLocked], once [rest] is written every step runs and [mirrored] still reports [member].
+     * [dismissCurrentLocked], once [rest] is written every step runs and [mirrored] still reports
+     * [member]; [notice] goes out with the write.
      */
-    private suspend fun dismissMemberLocked(member: RingMember, rest: RingState, mirrored: Boolean) {
-        ringStateStore.set(rest)
+    private suspend fun dismissMemberLocked(member: RingMember, rest: RingState, mirrored: Boolean, notice: RemoteRingEnd?) {
+        writeNoticed(notice) { ringStateStore.set(rest) }
         val steps = Steps()
         steps.run { disableIfOneShot(member.alarmId) }
         steps.run { alarmScheduler.rescheduleAll() }
@@ -509,11 +509,32 @@ class RingingControllerImpl(
     private fun RingState.primaryMember(): RingMember? = occurrenceAt?.let { RingMember(alarmId, it) }
 
     /** Tells the ringing screen a REMOTE resolution touched [state]; call just before its state write. */
-    private fun notifyRemote(state: RingState, member: RingMember?, kind: MirrorKind, snoozedUntil: Instant?, endsRing: Boolean) =
+    private fun notifyRemote(state: RingState, member: RingMember?, kind: MirrorKind, snoozedUntil: Instant?, endsRing: Boolean) {
         emitRemote(RemoteRingEnd(state.ringId, member, kind, snoozedUntil, endsRing))
+    }
 
-    /** Never throws: a resolution must not fail over the screen's notice. */
-    private fun emitRemote(notice: RemoteRingEnd) = bestEffort("remote notice") { remoteNotices.emit(notice) }
+    /** Never throws: a resolution must not fail over the screen's notice. Null if it couldn't be emitted. */
+    private fun emitRemote(notice: RemoteRingEnd): RemoteRingEnd? = try {
+        remoteNotices.emit(notice)
+    } catch (e: Throwable) {
+        log("remote notice failed", e)
+        null
+    }
+
+    /**
+     * Emits [notice] just before [write] and takes it back when the write throws: the ring didn't
+     * change, so a later LOCAL clear must not read as the partner's dismiss. The screen checks a
+     * snooze or split notice against the state it sees, but a whole-ring dismiss only by its null.
+     */
+    private suspend fun writeNoticed(notice: RemoteRingEnd?, write: suspend () -> Unit) {
+        val emitted = notice?.let(::emitRemote)
+        try {
+            write()
+        } catch (e: Throwable) {
+            emitted?.let { bestEffort("withdraw remote notice") { remoteNotices.withdraw(it) } }
+            throw e
+        }
+    }
 
     private fun RingState.isPrimary(member: RingMember): Boolean =
         alarmId == member.alarmId && occurrenceAt == member.occurrenceAt
