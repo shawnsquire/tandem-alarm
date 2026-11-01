@@ -20,12 +20,25 @@ internal fun ownerSideOn(alarm: Alarm): Boolean {
 }
 
 /**
- * Turning off is always possible just for me, and for both only with an occurrence to pin (the row's own
- * next one). Turning on just for me needs the owner's side on; for both it is an unpinned ENABLE.
+ * The next occurrence as the owner sees the shared alarm: the copied hour, minute, days and enabled plus the
+ * owner's own shared skip, which is what the owner's validate checks a "both" DISABLE or SKIP_NEXT against.
+ * The joiner's own skips, a pending "both" command and the joiner's own off switch do not move it.
+ */
+internal fun sharedNextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? =
+    nextOccurrence(
+        alarm.copy(
+            skippedOccurrenceAt = null, soloSkippedOccurrenceAt = null,
+            link = alarm.link?.copy(joinerEnabled = true, pendingBoth = null),
+        ),
+        now, zone,
+    )
+
+/**
+ * Turning off is always possible just for me, and for both only with an occurrence to pin (the shared one). Turning on just for me needs the owner's side on; for both it is an unpinned ENABLE.
  */
 internal fun linkedSwitchOptions(alarm: Alarm, now: Instant, zone: ZoneId): LinkedSwitchOptions =
     if (isArmed(alarm)) {
-        LinkedSwitchOptions(justMe = true, both = nextOccurrence(alarm, now, zone) != null)
+        LinkedSwitchOptions(justMe = true, both = sharedNextOccurrence(alarm, now, zone) != null)
     } else {
         LinkedSwitchOptions(justMe = ownerSideOn(alarm), both = true)
     }
@@ -33,9 +46,9 @@ internal fun linkedSwitchOptions(alarm: Alarm, now: Instant, zone: ZoneId): Link
 /**
  * The joiner's skip and on/off rules for a joined row, shared by the Alarms list and the Linked alarm
  * sheet. A joined row's `enabled` is the owner's, so nothing here writes it. "Both of us" is pinned to
- * the row's own [nextOccurrence], computed from the copied hour, minute and days. The owner's published next
- * occurrence skips past a solo skip, which would pin the shared command to the wrong day. A stale local copy is
- * simply rejected by the owner (I3).
+ * [sharedNextOccurrence], computed from the copied hour, minute and days. The owner's published next
+ * occurrence skips past a solo skip, and the row's own skips would move it past what the owner validates, so
+ * neither is used. A stale local copy is simply rejected by the owner (I3).
  */
 class LinkedAlarmActions(
     private val links: LinkRepository,
@@ -56,7 +69,7 @@ class LinkedAlarmActions(
 
     /** False when there is no occurrence to pin, so nothing was sent. */
     suspend fun skipBoth(alarm: Alarm, now: Instant, zone: ZoneId): Boolean {
-        val pin = nextOccurrence(alarm, now, zone) ?: return false
+        val pin = sharedNextOccurrence(alarm, now, zone) ?: return false
         links.sendBoth(alarm.id, CommandType.SKIP_NEXT, pin)
         return true
     }
@@ -73,7 +86,7 @@ class LinkedAlarmActions(
         if (on) {
             links.sendBoth(alarm.id, CommandType.ENABLE, null)
         } else {
-            val pin = nextOccurrence(alarm, now, zone) ?: return false
+            val pin = sharedNextOccurrence(alarm, now, zone) ?: return false
             links.sendBoth(alarm.id, CommandType.DISABLE, pin)
         }
         return true

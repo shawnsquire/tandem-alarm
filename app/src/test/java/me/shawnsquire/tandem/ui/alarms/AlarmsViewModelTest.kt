@@ -387,8 +387,17 @@ class AlarmsViewModelTest {
         )
     }
 
+    @Test fun linkedSwitchBothOffPinsTheOccurrenceTheJoinerSkippedJustForThemselves() = runTest {
+        val e = env(linkedAlarm("j", skip = future))
+        e.vm.setLinkedBoth("j")
+        assertEquals(
+            listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.SendBoth("j", CommandType.DISABLE, future)),
+            e.links.calls,
+        )
+    }
+
     @Test fun linkedSwitchBothOffNeedsAnOccurrence() = runTest {
-        val e = env(linkedAlarm("j", skip = future).copy(days = emptySet()))
+        val e = env(linkedAlarm("j", ownerSkip = future).copy(days = emptySet()))
         e.vm.setLinkedBoth("j")
         assertTrue(e.links.calls.isEmpty())
         e.vm.state.test {

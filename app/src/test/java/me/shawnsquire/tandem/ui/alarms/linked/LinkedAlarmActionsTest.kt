@@ -98,8 +98,8 @@ class LinkedAlarmActionsTest {
     }
 
     @Test fun bothOffNeedsAnOccurrence() = runTest {
-        // A one-shot whose only candidate is skipped has nothing to pin.
-        val skipped = row(days = emptySet()).copy(skippedOccurrenceAt = rowNext)
+        // A one-shot whose only shared candidate is skipped by the owner has nothing to pin.
+        val skipped = row(days = emptySet()).let { it.copy(link = it.link!!.copy(ownerSkippedOccurrenceAt = rowNext)) }
         assertFalse(actions.setBoth(skipped, now, zone, on = false))
         assertTrue(links.calls.isEmpty())
     }
@@ -111,7 +111,7 @@ class LinkedAlarmActionsTest {
 
     @Test fun switchOptionsWhenOn() {
         assertEquals(LinkedSwitchOptions(justMe = true, both = true), linkedSwitchOptions(row(), now, zone))
-        val noNext = row(days = emptySet()).copy(skippedOccurrenceAt = rowNext)
+        val noNext = row(days = emptySet()).let { it.copy(link = it.link!!.copy(ownerSkippedOccurrenceAt = rowNext)) }
         assertEquals(LinkedSwitchOptions(justMe = true, both = false), linkedSwitchOptions(noNext, now, zone))
     }
 
@@ -124,5 +124,40 @@ class LinkedAlarmActionsTest {
             LinkedSwitchOptions(justMe = false, both = true),
             linkedSwitchOptions(row(enabled = false), now, zone),
         )
+    }
+
+    // The pin is the owner's shared view: copied fields and the owner's own shared skip only.
+
+    private val dayAfter = Instant.parse("2026-11-03T06:30:00Z")
+
+    @Test fun bothPinsIgnoreTheJoinersOwnSkipAndPendingCommand() = runTest {
+        val mine = row(pending = PendingBoth(CommandType.SKIP_NEXT, rowNext, "c")).copy(skippedOccurrenceAt = rowNext)
+        assertTrue(actions.setBoth(mine, now, zone, on = false))
+        assertTrue(actions.skipBoth(mine, now, zone))
+        assertEquals(
+            listOf<Call>(Call.SendBoth("j", CommandType.DISABLE, rowNext), Call.SendBoth("j", CommandType.SKIP_NEXT, rowNext)),
+            links.calls,
+        )
+    }
+
+    @Test fun bothPinsIgnoreAJoinerSoloSkipField() {
+        val mine = row().copy(soloSkippedOccurrenceAt = rowNext)
+        assertEquals(rowNext, sharedNextOccurrence(mine, now, zone))
+    }
+
+    @Test fun bothOffIsPinnableWhileTheJoinerIsOffAndTheOwnerIsOn() = runTest {
+        assertTrue(actions.setBoth(row(joinerEnabled = false), now, zone, on = false))
+        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.DISABLE, rowNext)), links.calls)
+    }
+
+    @Test fun theOwnersSharedSkipStillMovesThePin() = runTest {
+        val owned = row().let { it.copy(link = it.link!!.copy(ownerSkippedOccurrenceAt = rowNext)) }
+        assertTrue(actions.skipBoth(owned, now, zone))
+        assertEquals(listOf<Call>(Call.SendBoth("j", CommandType.SKIP_NEXT, dayAfter)), links.calls)
+    }
+
+    @Test fun switchOptionsStillOfferBothWhenOnlyTheJoinersSkipClearedTheRow() {
+        val oneShot = row(days = emptySet()).copy(skippedOccurrenceAt = rowNext)
+        assertEquals(LinkedSwitchOptions(justMe = true, both = true), linkedSwitchOptions(oneShot, now, zone))
     }
 }

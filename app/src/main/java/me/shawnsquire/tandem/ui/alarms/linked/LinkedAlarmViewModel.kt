@@ -21,7 +21,6 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.isArmed
-import me.shawnsquire.tandem.schedule.nextOccurrence
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PartnerRepository
@@ -146,8 +145,8 @@ class LinkedAlarmViewModel(
                 overrideWallpaper = link.overrideWallpaperPath,
                 armed = isArmed(alarm),
                 skippedForYou = isArmed(alarm) && alarm.skippedOccurrenceAt?.let { it > now } == true,
-                // Pinned to the row's own next occurrence, so the partner's state is not needed.
-                bothAvailable = nextOccurrence(alarm, now, clock.zone) != null,
+                // Pinned to the shared occurrence of the row, so the partner's state is not needed.
+                bothAvailable = sharedNextOccurrence(alarm, now, clock.zone) != null,
                 bothStatus = sent?.let { displayBoth(it, rejectedReason) },
                 askingSkip = local.askingSkip, confirmingLeave = local.confirmingLeave,
                 busy = local.busy, error = local.error,
@@ -196,7 +195,7 @@ class LinkedAlarmViewModel(
         viewModelScope.launch {
             local.update { it.copy(askingSkip = false) }
             val row = currentRow()?.takeIf { isArmed(it) } ?: return@launch
-            val pin = nextOccurrence(row, clock.instant(), clock.zone) ?: return@launch
+            val pin = sharedNextOccurrence(row, clock.instant(), clock.zone) ?: return@launch
             // Published before the call so the row never reads as settled while the command is on its way.
             val command = SentBoth(CommandType.SKIP_NEXT, pin)
             sent.value = command
