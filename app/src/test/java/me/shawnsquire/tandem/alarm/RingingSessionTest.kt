@@ -339,6 +339,7 @@ class RingingSessionTest {
     @Test fun autoSilenceFinishesEvenWhenDismissThrowsCancellation() = runTest {
         val h = harness()
         val ctl = object : RingingController {
+            override suspend fun ringContext(alarmId: String) = me.shawnsquire.tandem.schedule.RingContext(null, emptyList(), emptyList(), null)
             override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: java.time.Instant?, write: suspend () -> Unit) = true
             override suspend fun dismiss(ringId: String, origin: me.shawnsquire.tandem.schedule.RingOrigin) { throw CancellationException("foreign") }
             override suspend fun snooze(origin: me.shawnsquire.tandem.schedule.RingOrigin, until: java.time.Instant?) = Unit
@@ -1007,6 +1008,7 @@ class RingingSessionTest {
         val h = harness()
         val dismissed = mutableListOf<String>()
         val hanging = object : RingingController {
+            override suspend fun ringContext(alarmId: String) = me.shawnsquire.tandem.schedule.RingContext(null, emptyList(), emptyList(), null)
             override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: java.time.Instant?, write: suspend () -> Unit) = true
             override suspend fun dismiss(ringId: String, origin: me.shawnsquire.tandem.schedule.RingOrigin) { dismissed += ringId; awaitCancellation() }
             override suspend fun snooze(origin: me.shawnsquire.tandem.schedule.RingOrigin, until: java.time.Instant?) = Unit
@@ -1029,6 +1031,7 @@ class RingingSessionTest {
         val h = harness()
         val gate = CompletableDeferred<Unit>()
         val gated = object : RingingController {
+            override suspend fun ringContext(alarmId: String) = me.shawnsquire.tandem.schedule.RingContext(null, emptyList(), emptyList(), null)
             override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: java.time.Instant?, write: suspend () -> Unit) = true
             override suspend fun dismiss(ringId: String, origin: me.shawnsquire.tandem.schedule.RingOrigin) { gate.await(); h.controller.dismiss(ringId) }
             override suspend fun snooze(origin: me.shawnsquire.tandem.schedule.RingOrigin, until: java.time.Instant?) = Unit

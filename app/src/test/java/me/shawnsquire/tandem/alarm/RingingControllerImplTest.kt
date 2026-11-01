@@ -14,6 +14,7 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.ParkedSnooze
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
@@ -682,5 +683,36 @@ class RingingControllerImplTest {
         claim.join()
         assertEquals(true, sawSkip)
         assertNull(h.store.state.first())
+    }
+
+    @Test fun ringContextReadsRingMergedSnoozesAndLastRang() = runTest {
+        val member = RingMember("b", now.minusSeconds(60))
+        val ring = RingState("a", "ring-1", now, null, occurrenceAt = now, merged = listOf(member))
+        val h = H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), ring)
+        val occ = Instant.parse("2026-03-02T09:00:00Z")
+        val until = Instant.parse("2026-03-02T10:05:00Z")
+        h.ledger.put("ring-1", "a", until, now)
+        h.ledger.put("ring-0", "c", until.plusSeconds(60))
+        val fired = InMemoryFiredLedger().apply { markRang("a", occ) }
+        val c = RingingControllerImpl(h.repo, h.store, h.settings, h.scheduler, h.armer, h.notifier, h.ledger, NoOpRingMirrorPort, fired) { now }
+
+        val ctx = c.ringContext("a")
+        assertEquals(ring, ctx.ring)
+        assertEquals(listOf(member), ctx.merged)
+        assertEquals(
+            listOf(ParkedSnooze("a", now, until), ParkedSnooze("c", null, until.plusSeconds(60))),
+            ctx.snoozes,
+        )
+        assertEquals(occ, ctx.lastRang)
+        assertNull(c.ringContext("zzz").lastRang)
+    }
+
+    @Test fun ringContextIsEmptyWithNoRing() = runTest {
+        val h = H(emptyList(), null)
+        val ctx = h.controller().ringContext("a")
+        assertNull(ctx.ring)
+        assertTrue(ctx.merged.isEmpty())
+        assertTrue(ctx.snoozes.isEmpty())
+        assertNull(ctx.lastRang)
     }
 }

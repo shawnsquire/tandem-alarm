@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingOrigin
 import java.time.Instant
 
@@ -26,12 +27,25 @@ interface RingingController {
      * FiredLedger, and snoozeOccurrence records it and also arms the snooze. executeFire already
      * re-checks FiredLedger before it claims the slot, so the fire is suppressed even if it's partway
      * through the pre-fire check. Validation rule 3 reads the same record. [origin] is REMOTE when
-     * applied from a received command (sends nothing, I4).
+     * applied from a received command (sends nothing, I4). LOCAL resolves just that one member and
+     * calls RingMirrorPort.onLocal for it alone (not the whole ring), e.g. Stop on a joined copy
+     * that is merged or parked; REMOTE never calls the port.
      */
     suspend fun dismissOccurrence(alarmId: String, occurrenceAt: Instant, origin: RingOrigin)
 
-    /** Snooze counterpart of [dismissOccurrence]; see there. The occurrence is parked until [until]. */
+    /**
+     * Snooze counterpart of [dismissOccurrence]; see there. The occurrence is parked until [until].
+     * LOCAL calls RingMirrorPort.onLocal(SNOOZE) for that one member alone; REMOTE never calls the port.
+     */
     suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: Instant, until: Instant, origin: RingOrigin)
+
+    /**
+     * One consistent read, under the same lock as [dismiss], of the state `validate` needs for ring
+     * commands about [alarmId]: the slot ring, its merged members, every snooze-ledger entry
+     * (current and parked) as ParkedSnooze, and FiredLedger.lastRang([alarmId]). The L4 applier
+     * passes the result straight to `validate` as its RingContext.
+     */
+    suspend fun ringContext(alarmId: String): RingContext
 
     /**
      * Runs [write], a skip or turn-off of [alarmId], unless that alarm is ringing (or snoozed) with

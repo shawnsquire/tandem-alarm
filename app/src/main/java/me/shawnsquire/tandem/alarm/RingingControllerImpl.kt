@@ -10,6 +10,8 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.DEFAULT_SNOOZE_MINUTES
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.schedule.ParkedSnooze
+import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isOneShot
@@ -36,9 +38,20 @@ class RingingControllerImpl(
     private val notifier: RingingNotifier,
     private val ledger: SnoozeLedger,
     @Suppress("unused") private val mirror: RingMirrorPort = NoOpRingMirrorPort,
+    private val firedLedger: FiredLedger = InMemoryFiredLedger(),
     private val now: () -> Instant = Instant::now,
 ) : RingingController, RingSlot {
     private val mutex = Mutex()
+
+    override suspend fun ringContext(alarmId: String): RingContext = mutex.withLock {
+        val ring = ringStateStore.state.first()
+        RingContext(
+            ring = ring,
+            merged = ring?.merged.orEmpty(),
+            snoozes = ledger.all().map { ParkedSnooze(it.alarmId, it.occurrenceAt, it.until) },
+            lastRang = firedLedger.lastRang(alarmId),
+        )
+    }
 
     /** [origin] is ignored until L2; see [RingingController.dismiss]. */
     override suspend fun dismiss(ringId: String, origin: RingOrigin) = withContext(NonCancellable) { mutex.withLock {

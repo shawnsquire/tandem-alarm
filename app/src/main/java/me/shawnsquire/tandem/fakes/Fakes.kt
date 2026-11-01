@@ -7,11 +7,11 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import me.shawnsquire.tandem.alarm.AlarmScheduler
 import me.shawnsquire.tandem.alarm.MirrorKind
-import me.shawnsquire.tandem.alarm.chooseWallpaperPaths
 import me.shawnsquire.tandem.alarm.RingingController
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
 import me.shawnsquire.tandem.schedule.Alarm
@@ -20,6 +20,7 @@ import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
@@ -169,6 +170,11 @@ class FakeRingingController : RingingController {
     override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: Instant, until: Instant, origin: RingOrigin) {
         snoozedOccurrences += SnoozeOccurrenceCall(alarmId, occurrenceAt, until, origin)
     }
+
+    /** Returned by [ringContext]; [ringContextAlarmIds] records the asked ids. */
+    var ringContextResult = RingContext(ring = null, merged = emptyList(), snoozes = emptyList(), lastRang = null)
+    val ringContextAlarmIds = mutableListOf<String>()
+    override suspend fun ringContext(alarmId: String): RingContext { ringContextAlarmIds += alarmId; return ringContextResult }
 
     /** When set, [writeUnlessRinging] refuses (as if that ring had started) instead of writing. */
     var ringStartedAt: Instant? = null
@@ -380,9 +386,6 @@ class FakeLinkedMediaCache : LinkedMediaCache {
     override fun pathFor(sha: String): String? = paths[sha]
     override fun inUse(): Set<String> = inUseHashes.toSet()
 
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) = RingMedia(
-        label = alarm.link?.overrideLabel ?: alarm.label,
-        soundCandidates = listOfNotNull(alarm.ringtoneUri, joinerDefaultRingtone),
-        wallpaperPaths = chooseWallpaperPaths(alarm.wallpaperPath, joinerDefaultWallpaper),
-    )
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) =
+        DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
 }
