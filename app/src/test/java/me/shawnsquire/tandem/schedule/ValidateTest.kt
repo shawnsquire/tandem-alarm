@@ -753,8 +753,23 @@ class ValidateTest {
     }
 
     @Test
-    fun inviteLinkMissingAlarmRejects() {
-        assertEquals(reject("alarm not found"), check(cmd(CommandType.INVITE_LINK), null))
+    fun inviteLinkAppliesWithNoLocalRow() {
+        // On the joiner cmd.alarmId is the owner's id and there is no local row.
+        assertEquals(apply, check(cmd(CommandType.INVITE_LINK), null))
+        assertEquals(apply, validate(cmd(CommandType.INVITE_LINK), null, null, now, newYork, context))
+    }
+
+    @Test
+    fun inviteLinkAppliesWhateverRowIsPassed() {
+        assertEquals(apply, check(cmd(CommandType.INVITE_LINK), linked()))
+        assertEquals(apply, validate(cmd(CommandType.INVITE_LINK), linked(), null, now, newYork, context))
+    }
+
+    @Test
+    fun inviteLinkExpiredRejectsWithNoLocalRow() {
+        val c = cmd(CommandType.INVITE_LINK, expiresAt = now)
+        assertEquals(reject("expired"), check(c, null))
+        assertEquals(reject("expired"), check(c, linked()))
     }
 
     @Test
@@ -764,7 +779,6 @@ class ValidateTest {
             CommandType.UNSKIP,
             CommandType.DISABLE,
             CommandType.ENABLE,
-            CommandType.INVITE_LINK,
         )
         for (type in types) {
             assertEquals(reject("alarm not found"), check(cmd(type, todayRing), linked()))

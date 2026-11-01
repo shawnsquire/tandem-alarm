@@ -151,13 +151,15 @@ fun isArmed(alarm: Alarm): Boolean {
  * so the Partner tab sends X'). "already skipped" looks only at the shared `skippedOccurrenceAt`.
  * UNSKIP counts only the shared skip ("nothing to unskip" if only a solo skip exists).
  *
- * INVITE_LINK applies if the alarm exists, is an own row (`link == null`) and hasn't expired,
- * regardless of [context].
+ * INVITE_LINK applies unless expired, whatever [alarm] is (null, own or linked) and regardless of
+ * [context]: it is validated on the joiner, where `cmd.alarmId` is the owner's id and there is no
+ * local row. The L4 applier checks that the owner's alarm exists in `PartnerState` and isn't
+ * already joined.
  *
  * Linked rows: the applier resolves owner-to-joiner ring commands to the linked row before
  * calling, so STOP_RINGING and SNOOZE accept a linked [alarm]. Every other type (SKIP_NEXT,
- * UNSKIP, DISABLE, ENABLE, INVITE_LINK) aimed at a linked row is rejected "alarm not found", after
- * the expiry and missing-alarm checks.
+ * UNSKIP, DISABLE, ENABLE) aimed at a linked row is rejected "alarm not found", after the expiry
+ * and missing-alarm checks.
  */
 fun validate(
     cmd: Command,
@@ -168,6 +170,7 @@ fun validate(
     context: RingContext? = null,
 ): CommandDecision {
     if (now >= cmd.expiresAt) return CommandDecision.Reject("expired")
+    if (cmd.type == CommandType.INVITE_LINK) return CommandDecision.Apply
     if (alarm == null) return CommandDecision.Reject("alarm not found")
     if (alarm.link != null && cmd.type !in RING_COMMANDS) {
         return CommandDecision.Reject("alarm not found")
