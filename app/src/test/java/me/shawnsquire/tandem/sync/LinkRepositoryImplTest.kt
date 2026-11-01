@@ -8,6 +8,7 @@ import java.time.ZoneOffset
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -405,5 +406,22 @@ class LinkRepositoryImplTest {
         runCurrent()
         advanceTimeBy(1.hours)
         assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+    }
+
+    @Test
+    fun householdWaitDoesNotHoldJoinLock() = runTest {
+        val silent = MutableSharedFlow<Household?>()
+        val e = Env(this, emptyList(), state(ownerAlarm()), null, householdFlow = silent)
+        val a = async { e.repo.join("o1") }
+        runCurrent()
+        advanceTimeBy(1.seconds)
+        val b = async { e.repo.join("o1") }
+        runCurrent()
+        // b's own 2 s wait ends at t=3 s; if it queued behind a's wait for the lock it would end at t=4 s.
+        advanceTimeBy(2.1.seconds)
+        runCurrent()
+        assertTrue(b.isCompleted)
+        assertEquals(LinkResult.Failed("not paired"), b.await())
+        assertEquals(LinkResult.Failed("not paired"), a.await())
     }
 }

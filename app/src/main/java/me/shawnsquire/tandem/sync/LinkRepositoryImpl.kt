@@ -84,19 +84,20 @@ class LinkRepositoryImpl(
         }
     }
 
-    override suspend fun join(ownerAlarmId: String): LinkResult = joinInternal(ownerAlarmId, acceptOpenInvites = true)
+    override suspend fun join(ownerAlarmId: String): LinkResult {
+        val hh = knownHousehold() ?: return LinkResult.Failed(NOT_PAIRED)
+        return joinInternal(hh, ownerAlarmId, acceptOpenInvites = true)
+    }
 
     override suspend fun acceptInvite(commandId: String, ownerAlarmId: String): LinkResult {
-        val result = joinInternal(ownerAlarmId, acceptOpenInvites = false)
-        val hh = knownHousehold()
+        val hh = knownHousehold() ?: return LinkResult.Failed(NOT_PAIRED) // leaves the command pending
+        val result = joinInternal(hh, ownerAlarmId, acceptOpenInvites = false)
+        val expiresAt = clock.instant().plus(COMMAND_TTL)
         when {
-            result is LinkResult.Joined -> if (hh != null) {
-                resolveCommand(hh, commandId, Outcome.Applied, clock.instant().plus(COMMAND_TTL))
-            }
-            result is LinkResult.Failed && result.reason.endsWith(DELETED_SUFFIX) -> if (hh != null) {
-                resolveCommand(hh, commandId, Outcome.Rejected(result.reason), clock.instant().plus(COMMAND_TTL))
-            }
-            else -> Unit // not paired etc.: leave the command pending
+            result is LinkResult.Joined -> resolveCommand(hh, commandId, Outcome.Applied, expiresAt)
+            result is LinkResult.Failed && result.reason.endsWith(DELETED_SUFFIX) ->
+                resolveCommand(hh, commandId, Outcome.Rejected(result.reason), expiresAt)
+            else -> Unit // other failures: leave the command pending
         }
         return result
     }
@@ -165,9 +166,8 @@ class LinkRepositoryImpl(
         return status
     }
 
-    private suspend fun joinInternal(ownerAlarmId: String, acceptOpenInvites: Boolean): LinkResult =
+    private suspend fun joinInternal(hh: Household, ownerAlarmId: String, acceptOpenInvites: Boolean): LinkResult =
         joinLock.withLock {
-            val hh = knownHousehold() ?: return LinkResult.Failed(NOT_PAIRED)
             val state = withTimeoutOrNull(PARTNER_WAIT) { partner.first { it != null } }
                 ?: return LinkResult.Failed(NOT_PAIRED)
 
