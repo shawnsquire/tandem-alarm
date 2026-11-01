@@ -317,7 +317,7 @@ class RingingControllerImpl(
         val armed = mutableListOf<String>()
         try {
             armSnoozeLocked(id, x.alarmId, until, x.occurrenceAt, armed)
-            firedLedger.markRang(x.alarmId, x.occurrenceAt)
+            markRangForwardLocked(x)
         } catch (e: Throwable) {
             takeBackLocked(armed)
             throw e
@@ -364,8 +364,11 @@ class RingingControllerImpl(
 
             // Never merge into or supersede itself: if the slot already holds this ring, just overwrite it.
             if (!sameRing) {
-                // A pre-upgrade entry has no occurrence: it supersedes, since a member needs its real X.
-                val member = entry?.occurrenceAt?.let { RingMember(entry.alarmId, it) }
+                // A pre-upgrade entry has no occurrence. It still merges, under its snooze end as a
+                // placeholder X: it is an own alarm from before linked alarms, so no partner command
+                // can target it, and superseding would dismiss a ring nobody stopped. Only the merge
+                // uses it; a ring written below keeps the unknown occurrence.
+                val member = entry?.let { RingMember(it.alarmId, it.occurrenceAt ?: it.until) }
                 if (mergeLocked(current, ringId, member)) {
                     dropFiredSnoozeLocked(ringId)
                     member?.let(onMerged)
@@ -479,12 +482,21 @@ class RingingControllerImpl(
      * the pre-fire check and in the claim), then turns a one-shot off as a normal dismiss does.
      */
     private suspend fun dismissInAdvanceLocked(x: RingMember, mirrored: Boolean) {
-        firedLedger.markRang(x.alarmId, x.occurrenceAt)
+        markRangForwardLocked(x)
         val steps = Steps()
         steps.run { disableIfOneShot(x.alarmId) }
         steps.run { alarmScheduler.rescheduleAll() }
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, listOf(x), null)
         steps.rethrow()
+    }
+
+    /**
+     * Records X in [firedLedger] unless a later occurrence of its alarm is there already: moving it
+     * back would let that one ring again on a replay. X is older, so its time has passed either way.
+     */
+    private fun markRangForwardLocked(x: RingMember) {
+        val last = firedLedger.lastRang(x.alarmId)
+        if (last == null || !last.isAfter(x.occurrenceAt)) firedLedger.markRang(x.alarmId, x.occurrenceAt)
     }
 
     /** X's snooze in the ledger, other than the slot ring's own (parked, or a split-out member). */

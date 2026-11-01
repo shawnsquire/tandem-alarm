@@ -920,15 +920,17 @@ class RingingSessionTest {
         assertEquals(ringB, h.rawStore.state.first())
     }
 
-    @Test fun parkedSnoozeFireSupersedesSoundingRing() = runTest {
+    @Test fun preUpgradeSnoozeFireMergesIntoTheSoundingRing() = runTest {
+        // Written before occurrences were stored: it joins under its snooze end, B is never dismissed.
         val ringB = RingState("b", "ring-B", clockNow, null)
         val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringB)
         h.ledger.put("ring-X", "a", clockNow)
         h.session.start("a", clockNow, true, "ring-X")
         runCurrent()
-        assertEquals(1, h.sound.starts.size)
-        assertEquals(RingState("a", "ring-X", clockNow, null), h.rawStore.state.first())
-        assertFalse(h.repo.get("b")!!.enabled)
+        assertTrue(h.sound.starts.isEmpty()) // B's session plays for both
+        assertEquals(1, h.finished)
+        assertEquals(ringB.copy(merged = listOf(RingMember("a", clockNow))), h.rawStore.state.first())
+        assertTrue(h.repo.get("b")!!.enabled)
     }
 
     @Test fun twoSameMinuteFiresLeaveExactlyOneRingSounding() = runTest {

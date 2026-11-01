@@ -475,14 +475,24 @@ class RingingControllerImplTest {
         assertEquals(ringB, h.store.state.first())
     }
 
-    /** A pre-upgrade entry has no occurrence: the sounding ring is superseded, never merged with a guessed one. */
-    @Test fun snoozeResumeSupersedesSoundingRing() = runTest {
+    /** A pre-upgrade entry has no occurrence: it merges under its snooze end as a placeholder, never superseding the sounding ring. */
+    @Test fun snoozeResumeOfALegacyEntryMergesIntoTheSoundingRing() = runTest {
         val h = snoozedA()
         h.store.set(ringB)
-        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
-        assertEquals(RingState("a", "ring-A", now, null), h.store.state.first())
-        assertFalse(h.repo.get("b")!!.enabled) // B (one-shot) was sounding: dismissed
+        val merged = mutableListOf<RingMember>()
+        assertEquals(SlotClaim.Merged, h.controller().claimSnoozeResume("ring-A", "a") { merged += it })
+        assertEquals(ringB.copy(merged = listOf(RingMember("a", sevenTen))), h.store.state.first())
+        assertEquals(listOf(RingMember("a", sevenTen)), merged)
+        assertTrue(h.repo.get("b")!!.enabled) // B sounds on
         assertTrue(h.repo.get("a")!!.enabled)
+        assertNull(h.ledger.get("ring-A"))
+        assertEquals(listOf("ring-A"), h.armer.cancelled)
+    }
+
+    @Test fun snoozeResumeOfALegacyEntryIntoAnEmptySlotWritesNoOccurrence() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null).also { it.ledger.put("ring-A", "a", sevenTen) }
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(RingState("a", "ring-A", now, null), h.store.state.first()) // the placeholder is never stored as X
     }
 
     @Test fun snoozeResumeParksSnoozedRing() = runTest {
@@ -1455,6 +1465,19 @@ class RingingControllerImplTest {
         assertTrue(h.armed.isEmpty())
         assertEquals(0, h.scheduler.rescheduleCount)
         assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun resolvingAnOlderOccurrenceNeverMovesTheFiredLedgerBack() = runTest {
+        // A later occurrence already rang: recording the older X over it would let that one replay.
+        val h = H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), null)
+        val later = occurrenceX.plusSeconds(7 * 86400)
+        h.fired.markRang("a", later)
+        val c = h.controller()
+        c.dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertEquals(later, h.fired.lastRang("a"))
+        c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(later, h.fired.lastRang("a"))
+        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX)), h.ledger.all()) // the snooze still stands
     }
 
     @Test fun earlyStopRecordsTheOccurrenceAndTurnsAOneShotOff() = runTest {
