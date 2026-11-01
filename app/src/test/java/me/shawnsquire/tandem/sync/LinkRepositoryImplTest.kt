@@ -13,6 +13,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -53,13 +54,18 @@ class LinkRepositoryImplTest {
     private class RecordingSender : CommandSender {
         val sent = mutableListOf<Triple<CommandType, String, Instant?>>()
         val status = MutableSharedFlow<Pair<CommandStatus, String?>>(replay = 1)
+        /** Collections that end PENDING right away, as the real flow does when its listener fails. */
+        var failingCollects = 0
+        var collects = 0
         override fun send(
             type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?,
             onCreated: (String) -> Unit,
         ): Flow<Pair<CommandStatus, String?>> {
             sent += Triple(type, alarmId, occurrenceAt)
             onCreated("inv${sent.size}")
-            return status
+            return kotlinx.coroutines.flow.flow {
+                if (collects++ < failingCollects) emit(CommandStatus.PENDING to null) else emitAll(status)
+            }
         }
     }
 
@@ -548,6 +554,57 @@ class LinkRepositoryImplTest {
     }
 
     @Test
+    fun aListenerFailureDuringAnOpenInviteKeepsItOpenAndListensAgain() = runTest {
+        val e = env()
+        e.sender.failingCollects = 1
+        e.repo.invite("a1")
+        runCurrent()
+        assertEquals(1, e.sender.collects)
+        assertEquals(setOf("a1"), e.repo.openInvites.first())
+        // Still persisted: a restart now would restore it.
+        val restarted = e.makeRepo()
+        restarted.start()
+        runCurrent()
+        assertEquals(setOf("a1"), restarted.openInvites.first())
+        advanceTimeBy(5.seconds + 1.seconds)
+        runCurrent()
+        assertEquals(2, e.sender.collects)
+        e.sender.status.emit(CommandStatus.APPLIED to null)
+        runCurrent()
+        assertEquals(emptySet<String>(), e.repo.openInvites.first())
+        val again = e.makeRepo()
+        again.start()
+        runCurrent()
+        assertEquals(emptySet<String>(), again.openInvites.first())
+    }
+
+    @Test
+    fun aListenerFailureDuringARestoredInviteKeepsItOpenAndListensAgain() = runTest {
+        var observes = 0
+        val e = Env(this, emptyList(), state(ownerAlarm()), hh, wrap = { f ->
+            object : CommandRemote by f {
+                override fun observe(householdId: String, commandId: String) =
+                    if (observes++ == 0) kotlinx.coroutines.flow.flowOf(CommandStatus.PENDING to null)
+                    else f.observe(householdId, commandId)
+            }
+        })
+        e.repo.invite("a1")
+        runCurrent()
+        val restarted = e.makeRepo()
+        restarted.start()
+        runCurrent()
+        assertEquals(1, observes)
+        assertEquals(setOf("a1"), restarted.openInvites.first())
+        advanceTimeBy(6.seconds)
+        runCurrent()
+        assertEquals(2, observes)
+        assertEquals(setOf("a1"), restarted.openInvites.first())
+        e.remote.updatesFor("inv1").emit(CommandStatus.REJECTED to "declined")
+        runCurrent()
+        assertEquals(emptySet<String>(), restarted.openInvites.first())
+    }
+
+    @Test
     fun anAnsweredInviteIsNotRestored() = runTest {
         val e = env()
         e.repo.invite("a1")
@@ -629,6 +686,32 @@ class LinkRepositoryImplTest {
         runCurrent()
         assertNull(e.rows().single().link!!.pendingBoth)
         assertEquals("no", e.notifier.rejected.single().reason)
+    }
+
+    @Test
+    fun aListenerFailureDuringABothCommandKeepsItPendingAndAppliedStillHandsOver() = runTest {
+        var calls = 0
+        val e = Env(this, listOf(linked()), state(ownerAlarm()), hh, wrap = { f ->
+            object : CommandRemote by f {
+                // The real observe ends without an answer when its listener fails.
+                override fun observe(householdId: String, commandId: String) =
+                    if (calls++ == 0) kotlinx.coroutines.flow.flowOf(CommandStatus.PENDING to null) else f.observe(householdId, commandId)
+            }
+        })
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        advanceTimeBy(6.seconds)
+        runCurrent()
+        assertEquals(2, calls)
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        assertTrue(e.notifier.rejected.isEmpty())
+        e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
+        runCurrent()
+        assertEquals(listOf("row1" to "c1"), e.noteCalls)
+        advanceTimeBy(31.minutes)
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertTrue(e.notifier.rejected.isEmpty())
     }
 
     @Test

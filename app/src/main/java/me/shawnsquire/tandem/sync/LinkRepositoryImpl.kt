@@ -224,10 +224,7 @@ class LinkRepositoryImpl(
             try {
                 val status = flow {
                     val hh = household.filterNotNull().first()
-                    while (true) {
-                        emitAll(remote.observe(hh.id, open.commandId))
-                        delay(RESUBSCRIBE_DELAY)
-                    }
+                    emitAll(remote.observe(hh.id, open.commandId))
                 }
                 settleInvite(open.alarmId, open.commandId, open.expiresAt, status)
             } finally {
@@ -239,6 +236,7 @@ class LinkRepositoryImpl(
     /**
      * Holds the invite open until [status] reports an answer or [expiresAt] passes, then drops it from the
      * count and the ledger. A cancelled wait (the process going away) leaves the ledger entry for the next start.
+     * [status] ending without an answer (its listener failed) is no answer: it is collected again after a delay.
      */
     private suspend fun settleInvite(
         alarmId: String, commandId: String?, expiresAt: Instant, status: Flow<Pair<CommandStatus, String?>>,
@@ -246,7 +244,9 @@ class LinkRepositoryImpl(
         var settled = false
         try {
             val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
-            withTimeoutOrNull(remaining) { status.firstOrNull { it.first != CommandStatus.PENDING } }
+            withTimeoutOrNull(remaining) {
+                while (status.firstOrNull { it.first != CommandStatus.PENDING } == null) delay(RESUBSCRIBE_DELAY)
+            }
             settled = true
         } finally {
             invites.update { m ->
@@ -343,7 +343,8 @@ class LinkRepositoryImpl(
         scope.launch {
             try {
                 val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
-                // Waiting for a household and re-subscribing after a completed observe both count against the deadline.
+                // Waiting for a household and re-subscribing after a completed observe (its listener failed)
+                // both count against the deadline.
                 val done = withTimeoutOrNull(remaining) {
                     val hh = household.filterNotNull().first()
                     var update: Pair<CommandStatus, String?>? = null

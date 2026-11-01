@@ -34,7 +34,10 @@ interface CommandRemote {
         commandId: String? = null,
     ): String
 
-    /** (status, reason) updates for one command doc. */
+    /**
+     * (status, reason) updates for one command doc. A listener error ends the flow quietly, without an
+     * answer (the doc may still be pending), so a caller waiting for one subscribes again.
+     */
     fun observe(householdId: String, commandId: String): Flow<Pair<CommandStatus, String?>>
 
     /** Current status of the doc (default source), or null if missing or unreadable. Never throws. */
@@ -78,7 +81,8 @@ class FirestoreCommandRemote(private val db: FirebaseFirestore) : CommandRemote 
         val tracker = CommandSnapshotTracker()
         val reg = commands(householdId).document(commandId).addSnapshotListener { snap, err ->
             if (err != null) {
-                trySend(CommandStatus.REJECTED to COULDNT_SEND)
+                // Not an answer: a transient denial (an auth refresh) or a dropped listen says nothing about the doc.
+                Log.w(TAG, "listening to $commandId failed", err)
                 close()
                 return@addSnapshotListener
             }
