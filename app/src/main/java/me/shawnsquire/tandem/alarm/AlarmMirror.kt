@@ -112,6 +112,7 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
                 put("type", p.type.name)
                 p.occurrenceAt?.let { put("occurrenceAt", it.toEpochMilli()) }
                 put("commandId", p.commandId)
+                p.createdAt?.let { put("createdAt", it.toEpochMilli()) }
             })
         }
         link.overrideLabel?.let { put("overrideLabel", it) }
@@ -163,7 +164,12 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
         ownerSkippedOccurrenceAt = o.instantOrNull("ownerSkippedOccurrenceAt"),
         joinerEnabled = o.getBoolean("joinerEnabled"),
         pendingBoth = if (o.isNull("pendingBoth")) null else o.getJSONObject("pendingBoth").let { p ->
-            PendingBoth(CommandType.valueOf(p.getString("type")), p.instantOrNull("occurrenceAt"), p.getString("commandId"))
+            PendingBoth(
+                CommandType.valueOf(p.getString("type")),
+                p.instantOrNull("occurrenceAt"),
+                p.getString("commandId"),
+                p.instantOrNull("createdAt"),
+            )
         },
         overrideLabel = o.stringOrNull("overrideLabel"),
         overrideRingtoneUri = o.stringOrNull("overrideRingtoneUri"),

@@ -37,13 +37,19 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
     fun updatesFor(commandId: String): MutableSharedFlow<Pair<CommandStatus, String?>> =
         updates.getOrPut(commandId) { MutableSharedFlow(replay = 1) }
 
+    /** Runs at the start of [create], before it records or throws. */
+    var onCreate: (() -> Unit)? = null
+
+    override fun newId(householdId: String): String = createdId
+
     override fun create(
         householdId: String, from: String, to: String, type: CommandType, alarmId: String,
-        occurrenceAt: Instant?, ringId: String?, now: Instant, snoozedUntil: Instant?,
+        occurrenceAt: Instant?, ringId: String?, now: Instant, snoozedUntil: Instant?, commandId: String?,
     ): String {
+        onCreate?.invoke()
         createFailure?.let { throw it }
         created += Created(householdId, from, to, type, alarmId, occurrenceAt, ringId, now, snoozedUntil)
-        return createdId
+        return commandId ?: createdId
     }
 
     override fun observe(householdId: String, commandId: String): Flow<Pair<CommandStatus, String?>> =

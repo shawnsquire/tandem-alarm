@@ -380,7 +380,7 @@ class AlarmRepositoryImplTest {
         mode: LinkMode = LinkMode.NOTIFY,
         ownerSkip: Instant? = null,
         joinerEnabled: Boolean = false,
-        pending: PendingBoth? = PendingBoth(CommandType.SKIP_NEXT, Instant.ofEpochMilli(1_700_000_500_000), "cmd-1"),
+        pending: PendingBoth? = PendingBoth(CommandType.SKIP_NEXT, Instant.ofEpochMilli(1_700_000_500_000), "cmd-1", Instant.ofEpochMilli(1_700_000_400_000)),
     ) = AlarmLink(
         ownerUid = "owner",
         ownerAlarmId = "owner-alarm",

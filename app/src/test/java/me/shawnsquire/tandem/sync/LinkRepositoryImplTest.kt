@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -240,11 +241,69 @@ class LinkRepositoryImplTest {
         val occ = now.plusSeconds(60)
         e.repo.sendBoth("row1", CommandType.SKIP_NEXT, occ)
         val l = e.rows().single().link!!
-        assertEquals(PendingBoth(CommandType.SKIP_NEXT, occ, "c9"), l.pendingBoth)
+        assertEquals(PendingBoth(CommandType.SKIP_NEXT, occ, "c9", now), l.pendingBoth)
         assertFalse(l.joinerEnabled)
         assertEquals(1, e.scheduler.rescheduleCount)
         val c = e.remote.created.single()
         assertEquals(listOf("h1", "me", "them", CommandType.SKIP_NEXT, "o1", occ), listOf(c.hid, c.from, c.to, c.type, c.alarmId, c.occurrenceAt))
+    }
+
+    @Test
+    fun sendBothStoresPendingWithItsIdAndTimeBeforeCreating() = runTest {
+        val e = env(rows = listOf(linked(joinerEnabled = false)))
+        e.remote.createdId = "c9"
+        var atCreate: Alarm? = null
+        e.remote.onCreate = { atCreate = runBlocking { e.rows().single() } }
+        e.repo.sendBoth("row1", CommandType.ENABLE, null)
+        val l = atCreate!!.link!!
+        assertEquals(PendingBoth(CommandType.ENABLE, null, "c9", now), l.pendingBoth)
+        assertTrue(l.joinerEnabled)
+    }
+
+    @Test
+    fun sendBothThatFailsToCreateClearsPendingAndRestoresJoinerEnabled() = runTest {
+        val e = env(rows = listOf(linked(joinerEnabled = false)))
+        e.remote.createFailure = IllegalStateException("boom")
+        try { e.repo.sendBoth("row1", CommandType.ENABLE, null); org.junit.Assert.fail() } catch (_: IllegalStateException) {}
+        val l = e.rows().single().link!!
+        assertNull(l.pendingBoth)
+        assertFalse(l.joinerEnabled)
+        assertEquals(2, e.scheduler.rescheduleCount)
+    }
+
+    @Test
+    fun sendBothThatFailsToCreateLeavesANewerPendingAlone() = runTest {
+        val e = env(rows = listOf(linked(joinerEnabled = false)))
+        val newer = PendingBoth(CommandType.DISABLE, null, "newer", now)
+        e.remote.onCreate = { runBlocking { e.fake.updateLink("row1") { it.copy(pendingBoth = newer) } } }
+        e.remote.createFailure = IllegalStateException("boom")
+        try { e.repo.sendBoth("row1", CommandType.ENABLE, null); org.junit.Assert.fail() } catch (_: IllegalStateException) {}
+        assertEquals(newer, e.rows().single().link!!.pendingBoth)
+    }
+
+    @Test
+    fun pendingFromBeforeARestartExpiresOnItsOriginalWindow() = runTest {
+        val created = now.minusSeconds(23 * 3600)
+        val e = env(rows = listOf(linked(pending = PendingBoth(CommandType.DISABLE, null, "c5", created))))
+        e.repo.start()
+        runCurrent()
+        e.remote.updatesFor("c5").emit(CommandStatus.PENDING to null)
+        advanceTimeBy(59.minutes)
+        runCurrent()
+        assertEquals("c5", e.rows().single().link!!.pendingBoth?.commandId)
+        advanceTimeBy(1.minutes + 1.seconds)
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals("expired", e.notifier.rejected.single().reason)
+    }
+
+    @Test
+    fun pendingAlreadyPastItsWindowExpiresAtStart() = runTest {
+        val e = env(rows = listOf(linked(pending = PendingBoth(CommandType.DISABLE, null, "c5", now.minusSeconds(25 * 3600)))))
+        e.repo.start()
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals("expired", e.notifier.rejected.single().reason)
     }
 
     @Test

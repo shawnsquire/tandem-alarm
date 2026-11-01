@@ -17,7 +17,10 @@ import java.time.Instant
 
 /** Seam over `households/{hid}/commands` so the applier and pre-fire check can be tested with fakes. */
 interface CommandRemote {
-    /** Creates households/{hid}/commands/{newId} and returns the id without waiting for the server (writes queue offline). */
+    /** An unused command id, generated locally. Pass it as [create]'s commandId to know the id before the write. */
+    fun newId(householdId: String): String
+
+    /** Creates households/{hid}/commands/{commandId, or a new id} and returns the id without waiting for the server (writes queue offline). */
     fun create(
         householdId: String,
         from: String,
@@ -28,6 +31,7 @@ interface CommandRemote {
         ringId: String?,
         now: Instant,
         snoozedUntil: Instant? = null,
+        commandId: String? = null,
     ): String
 
     /** (status, reason) updates for one command doc. */
@@ -50,6 +54,8 @@ class FirestoreCommandRemote(private val db: FirebaseFirestore) : CommandRemote 
     private fun commands(hid: String): CollectionReference =
         db.collection("households").document(hid).collection("commands")
 
+    override fun newId(householdId: String): String = commands(householdId).document().id
+
     override fun create(
         householdId: String,
         from: String,
@@ -60,8 +66,9 @@ class FirestoreCommandRemote(private val db: FirebaseFirestore) : CommandRemote 
         ringId: String?,
         now: Instant,
         snoozedUntil: Instant?,
+        commandId: String?,
     ): String {
-        val ref = commands(householdId).document()
+        val ref = if (commandId != null) commands(householdId).document(commandId) else commands(householdId).document()
         ref.set(commandCreateMap(from, to, type, alarmId, occurrenceAt, ringId, now, snoozedUntil))
             .addOnFailureListener { Log.w(TAG, "create ${ref.id} failed", it) }
         return ref.id

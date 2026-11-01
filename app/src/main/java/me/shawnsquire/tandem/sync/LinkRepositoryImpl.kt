@@ -2,6 +2,7 @@ package me.shawnsquire.tandem.sync
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.alarm.AlarmScheduler
 import me.shawnsquire.tandem.data.AlarmRepository
@@ -88,10 +90,10 @@ class LinkRepositoryImpl(
             started = true
         }
         scope.launch {
-            val upperBound = clock.instant().plus(COMMAND_TTL)
+            val started = clock.instant()
             for (row in alarms.linkedAlarms.first()) {
                 val pending = row.link?.pendingBoth ?: continue
-                watch(row.id, pending, upperBound)
+                watch(row.id, pending, expiryOf(pending, started))
             }
         }
     }
@@ -150,16 +152,35 @@ class LinkRepositoryImpl(
         val link = requireNotNull(alarms.get(alarmId)?.link) { "alarm $alarmId is not linked" }
         val hh = checkNotNull(knownHousehold()) { NOT_PAIRED }
         val now = clock.instant()
-        val id = remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now)
-        val pending = PendingBoth(type, occurrenceAt, id)
+        // Stored before the command exists: if the process dies or the create throws in between, a
+        // "both off" must already be recognised as the joiner's own, and a rejection must be reported.
+        val id = remote.newId(hh.id)
+        val pending = PendingBoth(type, occurrenceAt, id, now)
+        var wasJoinerEnabled = link.joinerEnabled
         alarms.updateLink(alarmId) {
+            wasJoinerEnabled = it.joinerEnabled
             it.copy(
                 pendingBoth = pending,
                 joinerEnabled = if (type == CommandType.ENABLE) true else it.joinerEnabled,
             )
         }
         scheduler.rescheduleAll()
-        watch(alarmId, pending, now.plus(COMMAND_TTL))
+        try {
+            remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now, commandId = id)
+        } catch (e: Throwable) {
+            withContext(NonCancellable) {
+                alarms.updateLink(alarmId) {
+                    if (it.pendingBoth?.commandId != id) it
+                    else it.copy(
+                        pendingBoth = null,
+                        joinerEnabled = if (type == CommandType.ENABLE) wasJoinerEnabled else it.joinerEnabled,
+                    )
+                }
+                scheduler.rescheduleAll()
+            }
+            throw e
+        }
+        watch(alarmId, pending, expiryOf(pending, now))
     }
 
     override fun invite(alarmId: String): Flow<Pair<CommandStatus, String?>> {
@@ -301,6 +322,10 @@ class LinkRepositoryImpl(
             }
         }
     }
+
+    /** [PendingBoth.createdAt] plus the TTL; [fallback] starts the window for a command stored without one. */
+    private fun expiryOf(pending: PendingBoth, fallback: Instant): Instant =
+        (pending.createdAt ?: fallback).plus(COMMAND_TTL)
 
     /** The household, or null if none arrives within [HOUSEHOLD_WAIT]. */
     private suspend fun knownHousehold(): Household? = withTimeoutOrNull(HOUSEHOLD_WAIT) { household.first() }
