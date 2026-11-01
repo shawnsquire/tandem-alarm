@@ -426,21 +426,22 @@ class RingingSessionTest {
         assertNull(h.rawStore.state.first())
     }
 
-    @Test fun soloSkipSuppressesAndIsCleared() = runTest {
+    @Test fun soloSkipSuppressesAndStaysForSkipExpiry() = runTest {
         val h = harness(alarms = listOf(alarm(days = setOf(java.time.DayOfWeek.MONDAY)).copy(soloSkippedOccurrenceAt = occurrence)))
         h.fire(occ = occurrence)
         assertQuiet(h)
-        assertNull(h.repo.get("a")!!.soloSkippedOccurrenceAt)
+        assertEquals(occurrence, h.repo.get("a")!!.soloSkippedOccurrenceAt)
         assertTrue(h.repo.get("a")!!.enabled) // a repeating alarm stays on
         assertEquals(occurrence, h.fired.lastRang("a"))
     }
 
-    @Test fun soloSkippedOneShotTurnsOffAtTheFire() = runTest {
+    @Test fun soloSkippedOneShotStaysEnabledAtTheFireForSkipExpiry() = runTest {
         val h = harness(alarms = listOf(alarm().copy(soloSkippedOccurrenceAt = occurrence)))
         h.fire(occ = occurrence)
         assertQuiet(h)
-        assertFalse(h.repo.get("a")!!.enabled)
-        assertNull(h.repo.get("a")!!.soloSkippedOccurrenceAt)
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertEquals(occurrence, h.repo.get("a")!!.soloSkippedOccurrenceAt)
+        assertEquals(occurrence, h.fired.lastRang("a"))
     }
 
     @Test fun soloSkipForOtherOccurrenceRings() = runTest {
@@ -508,13 +509,13 @@ class RingingSessionTest {
         assertQuiet(h)
     }
 
-    @Test fun soloSkipStoredBetweenReadAndClaimSuppressesAndTurnsOffAOneShot() = runTest {
+    @Test fun soloSkipStoredBetweenReadAndClaimSuppressesAndKeepsTheSkip() = runTest {
         val h = harness()
         val slot = h.controller.before { h.repo.setSoloSkip("a", occurrence) }
         slotSession(h, slot).start("a", occurrence, false, null)
         assertQuiet(h)
-        assertFalse(h.repo.get("a")!!.enabled)
-        assertNull(h.repo.get("a")!!.soloSkippedOccurrenceAt)
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertEquals(occurrence, h.repo.get("a")!!.soloSkippedOccurrenceAt)
     }
 
     @Test fun ledgerMarkedBeforeTheClaimSuppressesQuietlyWithoutClearingSkips() = runTest {

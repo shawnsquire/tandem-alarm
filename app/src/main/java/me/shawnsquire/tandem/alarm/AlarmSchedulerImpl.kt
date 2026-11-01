@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import java.time.Duration
 import java.time.Instant
@@ -40,6 +41,8 @@ class AlarmSchedulerImpl(
     private val now: () -> Instant = Instant::now,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
+    private val isArmed: (Alarm) -> Boolean = ::isArmed,
+    private val isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val onScheduled: suspend (alarms: List<Alarm>, triggers: Map<String, Long>) -> Unit = { _, _ -> },
 ) : AlarmScheduler, SnoozeArmer {
@@ -128,7 +131,7 @@ class AlarmSchedulerImpl(
         val scheduledNow = mutableMapOf<String, Long?>()
         for (alarm in alarms) {
             try {
-                val at = if (alarm.enabled) next(alarm, nowInstant, zoneId) else null
+                val at = if (isArmed(alarm)) next(alarm, nowInstant, zoneId) else null
                 if (at == null) continue
                 if (!at.isAfter(nowInstant)) {
                     // Would fire immediately, reschedule itself and loop.
@@ -232,7 +235,7 @@ class AlarmSchedulerImpl(
                 val at = Instant.ofEpochMilli(atMs)
                 if (byId != null) {
                     val alarm = byId[id] ?: continue
-                    if (!alarm.enabled || alarm.skippedOccurrenceAt == at) continue
+                    if (!isArmed(alarm) || isSkipped(alarm, at)) continue
                 }
                 alarmManager.setAlarmClock(
                     AlarmManager.AlarmClockInfo(nowInstant.plus(OVERDUE_SNOOZE_DELAY).toEpochMilli(), AlarmIntents.showPendingIntent(context)),

@@ -20,7 +20,6 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
-import me.shawnsquire.tandem.schedule.isOneShot
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 import java.util.UUID
@@ -340,13 +339,9 @@ class RingingSession(
         if (alarm != null && isSkipped(alarm, occurrence)) {
             // Recorded as handled, so a replay of this skipped occurrence cannot ring once the skip is cleared.
             guarded("fired ledger write", Unit) { firedLedger.markRang(alarmId, occurrence) }
-            // Only the skip field(s) that matched; link fields belong to LinkSync.
+            // Only the shared skip is cleared; the solo skip and link fields belong to skip expiry and LinkSync.
             if (alarm.skippedOccurrenceAt == occurrence) guarded("clear skip", Unit) { alarmRepository.setSkip(alarmId, null) }
-            if (alarm.soloSkippedOccurrenceAt == occurrence) {
-                // The occurrence has passed, so turning a one-shot off now is not copied to a joiner early.
-                if (alarm.isOneShot()) guarded("disable solo-skipped one-shot", Unit) { alarmRepository.setEnabled(alarmId, false) }
-                guarded("clear solo skip", Unit) { alarmRepository.setSoloSkip(alarmId, null) }
-            }
+            // The solo skip stays: skip expiry owns its lifecycle (and turns a solo-skipped one-shot off).
         }
         guarded("reschedule", Unit) { alarmScheduler.rescheduleAll() }
         finish()
