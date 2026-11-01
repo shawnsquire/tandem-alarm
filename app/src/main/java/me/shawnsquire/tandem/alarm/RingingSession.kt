@@ -768,7 +768,8 @@ class RingingSession(
  * so a pending "unskip for both" re-arms and rings X, and a linked row's solo skip is ignored. By
  * exact stored instant, never by recomputing the next occurrence: a zone change, DST or a time
  * edit must not suppress a ring no stored command asked for (I1). The one exception is a linked
- * row whose owner moved the time or days, which [RingingSession] checks separately (`movedOff`).
+ * row, which [RingingSession] also checks against its copied hour, minute and days in the current
+ * zone (`movedOff`): an owner's move suppresses there, and so does a zone change racing the fire.
  */
 internal fun isSkippedOccurrence(alarm: Alarm, occurrence: Instant): Boolean =
     occurrence in alarm.skippedOccurrences()
