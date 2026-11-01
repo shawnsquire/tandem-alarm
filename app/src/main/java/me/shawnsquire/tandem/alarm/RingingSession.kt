@@ -297,7 +297,7 @@ class RingingSession(
                 if (written) adoptLateClaim(alarm, ringId) else log("late ring slot claim: no longer due", null)
             },
         ) {
-            ringSlot.claimFire(RingState(alarmId, ringId, now(), null)) {
+            ringSlot.claimFire(RingState(alarmId, ringId, now(), null, occurrenceAt = occurrence)) {
                 val current = alarmRepository.get(alarmId)
                 // Resolved in advance (ledger written under this lock): quiet, no skip to clear.
                 if (!ownLedgerWrite && firedLedger.lastRang(alarmId) == occurrence) return@claimFire false

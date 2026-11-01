@@ -101,7 +101,7 @@ class RingingControllerImpl(
         // Arm first: if this throws nothing is written and the ring continues.
         snoozeArmer.armSnooze(state.alarmId, state.ringId, end)
         try {
-            ledger.put(state.ringId, state.alarmId, end)
+            ledger.put(state.ringId, state.alarmId, end, occurrenceAt = state.occurrenceAt)
         } catch (e: Throwable) {
             runCatching { snoozeArmer.cancelSnooze(state.ringId) }
             throw e
@@ -147,7 +147,8 @@ class RingingControllerImpl(
     override suspend fun claimSnoozeResume(ringId: String, alarmId: String): Boolean =
         withContext(NonCancellable) { mutex.withLock {
             // A failed read here throws: the caller rings anyway (I1).
-            val inLedger = ledger.get(ringId) != null
+            val entry = ledger.get(ringId)
+            val inLedger = entry != null
             val current = ringStateStore.state.first()
             val sameRing = current != null && current.ringId == ringId
             val live = inLedger || (sameRing && current.snoozedUntil != null)
@@ -163,7 +164,9 @@ class RingingControllerImpl(
             // Never supersede itself: if the slot already holds this ring, just overwrite it.
             if (!sameRing) supersedeLocked(current, ringId)
             val startedAt = if (sameRing) current.startedAt else now()
-            ringStateStore.set(RingState(alarmId, ringId, startedAt, null))
+            val occurrenceAt = entry?.occurrenceAt ?: current?.takeIf { sameRing }?.occurrenceAt
+            val merged = if (sameRing) current.merged else emptyList()
+            ringStateStore.set(RingState(alarmId, ringId, startedAt, null, occurrenceAt, merged))
             true
         } }
 
@@ -228,7 +231,10 @@ class RingingControllerImpl(
 
     private suspend fun disableIfOneShot(alarmId: String) {
         val alarm = alarmRepository.get(alarmId)
-        if (alarm != null && alarm.isOneShot()) alarmRepository.setEnabled(alarm.id, false)
+        if (alarm == null || !alarm.isOneShot()) return
+        // A linked row's enabled is the owner's, written only by LinkSync; turn off our own side.
+        if (alarm.link != null) alarmRepository.setJoinerEnabled(alarm.id, false)
+        else alarmRepository.setEnabled(alarm.id, false)
     }
 
     private class Steps {

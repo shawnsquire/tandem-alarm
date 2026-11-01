@@ -399,6 +399,13 @@ class RingingSessionTest {
         assertEquals(1, h.finished)
     }
 
+    @Test fun fireWritesRingStateWithTheFiresOccurrence() = runTest {
+        val h = harness()
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(occurrence, h.rawStore.state.first()!!.occurrenceAt)
+    }
+
     // ---- every stored skip, isArmed, solo skip on a one-shot ----
 
     private fun linked(
@@ -574,7 +581,7 @@ class RingingSessionTest {
         val h = harness(settings = settings)
         h.fire(occ = occurrence)
         runCurrent()
-        assertEquals(RingState("a", "ring-1", clockNow, null), h.rawStore.state.first())
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
         assertEquals(listOf(listOf("content://tone/alarm", "content://tone/default")), h.sound.starts)
         assertEquals(1, h.vibration.starts)
         assertEquals(listOf("ring-1"), h.notifier.ringing)
@@ -680,7 +687,7 @@ class RingingSessionTest {
         assertFalse(shared.repo.get("a")!!.enabled) // A (one-shot) counted as dismissed
         assertEquals(1, shared.finished)
         assertTrue(shared.sound.stops >= 1)
-        assertEquals(RingState("b", "ring-2", clockNow, null), shared.rawStore.state.first())
+        assertEquals(RingState("b", "ring-2", clockNow, null, occurrence), shared.rawStore.state.first())
         assertEquals(1, bSound.starts.size)
         assertEquals(0, bFinished)
     }
@@ -739,7 +746,7 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(3, reads.get()) // pre-fire read, decision read, then the re-check
         assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts) // the alarm from the first read
-        assertEquals(RingState("a", "ring-1", clockNow, null), h.rawStore.state.first())
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
         assertEquals(0, h.finished)
     }
 
@@ -1057,7 +1064,7 @@ class RingingSessionTest {
         stuck.gate.complete(Unit) // lock released: the claim completes late and writes A
         runCurrent()
         assertTrue(holder.isCompleted)
-        assertEquals(RingState("a", "ring-1", clockNow, null), h.rawStore.state.first())
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
         assertEquals(0, h.sound.stops) // the late write did not break the ring
         assertEquals(0, h.finished)
         assertEquals(listOf("ring-1"), h.notifier.ringing) // now with Stop and Snooze

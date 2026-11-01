@@ -14,6 +14,8 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.ParkedSnooze
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
@@ -459,6 +461,70 @@ class RingingControllerImplTest {
         assertTrue(h.repo.get("b")!!.enabled)
         assertEquals(SnoozeEntry("ring-B", "b", bSnoozed.snoozedUntil), h.ledger.get("ring-B"))
         assertFalse("ring-B" in h.armer.cancelled)
+    }
+
+    private val occurrenceX = Instant.parse("2026-03-02T06:30:00Z")
+
+    private fun linkedAlarm(id: String, enabled: Boolean = true) = alarm(id, emptySet()).copy(
+        enabled = enabled,
+        link = AlarmLink("owner", "owner-$id", LinkMode.RING, null, true, null, null, null, null),
+    )
+
+    @Test fun snoozeWritesLedgerEntryWithTheRingsOccurrence() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing.copy(occurrenceAt = occurrenceX))
+        h.controller().snooze()
+        assertEquals(occurrenceX, h.ledger.get("ring-1")!!.occurrenceAt)
+    }
+
+    @Test fun snoozeResumeKeepsOccurrenceAndMergedWhenSlotHoldsTheRing() = runTest {
+        val merged = listOf(RingMember("m", occurrenceX))
+        val state = ringA.copy(occurrenceAt = occurrenceX, merged = merged)
+        val h = H(listOf(alarm("a", emptySet())), state)
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(state.copy(snoozedUntil = null), h.store.state.first())
+    }
+
+    @Test fun snoozeResumeTakesOccurrenceFromStateWhenLedgerLacksIt() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringA.copy(occurrenceAt = occurrenceX))
+        h.ledger.put("ring-A", "a", sevenTen)
+        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(occurrenceX, h.store.state.first()!!.occurrenceAt)
+    }
+
+    @Test fun snoozeResumeOfParkedEntryUsesTheParkedOccurrence() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(occurrenceAt = Instant.EPOCH))
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
+        assertTrue(h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(RingState("a", "ring-A", now, null, occurrenceX), h.store.state.first())
+    }
+
+    @Test fun dismissLinkedOneShotUsesSetJoinerEnabledAndLeavesEnabled() = runTest {
+        val h = H(listOf(linkedAlarm("a")), ringing)
+        h.controller().dismiss("ring-1")
+        val row = h.repo.get("a")!!
+        assertTrue(row.enabled)
+        assertFalse(row.link!!.joinerEnabled)
+    }
+
+    @Test fun dismissOwnOneShotStillCallsSetEnabled() = runTest {
+        val calls = mutableListOf<String>()
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val repo = object : AlarmRepository by h.repo {
+            override suspend fun setEnabled(id: String, enabled: Boolean) { calls += "setEnabled"; h.repo.setEnabled(id, enabled) }
+            override suspend fun setJoinerEnabled(id: String, enabled: Boolean) { calls += "setJoinerEnabled" }
+        }
+        RingingControllerImpl(repo, h.store, h.settings, h.scheduler, h.armer, h.notifier, h.ledger) { now }.dismiss("ring-1")
+        assertEquals(listOf("setEnabled"), calls)
+    }
+
+    @Test fun dropParkedLinkedOneShotUsesSetJoinerEnabled() = runTest {
+        val h = H(listOf(linkedAlarm("a"), alarm("b", emptySet())), ringB)
+        h.ledger.put("ring-A", "a", sevenTen)
+        h.controller().dismiss("ring-A")
+        val row = h.repo.get("a")!!
+        assertTrue(row.enabled)
+        assertFalse(row.link!!.joinerEnabled)
     }
 
     @Test fun snoozeResumeNeverSupersedesItself() = runTest {
