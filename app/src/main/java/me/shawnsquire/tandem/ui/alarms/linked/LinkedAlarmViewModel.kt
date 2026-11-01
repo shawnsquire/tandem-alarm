@@ -94,6 +94,20 @@ class LinkedAlarmViewModel(
 
     private var lastTitle: Pair<String, String>? = null
 
+    init {
+        // A command this sheet did not send (the Alarms switch, an earlier process or VM) is tracked too, so its
+        // Pending, then Applied or Rejected, shows here as well.
+        viewModelScope.launch {
+            repository.alarms.collect { alarms ->
+                val pending = alarms.firstOrNull { it.id == alarmId }?.link?.pendingBoth ?: return@collect
+                sent.update { tracked ->
+                    if (tracked?.type == pending.type && tracked.occurrenceAt == pending.occurrenceAt) tracked
+                    else SentBoth(pending.type, pending.occurrenceAt, returned = true)
+                }
+            }
+        }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val state: StateFlow<LinkedSheetState> =
         combine(repository.alarms, pairing.status, partnerRepository.partner, local, sent) { alarms, status, partner, local, sent ->

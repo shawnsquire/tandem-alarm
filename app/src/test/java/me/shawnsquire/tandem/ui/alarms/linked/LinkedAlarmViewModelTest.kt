@@ -263,4 +263,37 @@ class LinkedAlarmViewModelTest {
         assertFalse(e.latest().confirmingLeave)
         assertTrue(e.links.calls.isEmpty())
     }
+
+    // A pending command the sheet did not send itself (the Alarms switch, a restart, a recreated VM).
+
+    @Test fun adoptsAPendingDisableAndSettlesItToApplied() = runTest {
+        val e = Env(joined(link = link(pending = PendingBoth(CommandType.DISABLE, ownerNext, "c1"))))
+        assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
+        e.repo.upsert(joined(enabled = false))
+        assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
+    }
+
+    @Test fun adoptsAPendingEnableAndSettlesItToApplied() = runTest {
+        val e = Env(joined(enabled = false, link = link(pending = PendingBoth(CommandType.ENABLE, null, "c1"))))
+        assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
+        e.repo.upsert(joined(enabled = true))
+        assertEquals(CommandUiStatus.Applied, e.latest().bothStatus)
+    }
+
+    @Test fun anAdoptedCommandThatClearsWithoutEffectIsRejected() = runTest {
+        val e = Env(joined(link = link(pending = PendingBoth(CommandType.DISABLE, ownerNext, "c1"))))
+        assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
+        e.repo.updateLink("j") { it.copy(pendingBoth = null) }
+        assertEquals(CommandUiStatus.Rejected("rejected"), e.latest().bothStatus)
+    }
+
+    @Test fun closingTheSheetKeepsAPendingStatusAndClearsASettledOne() = runTest {
+        val e = Env(joined(link = link(pending = PendingBoth(CommandType.DISABLE, ownerNext, "c1"))))
+        e.latest()
+        e.vm.onSheetClosed()
+        assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
+        e.repo.upsert(joined(enabled = false))
+        e.vm.onSheetClosed()
+        assertNull(e.latest().bothStatus)
+    }
 }
