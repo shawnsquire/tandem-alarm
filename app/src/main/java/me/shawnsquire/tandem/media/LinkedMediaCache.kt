@@ -5,9 +5,16 @@ import me.shawnsquire.tandem.schedule.Alarm
 /** What a linked ring shows and plays. [soundCandidates] exclude the system/bundled fallbacks, which the sound adapter appends. */
 data class RingMedia(val label: String, val soundCandidates: List<String>, val wallpaperPaths: List<String>)
 
-/** Joiner-side cache of the owner's media under filesDir/linked. Real implementation: L5. */
+/**
+ * Joiner-side cache of the owner's media under filesDir/linked. Real implementation: L5.
+ *
+ * It must persist the refs it receives in [update] (to storage a fresh process can read), because a
+ * fire can run in a fresh process, and before unlock, with no LinkSync pass beforehand.
+ */
 interface LinkedMediaCache {
-    /** LinkSync, each pass: the owner's current refs for linked alarms (keyed by ownerAlarmId) and default wallpaper; enqueues downloads of uncached hashes (network-constrained WorkManager). */
+    /**
+     * Must persist [alarms] and [defaultWallpaper] before returning, not just hold them in memory:
+     * [resolve] and [pathFor] may run in a process that never saw this call. LinkSync, each pass: the owner's current refs for linked alarms (keyed by ownerAlarmId) and default wallpaper; enqueues downloads of uncached hashes (network-constrained WorkManager). */
     fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?)
 
     /** Cached file path (filesDir/linked/{sha}) for [sha], or null. */

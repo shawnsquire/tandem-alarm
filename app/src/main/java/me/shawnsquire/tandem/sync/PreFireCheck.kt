@@ -16,6 +16,10 @@ interface PreFireCheck {
      * applies the doc through LinkSync, and the caller then re-reads local state, as today. The
      * owner's solo skip never suppresses. (L4)
      *
+     * The owner's published `nextOccurrenceAt` skips past a solo-skipped occurrence, so "X isn't an
+     * occurrence" must be computed from the owner's hour, minute and days, never from
+     * `nextOccurrenceAt`; otherwise a solo skip would suppress the joiner.
+     *
      * With [linkedOwnerAlarmId], returns true only if the command pull and the `Source.SERVER`
      * owner-doc read both succeeded and the doc was applied; otherwise false, and the caller must
      * not suppress the linked row on copied owner state (I1).
