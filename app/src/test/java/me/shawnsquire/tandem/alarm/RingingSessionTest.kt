@@ -1369,6 +1369,45 @@ class RingingSessionTest {
         assertEquals(RingState("a", entry.ringId, snoozeEnd, null, occurrence), h.rawStore.state.first())
     }
 
+    private val bOccurrence = occurrence.plusSeconds(60)
+
+    /** a rings in this session; b fires a minute later and merges into it. */
+    private suspend fun TestScope.mergedRing(): Harness {
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        return h
+    }
+
+    @Test fun stopForThePrimaryKeepsTheSessionSoundingForThePromotedMember() = runTest {
+        val h = mergedRing()
+        h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(0, h.finished)
+        assertEquals(0, h.sound.stops)
+        val state = h.rawStore.state.first()!!
+        assertEquals("ring-1", state.ringId)
+        assertEquals(RingMember("b", bOccurrence), RingMember(state.alarmId, state.occurrenceAt!!))
+
+        h.controller.dismissOccurrence("b", bOccurrence, RingOrigin.REMOTE) // the last member ends it
+        runCurrent()
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun snoozeForAMemberSplitsItOutAndKeepsTheSessionSounding() = runTest {
+        val h = mergedRing()
+        h.controller.snoozeOccurrence("b", bOccurrence, snoozeEnd, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(0, h.finished)
+        assertEquals(0, h.sound.stops)
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
+        val entry = h.ledger.all().single()
+        assertEquals(SnoozeEntry(entry.ringId, "b", snoozeEnd, bOccurrence), entry)
+    }
+
     /** X fired here at 11:30:00 and sits in its pre-fire check; the partner's command lands at 11:30:01. */
     private fun TestScope.preFireRace(resolve: suspend (RingingControllerImpl) -> Unit): Harness {
         val gate = CompletableDeferred<Unit>()

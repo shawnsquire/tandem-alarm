@@ -1092,6 +1092,20 @@ class RingingControllerImplTest {
         assertTrue(mirror.calls.isEmpty())
     }
 
+    @Test fun writeUnlessRingingStillRefusesForAPromotedMember() = runTest {
+        // b fired at 10:03 while a (started 09:59) was sounding: after a's stop, b is the primary
+        // of a ring that started before its own occurrence.
+        val bAt = Instant.parse("2026-03-02T10:03:00Z")
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX.copy(merged = listOf(RingMember("b", bAt))))
+        val c = h.controller()
+        c.dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertEquals("b", h.store.state.first()!!.alarmId)
+        var writes = 0
+        assertFalse(c.writeUnlessRinging("b", bAt) { writes++ })
+        assertEquals(0, writes)
+        assertTrue(c.writeUnlessRinging("b", bAt.plusSeconds(86400)) { writes++ }) // a later occurrence
+    }
+
     @Test fun remoteStopForAMergedMemberRemovesOnlyIt() = runTest {
         val h = mergedH()
         val mirror = RecordingMirror()

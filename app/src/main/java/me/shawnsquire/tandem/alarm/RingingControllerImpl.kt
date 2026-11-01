@@ -140,7 +140,9 @@ class RingingControllerImpl(
             // A failed read throws before anything is written: the command is not applied.
             val state = ringStateStore.state.first()
             val ring = state?.takeIf { it.alarmId == alarmId }
-            if (ring != null && (occurrenceAt == null || ring.startedAt >= occurrenceAt)) return@withLock false
+            // A promoted member is the primary of a ring that started before its own occurrence.
+            val ringing = ring != null && (occurrenceAt == null || ring.startedAt >= occurrenceAt || ring.occurrenceAt?.let { it >= occurrenceAt } == true)
+            if (ringing) return@withLock false
             // A merged member is ringing too.
             val member = state?.merged.orEmpty().any { it.alarmId == alarmId && (occurrenceAt == null || it.occurrenceAt >= occurrenceAt) }
             if (member) return@withLock false
