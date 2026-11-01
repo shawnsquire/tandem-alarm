@@ -1,5 +1,7 @@
 package me.shawnsquire.tandem.sync
 
+import me.shawnsquire.tandem.media.AlarmMedia
+import me.shawnsquire.tandem.media.MediaRef
 import kotlinx.coroutines.flow.Flow
 import me.shawnsquire.tandem.schedule.RingState
 import java.time.DayOfWeek

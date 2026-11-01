@@ -1,8 +1,6 @@
 package me.shawnsquire.tandem.media
 
 import me.shawnsquire.tandem.schedule.Alarm
-import me.shawnsquire.tandem.sync.AlarmMedia
-import me.shawnsquire.tandem.sync.MediaRef
 
 /** What a linked ring shows and plays. [soundCandidates] exclude the system/bundled fallbacks, which the sound adapter appends. */
 data class RingMedia(val label: String, val soundCandidates: List<String>, val wallpaperPaths: List<String>)
