@@ -57,6 +57,8 @@ class RingingSession(
     private val liveRings: RingRegistry = SyncRingRegistry(),
     private val isArmed: (Alarm) -> Boolean = ::isArmed,
     private val isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
+    /** The system alarm sound's Uri as the media cache places it; see [startRingOutputs]. */
+    private val systemAlarmUri: () -> String? = ::systemDefaultAlarmUri,
     private val onFinished: () -> Unit,
 ) {
     private val jobs = mutableListOf<Job>()
@@ -542,16 +544,21 @@ class RingingSession(
      * The wallpaper is only for the screen, so it isn't resolved here.
      */
     private suspend fun resolveMedia(alarm: Alarm?, default: String?): RingMedia =
-        resolveRingMedia(alarm, linkedMediaCache, default, null, dispatcher = ioDispatcher)
+        resolveRingMedia(alarm, linkedMediaCache, default, null, dispatcher = ioDispatcher, systemAlarmUri = systemAlarmUri)
 
     /**
      * The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it.
-     * [candidates] were resolved for [primary]: a linked one's (cache or fallback) already end on the
-     * system and joiner defaults, so the adapter adds none of its own.
+     * [candidates] were resolved for [primary]. A linked one's from the real cache or the fallback
+     * already carry the system alarm Uri, in the cache's order, so the adapter adds none of its own;
+     * the default cache (until AppContainer attaches the real one) leaves it out, so they get the
+     * adapter's defaults as an own ring's do.
      */
     private suspend fun startRingOutputs(candidates: List<String>, primary: Alarm?) {
         startVibration("vibration")
-        guarded("sound", Unit) { sound.start(candidates, appendSystemDefaults = primary?.link == null) }
+        guarded("sound", Unit) {
+            val ordered = primary?.link != null && runCatching(systemAlarmUri).getOrNull() in candidates
+            sound.start(candidates, appendSystemDefaults = !ordered)
+        }
     }
 
     /**

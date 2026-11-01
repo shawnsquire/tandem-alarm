@@ -55,6 +55,9 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
+/** What the media cache places as the system alarm sound (Settings.System.DEFAULT_ALARM_ALERT_URI). */
+private const val SYSTEM_ALARM_URI = "content://settings/system/alarm_alert"
+
 class RecordingSound(private val clock: () -> Long) : AlarmSound {
     val starts = mutableListOf<List<String>>()
     /** Each start's appendSystemDefaults: false for a linked ring, whose candidates already end on them. */
@@ -177,6 +180,7 @@ class RingingSessionTest {
         isArmed: (Alarm) -> Boolean = ::isArmed,
         isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
         cache: LinkedMediaCache = DefaultLinkedMediaCache,
+        systemAlarmUri: () -> String? = { SYSTEM_ALARM_URI },
     ) {
         val repo = FakeAlarmRepository(alarms)
         val rawStore = FakeRingStateStore(state)
@@ -199,7 +203,7 @@ class RingingSessionTest {
             repo, store, settings, preFire, scheduler, controller, sound, vibration, notifier,
             scope.backgroundScope, dispatcher, { clock }, { ids.next() },
             firedLedger = fired, linkedMediaCache = cache, liveRings = live, isArmed = isArmed, isSkipped = isSkipped,
-            onFinished = { finished++ },
+            systemAlarmUri = systemAlarmUri, onFinished = { finished++ },
         )
         fun fire(id: String = "a", occ: Instant) = session.start(id, occ, false, null)
     }
@@ -225,7 +229,8 @@ class RingingSessionTest {
         storeWrap: ((FakeRingStateStore) -> RingStateStore)? = null,
         isArmed: (Alarm) -> Boolean = ::isArmed,
         cache: LinkedMediaCache = DefaultLinkedMediaCache,
-    ) = Harness(this, alarms, state, preFire, clockNow, ioDispatcher, settings, storeWrap, isArmed = isArmed, cache = cache)
+        systemAlarmUri: () -> String? = { SYSTEM_ALARM_URI },
+    ) = Harness(this, alarms, state, preFire, clockNow, ioDispatcher, settings, storeWrap, isArmed = isArmed, cache = cache, systemAlarmUri = systemAlarmUri)
 
     // ---- I1 ----
 
@@ -2136,14 +2141,32 @@ class RingingSessionTest {
     // ---- Linked media ----
 
     @Test fun linkedRingSoundsTheCacheCandidatesInOrder() = runTest {
-        val media = RingMedia("Owner", listOf("/override/unreadable", "/owner/good"), emptyList())
+        val media = RingMedia("Owner", listOf("/override/unreadable", "/owner/good", SYSTEM_ALARM_URI, "content://def"), emptyList())
         val h = harness(alarms = listOf(linkedAs(LinkMode.RING)), cache = StubMediaCache(media))
         h.fire(occ = occurrence)
         runCurrent()
         // The sound adapter walks these in order, so an unreadable override falls to the owner's media.
-        assertEquals(listOf(listOf("/override/unreadable", "/owner/good")), h.sound.starts)
-        assertEquals(listOf(false), h.sound.appendsDefaults) // exactly the cache's list: it already ends on the defaults
+        assertEquals(listOf(media.soundCandidates), h.sound.starts)
+        assertEquals(listOf(false), h.sound.appendsDefaults) // exactly the cache's list: it carries the system alarm Uri
         assertEquals(listOf(listOf("Owner")), h.notifier.ringingLabels)
+    }
+
+    @Test fun linkedRingFromTheDefaultCacheGetsTheSystemDefaultsAppended() = runTest {
+        // Before AppContainer attaches the real cache: the alarm's tone and the joiner default only.
+        val h = harness(alarms = listOf(linkedAs(LinkMode.RING)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts)
+        assertEquals(listOf(true), h.sound.appendsDefaults)
+    }
+
+    @Test fun linkedRingWithNoReadableSystemAlarmUriGetsTheSystemDefaultsAppended() = runTest {
+        val media = RingMedia("Owner", listOf("/owner/good"), emptyList())
+        val h = harness(alarms = listOf(linkedAs(LinkMode.RING)), cache = StubMediaCache(media), systemAlarmUri = { error("settings") })
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("/owner/good")), h.sound.starts)
+        assertEquals(listOf(true), h.sound.appendsDefaults)
     }
 
     @Test fun neverReturningCacheStillStartsSoundFromTheFallbackWithinTheTimeout() = runTest {
@@ -2151,7 +2174,8 @@ class RingingSessionTest {
         h.fire(occ = occurrence)
         runCurrent()
         advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds + 1); runCurrent()
-        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts)
+        assertEquals(listOf(listOf("content://tone/alarm", SYSTEM_ALARM_URI)), h.sound.starts)
+        assertEquals(listOf(false), h.sound.appendsDefaults)
         assertTrue(h.sound.startTimes.single() <= RING_MEDIA_TIMEOUT.inWholeMilliseconds + 3_000)
         assertEquals(1, h.vibration.starts)
     }
@@ -2160,8 +2184,8 @@ class RingingSessionTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.RING)), cache = StubMediaCache(fail = true))
         h.fire(occ = occurrence)
         runCurrent()
-        // The fallback builds the cache's order itself (no system alarm Uri on the JVM).
-        assertEquals(listOf(listOf("content://tone/alarm")), h.sound.starts)
+        // The fallback builds the cache's order itself, the system alarm Uri included.
+        assertEquals(listOf(listOf("content://tone/alarm", SYSTEM_ALARM_URI)), h.sound.starts)
         assertEquals(listOf(false), h.sound.appendsDefaults)
     }
 
@@ -2182,13 +2206,13 @@ class RingingSessionTest {
     }
 
     @Test fun upgradedNotifyRingSoundsTheCacheCandidatesAndLabelOfThePrimary() = runTest {
-        val media = RingMedia("Owner label", listOf("/owner/tone"), emptyList())
+        val media = RingMedia("Owner label", listOf("/owner/tone", SYSTEM_ALARM_URI), emptyList())
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), alarm("b")), cache = StubMediaCache(media))
         h.fire(occ = occurrence)
         runCurrent()
         join(h, "b", bOccurrence)
         runCurrent()
-        assertEquals(listOf(listOf("/owner/tone")), h.sound.starts)
+        assertEquals(listOf(media.soundCandidates), h.sound.starts)
         assertEquals(listOf(false), h.sound.appendsDefaults)
         assertEquals(listOf(listOf("Owner label")), h.notifier.ringingLabels)
     }
