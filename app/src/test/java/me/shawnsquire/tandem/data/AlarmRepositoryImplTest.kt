@@ -205,6 +205,18 @@ class AlarmRepositoryImplTest {
     }
 
     @Test
+    fun expiredSoloSkipOnLinkedOneShotIsClearedButStaysEnabledInDb() = runTest {
+        val x = clock.now.plusSeconds(60)
+        val link = AlarmLink("u", "o", LinkMode.RING, null, true, null, null, null, null)
+        repo.upsert(alarm(days = emptySet()).copy(link = link, soloSkippedOccurrenceAt = x))
+        clock.now = x.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(1)
+        repo.get("a")
+        val row = dao.get("a")!!
+        assertTrue(row.enabled)
+        assertNull(row.soloSkippedOccurrenceAt)
+    }
+
+    @Test
     fun expiredOwnerSkipIsClearedInDbAndRowUntouchedOtherwise() = runTest {
         val x = clock.now.plusSeconds(60)
         val link = AlarmLink("u", "o", LinkMode.RING, x, true, null, null, null, null)

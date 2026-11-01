@@ -238,7 +238,7 @@ fun validate(
             } else {
                 CommandDecision.Reject("not supported yet")
             }
-        CommandType.INVITE_LINK -> CommandDecision.Apply
+        CommandType.INVITE_LINK -> CommandDecision.Apply // handled above; kept for exhaustiveness
     }
 }
 
