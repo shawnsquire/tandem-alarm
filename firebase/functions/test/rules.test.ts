@@ -204,6 +204,32 @@ describe("households/{hid}/devices/{uid}", () => {
   it("denies writing the partner's device doc", async () => {
     await assertFails(updateDoc(doc(dbFor(ALICE), devicePath(BOB)), { fcmToken: "evil" }));
   });
+  describe("with links, media and solo skip fields", () => {
+    const linkedDevice = () => ({
+      displayName: "Alice",
+      fcmToken: "t",
+      updatedAt: Timestamp.now(),
+      ringing: null,
+      links: [{ ownerAlarmId: "a1", mode: "RING" }],
+      alarms: [
+        {
+          id: "a1",
+          media: {
+            wallpaper: { sha: "abc", size: 10 },
+            ringtone: { sha: "def", size: 20, title: "Tune" },
+          },
+          soloSkippedOccurrenceAt: Timestamp.now(),
+        },
+      ],
+    });
+
+    it("lets the owner write it", async () => {
+      await assertSucceeds(setDoc(doc(dbFor(ALICE), devicePath(ALICE)), linkedDevice()));
+    });
+    it("denies the partner writing it", async () => {
+      await assertFails(setDoc(doc(dbFor(BOB), devicePath(ALICE)), linkedDevice()));
+    });
+  });
   it("denies a non-member creating a device doc under their own uid", async () => {
     await assertFails(setDoc(doc(dbFor(CAROL), devicePath(CAROL)), { displayName: "Carol" }));
   });
@@ -250,6 +276,33 @@ describe("households/{hid}/commands: create", () => {
       await assertSucceeds(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ type })));
     },
   );
+  it("accepts SNOOZE with snoozedUntil and occurrenceAt", async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(dbFor(ALICE), cmdPath("c1")),
+        command({ type: "SNOOZE", occurrenceAt: inFuture(), snoozedUntil: inFuture() }),
+      ),
+    );
+  });
+  it("accepts INVITE_LINK", async () => {
+    await assertSucceeds(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ type: "INVITE_LINK" })));
+  });
+  it("denies a numeric snoozedUntil", async () => {
+    await assertFails(
+      setDoc(
+        doc(dbFor(ALICE), cmdPath("c1")),
+        command({ type: "SNOOZE", snoozedUntil: Date.now() }),
+      ),
+    );
+  });
+  it("denies a string snoozedUntil", async () => {
+    await assertFails(
+      setDoc(
+        doc(dbFor(ALICE), cmdPath("c1")),
+        command({ type: "SNOOZE", snoozedUntil: "tomorrow" }),
+      ),
+    );
+  });
   it("denies a spoofed from", async () => {
     await assertFails(setDoc(doc(dbFor(ALICE), cmdPath("c1")), command({ from: BOB, to: BOB })));
   });
