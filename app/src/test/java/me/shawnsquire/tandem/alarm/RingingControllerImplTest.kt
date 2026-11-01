@@ -606,4 +606,50 @@ class RingingControllerImplTest {
         h.controller().clearStale(notLive)
         assertEquals(0, h.scheduler.rescheduleCount)
     }
+
+    @Test fun writeUnlessRingingRefusesWhileThatAlarmRings() = runTest {
+        val h = H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), ringing)
+        var wrote = false
+        assertFalse(h.controller().writeUnlessRinging("a", null) { wrote = true })
+        assertFalse(h.controller().writeUnlessRinging("a", ringing.startedAt) { wrote = true })
+        assertFalse(wrote)
+    }
+
+    @Test fun writeUnlessRingingWritesForOtherAlarmsAndEarlierRings() = runTest {
+        val h = H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), ringing)
+        var writes = 0
+        assertTrue(h.controller().writeUnlessRinging("b", null) { writes++ })
+        assertTrue(h.controller().writeUnlessRinging("a", ringing.startedAt.plusSeconds(60)) { writes++ })
+        assertEquals(2, writes)
+    }
+
+    @Test fun claimFireWaitsForAWriteInProgressAndSeesIt() = runTest {
+        val h = H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), null)
+        val c = h.controller()
+        val inWrite = CompletableDeferred<Unit>()
+        val finishWrite = CompletableDeferred<Unit>()
+        var skipped = false
+        val writer = launch {
+            c.writeUnlessRinging("a", null) {
+                inWrite.complete(Unit)
+                finishWrite.await()
+                skipped = true
+            }
+        }
+        runCurrent()
+        inWrite.await()
+        var sawSkip: Boolean? = null
+        val claim = launch {
+            c.claimFire(RingState("a", "r-new", now, null), stillDue = { (!skipped).also { sawSkip = skipped } })
+        }
+        runCurrent()
+        // The claim is parked behind the write: it has not even run its re-check.
+        assertNull(sawSkip)
+        finishWrite.complete(Unit)
+        runCurrent()
+        writer.join()
+        claim.join()
+        assertEquals(true, sawSkip)
+        assertNull(h.store.state.first())
+    }
 }

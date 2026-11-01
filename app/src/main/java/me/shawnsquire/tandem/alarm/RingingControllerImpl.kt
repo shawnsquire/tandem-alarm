@@ -55,6 +55,15 @@ class RingingControllerImpl(
         Unit
     } }
 
+    override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: Instant?, write: suspend () -> Unit): Boolean =
+        withContext(NonCancellable) { mutex.withLock {
+            // A failed read throws before anything is written: the command is not applied.
+            val ring = ringStateStore.state.first()?.takeIf { it.alarmId == alarmId }
+            if (ring != null && (occurrenceAt == null || ring.startedAt >= occurrenceAt)) return@withLock false
+            write()
+            true
+        } }
+
     override suspend fun snooze() = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         if (state == null || state.snoozedUntil != null) return@withLock

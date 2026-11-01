@@ -99,6 +99,16 @@ class FakeRingingController : RingingController {
         private set
     override suspend fun dismiss(ringId: String) { dismissed += ringId }
     override suspend fun snooze() { snoozeCount++ }
+
+    /** When set, [writeUnlessRinging] refuses (as if that ring had started) instead of writing. */
+    var ringStartedAt: Instant? = null
+    var ringingAlarmId: String? = null
+    override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: Instant?, write: suspend () -> Unit): Boolean {
+        val started = ringStartedAt
+        if (alarmId == ringingAlarmId && started != null && (occurrenceAt == null || started >= occurrenceAt)) return false
+        write()
+        return true
+    }
 }
 
 class FakePreFireCheck(var result: Boolean = true) : PreFireCheck {

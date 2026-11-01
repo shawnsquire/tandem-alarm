@@ -300,4 +300,66 @@ class CommandApplierImplTest {
         e.applier.apply(cmd(CommandType.DISABLE))
         assertEquals("Your partner", e.notifier.calls.single().partnerName)
     }
+
+    /**
+     * The controller reports a ring that started after the applier's validation read, as when a fire
+     * wins the ringing lock first: the write must not happen.
+     */
+    private fun TestScope.racingEnv(alarm: Alarm, startedAt: Instant): Env =
+        env(alarms = listOf(alarm)).also {
+            it.ringing.ringingAlarmId = alarm.id
+            it.ringing.ringStartedAt = startedAt
+        }
+
+    private suspend fun Env.assertRaceRejected(c: Command) {
+        assertEquals(Outcome.Rejected("already ringing"), processed.outcome(c.id))
+        assertEquals(
+            listOf(FakeCommandRemote.Resolved("h1", c.id, CommandStatus.REJECTED, "already ringing")),
+            remote.resolved,
+        )
+        assertTrue(notifier.calls.isEmpty())
+        assertEquals(0, scheduler.rescheduleCount)
+    }
+
+    @Test fun `skip that loses the race to a ring is rejected and not written`() = runTest {
+        val c = cmd(CommandType.SKIP_NEXT)
+        val e = racingEnv(weekly, c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertNull(e.alarms.get("a1")!!.skippedOccurrenceAt)
+        assertTrue(e.alarms.get("a1")!!.enabled)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `a refused skip leaves a skip that was already there`() = runTest {
+        val old = now.minusSeconds(86_400)
+        val c = cmd(CommandType.SKIP_NEXT)
+        val e = racingEnv(weekly.copy(skippedOccurrenceAt = old), c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertEquals(old, e.alarms.get("a1")!!.skippedOccurrenceAt)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `disable that loses the race to a ring is rejected and not written`() = runTest {
+        val c = cmd(CommandType.DISABLE)
+        val e = racingEnv(weekly, c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertTrue(e.alarms.get("a1")!!.enabled)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `one shot skip that loses the race to a ring is rejected and not written`() = runTest {
+        val c = cmd(CommandType.SKIP_NEXT, oneShot)
+        val e = racingEnv(oneShot, c.occurrenceAt!!)
+        e.applier.apply(c)
+        assertTrue(e.alarms.get("a2")!!.enabled)
+        e.assertRaceRejected(c)
+    }
+
+    @Test fun `a ring that started before the occurrence still applies the skip`() = runTest {
+        val c = cmd(CommandType.SKIP_NEXT)
+        val e = racingEnv(weekly, c.occurrenceAt!!.minusSeconds(86_400))
+        e.applier.apply(c)
+        assertEquals(c.occurrenceAt, e.alarms.get("a1")!!.skippedOccurrenceAt)
+        e.assertApplied(c)
+    }
 }

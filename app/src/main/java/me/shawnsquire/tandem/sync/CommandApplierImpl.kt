@@ -103,7 +103,15 @@ class CommandApplierImpl(
             if (outcome == Outcome.Applied) {
                 try {
                     turnedOff = cmd.type == CommandType.SKIP_NEXT && alarm?.isOneShot() == true
-                    applyLocally(cmd, turnedOff)
+                    // A skip or turn-off is written under the ringing lock, so a ring starting now
+                    // either sees it or makes this a rejection with nothing written (I1, I3).
+                    val written = if (cmd.type == CommandType.SKIP_NEXT || cmd.type == CommandType.DISABLE) {
+                        ringing.writeUnlessRinging(cmd.alarmId, cmd.occurrenceAt) { applyLocally(cmd, turnedOff) }
+                    } else {
+                        applyLocally(cmd, turnedOff)
+                        true
+                    }
+                    if (!written) outcome = Outcome.Rejected("already ringing")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
