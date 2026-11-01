@@ -1961,6 +1961,19 @@ class RingingSessionTest {
         assertTrue(h.notifier.notify.isEmpty())
     }
 
+    @Test fun notifyRingThatCantAlertVibratesBeforeTheMediaResolves() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        val events = mutableListOf<String>()
+        h.vibration.events = events
+        h.sound.events = events
+        h.notifier.notifyCanAlert = false
+        slotSession(h, h.controller, cache = StubMediaCache(hang = true)).start("a", occurrence, false, null)
+        advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds); runCurrent() // the Notify ring's own media resolve
+        assertEquals(listOf("vibration"), events) // the surface can't alert; the full ring's media takes up to 500 ms more
+        advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds); runCurrent()
+        assertEquals(listOf("vibration", "sound"), events)
+    }
+
     @Test fun notifyRingRelabelledWhenItCantAlertAnyMoreRingsInFull() = runTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
         h.fire(occ = occurrence)

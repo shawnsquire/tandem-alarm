@@ -552,6 +552,8 @@ class RingingSession(
      * notification, whose fresh post launches the full-screen intent and replaces the Notify one.
      */
     private suspend fun ringInFull(primary: Alarm?, ringId: String) {
+        // Ringing in full is decided: vibrate before the media resolve, which can take a while (I1).
+        if (!finished && !silencing && !fullSurface) startVibration("vibration")
         val media = resolveMedia(primary, readDefaultRingtone())
         // Once only: the member watch and a relabel that can't alert may both get here, each across the resolve.
         if (finished || fullSurface) return
