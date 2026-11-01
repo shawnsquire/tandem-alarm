@@ -65,14 +65,14 @@ android {
     }
 
     sourceSets {
-        // Exported Room schemas for MigrationTestHelper in the Robolectric tests. AGP's unit-test
-        // run reads merged assets from the variant (the "test" source set's assets are ignored),
-        // so they are added to debug; this puts the small JSON files in the debug APK only.
         // Reuse the debug manifest (cleartext to the emulator host) and resources.
         getByName("partner") {
             manifest.srcFile("src/debug/AndroidManifest.xml")
             res.srcDirs("src/debug/res")
         }
+        // Exported Room schemas for MigrationTestHelper in the Robolectric tests. AGP's unit-test
+        // run reads merged assets from the variant (the "test" source set's assets are ignored),
+        // so they are added to debug; this puts the small JSON files in the debug APK only.
         getByName("debug") {
             assets.srcDir("$projectDir/schemas")
         }
