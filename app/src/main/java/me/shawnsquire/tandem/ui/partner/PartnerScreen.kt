@@ -34,6 +34,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -51,6 +54,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.ui.amPm
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmSheetRoute
 import me.shawnsquire.tandem.ui.formatClock
 import me.shawnsquire.tandem.ui.partnerViewModelFactory
 import me.shawnsquire.tandem.ui.theme.TandemTheme
@@ -62,6 +66,8 @@ class PartnerCallbacks(
     val onJoin: () -> Unit = {},
     val onStop: () -> Unit = {},
     val onAction: (PartnerAction, String) -> Unit = { _, _ -> },
+    val onJoinAlarm: (String) -> Unit = {},
+    val onOpenLinked: (String) -> Unit = {},
 )
 
 @Composable
@@ -70,11 +76,15 @@ fun PartnerRoute(
     viewModel: PartnerViewModel = viewModel(factory = partnerViewModelFactory),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // The Linked alarm sheet is hosted here; the id survives rotation.
+    var openLinkedId by rememberSaveable { mutableStateOf<String?>(null) }
     val callbacks = PartnerCallbacks(
         onShowCode = viewModel::showCode,
         onJoinInput = viewModel::onJoinInput,
         onJoin = viewModel::join,
         onStop = viewModel::stopRinging,
+        onJoinAlarm = viewModel::joinAlarm,
+        onOpenLinked = { openLinkedId = it },
         onAction = { action, id ->
             when (action) {
                 PartnerAction.SKIP_NEXT -> viewModel.skipNext(id)
@@ -85,6 +95,8 @@ fun PartnerRoute(
         },
     )
     PartnerScreen(state, callbacks, modifier)
+
+    openLinkedId?.let { id -> LinkedAlarmSheetRoute(alarmId = id, onDismiss = { openLinkedId = null }) }
 }
 
 @Composable
@@ -239,7 +251,7 @@ private fun PairedContent(state: PartnerUiState, callbacks: PartnerCallbacks, mo
             }
         }
         items(state.alarms, key = { it.id }) { row ->
-            AlarmCard(row, state.partnerName, is24Hour, callbacks.onAction)
+            AlarmCard(row, state.partnerName, is24Hour, callbacks.onAction, callbacks.onJoinAlarm, callbacks.onOpenLinked)
         }
     }
 }
@@ -308,6 +320,8 @@ private fun AlarmCard(
     partnerName: String,
     is24Hour: Boolean,
     onAction: (PartnerAction, String) -> Unit,
+    onJoinAlarm: (String) -> Unit,
+    onOpenLinked: (String) -> Unit,
 ) {
     val dim = if (row.chip == AlarmChip.OFF) 0.6f else 1f
     Card(Modifier.fillMaxWidth()) {
@@ -339,26 +353,34 @@ private fun AlarmCard(
                 }
                 StateChip(row.chip)
             }
-            if (row.actions.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.actions.forEach { action ->
-                        val label = stringResource(
-                            when (action) {
-                                PartnerAction.SKIP_NEXT -> R.string.partner_action_skip
-                                PartnerAction.UNSKIP -> R.string.partner_action_unskip
-                                PartnerAction.TURN_OFF -> R.string.partner_action_turn_off
-                                PartnerAction.TURN_ON -> R.string.partner_action_turn_on
-                            },
-                        )
-                        if (action == PartnerAction.TURN_OFF) {
-                            TextButton(onClick = { onAction(action, row.id) }, enabled = row.pendingAction != action) { Text(label) }
-                        } else {
-                            OutlinedButton(onClick = { onAction(action, row.id) }, enabled = row.pendingAction != action) { Text(label) }
-                        }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.actions.forEach { action ->
+                    val label = stringResource(
+                        when (action) {
+                            PartnerAction.SKIP_NEXT -> R.string.partner_action_skip
+                            PartnerAction.UNSKIP -> R.string.partner_action_unskip
+                            PartnerAction.TURN_OFF -> R.string.partner_action_turn_off
+                            PartnerAction.TURN_ON -> R.string.partner_action_turn_on
+                        },
+                    )
+                    if (action == PartnerAction.TURN_OFF) {
+                        TextButton(onClick = { onAction(action, row.id) }, enabled = row.pendingAction != action) { Text(label) }
+                    } else {
+                        OutlinedButton(onClick = { onAction(action, row.id) }, enabled = row.pendingAction != action) { Text(label) }
+                    }
+                }
+                if (row.linkedAlarmId != null) {
+                    FilledTonalButton(onClick = { onOpenLinked(row.linkedAlarmId) }) {
+                        Text(stringResource(R.string.link_joined_state))
+                    }
+                } else {
+                    OutlinedButton(onClick = { onJoinAlarm(row.id) }, enabled = !row.joining) {
+                        Text(stringResource(R.string.link_join))
                     }
                 }
             }
             CommandStatusLine(row.commandStatus, partnerName, onContainer = false)
+            row.joinError?.let { CommandStatusLine(CommandUiStatus.Rejected(it), partnerName, onContainer = false) }
         }
     }
 }
@@ -420,6 +442,31 @@ private fun UnpairedCodePreview() {
 @Composable
 private fun PairedPreview() {
     TandemTheme { PartnerScreen(pairedPreview, PartnerCallbacks()) }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinPreview() {
+    TandemTheme { PartnerScreen(pairedPreview.copy(alarms = listOf(sampleAlarms[0])), PartnerCallbacks()) }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinedPreview() {
+    TandemTheme {
+        PartnerScreen(pairedPreview.copy(alarms = listOf(sampleAlarms[0].copy(linkedAlarmId = "linked-1"))), PartnerCallbacks())
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinFailedPreview() {
+    TandemTheme {
+        PartnerScreen(
+            pairedPreview.copy(alarms = listOf(sampleAlarms[0].copy(commandStatus = null, joinError = "Alex deleted this alarm"))),
+            PartnerCallbacks(),
+        )
+    }
 }
 
 @Preview(showBackground = true)

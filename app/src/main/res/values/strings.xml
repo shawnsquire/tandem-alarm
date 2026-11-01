@@ -29,4 +29,6 @@
     <string name="link_invite">Invite %1$s</string>
     <string name="link_invited">Invited</string>
     <string name="link_invite_failed">That invite didn\'t go through</string>
+    <string name="link_join">Join</string>
+    <string name="link_joined_state">Joined</string>
 </resources>

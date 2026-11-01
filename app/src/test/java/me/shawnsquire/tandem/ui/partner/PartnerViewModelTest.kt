@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.ui.partner
 
 import app.cash.turbine.test
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -10,7 +11,19 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.fakes.FakeAlarmRepository
+import me.shawnsquire.tandem.fakes.FakeLinkRepository
+import me.shawnsquire.tandem.fakes.FakeRingingController
+import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.ParkedSnooze
+import me.shawnsquire.tandem.schedule.RingContext
+import me.shawnsquire.tandem.schedule.RingMember
+import me.shawnsquire.tandem.schedule.RingOrigin
+import me.shawnsquire.tandem.sync.LinkRepository
+import me.shawnsquire.tandem.sync.LinkResult
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.sync.CommandSender
@@ -77,18 +90,25 @@ class PartnerViewModelTest {
         vararg alarms: PartnerAlarm, ringing: RingState? = null, lastSeen: Instant? = now,
     ) = PartnerState("Alex", alarms.toList(), ringing, lastSeen)
 
-    private class Env(val pairing: FakePairing, val repo: FakePartnerRepo, val sender: RecordingSender, val vm: PartnerViewModel)
+    private class Env(
+        val pairing: FakePairing, val repo: FakePartnerRepo, val sender: RecordingSender, val vm: PartnerViewModel,
+        val alarms: FakeAlarmRepository, val links: FakeLinkRepository, val ringing: FakeRingingController,
+    )
 
     private fun env(
         partner: PartnerState? = null,
         paired: Boolean = true,
         sender: RecordingSender = RecordingSender(),
+        localAlarms: List<Alarm> = emptyList(),
     ): Env {
         val pairing = FakePairing()
         if (paired) pairing.statusFlow.value = PairingStatus.Paired("h", "Alex")
         val repo = FakePartnerRepo(partner)
-        val vm = PartnerViewModel(pairing, repo, sender, clock, MutableStateFlow(Unit))
-        return Env(pairing, repo, sender, vm)
+        val alarms = FakeAlarmRepository(localAlarms)
+        val links = FakeLinkRepository()
+        val ringing = FakeRingingController()
+        val vm = PartnerViewModel(pairing, repo, sender, alarms, links, ringing, clock, MutableStateFlow(Unit))
+        return Env(pairing, repo, sender, vm, alarms, links, ringing)
     }
 
     // The state flow is lazy; keep a collector alive so it stays current.
@@ -273,7 +293,10 @@ class PartnerViewModelTest {
         val slowPairing = object : PairingRepository by pairing {
             override val status: Flow<PairingStatus> = late
         }
-        val vm = PartnerViewModel(slowPairing, FakePartnerRepo(partner(alarm("a"))), RecordingSender(), clock, MutableStateFlow(Unit))
+        val vm = PartnerViewModel(
+            slowPairing, FakePartnerRepo(partner(alarm("a"))), RecordingSender(), FakeAlarmRepository(emptyList()),
+            FakeLinkRepository(), FakeRingingController(), clock, MutableStateFlow(Unit),
+        )
         vm.state.test {
             val first = awaitItem()
             assertTrue(first.loading)
@@ -304,5 +327,128 @@ class PartnerViewModelTest {
         // A different action replaces the previous command and becomes the pending one.
         e.vm.skipNext("a")
         assertEquals(PartnerAction.SKIP_NEXT, state().alarms.single().pendingAction)
+    }
+
+    // Joining and stopping a joined alarm.
+
+    private fun linkedRow(id: String, ownerAlarmId: String) = Alarm(
+        id, "", 6, 30, setOf(DayOfWeek.MONDAY), true, null, null, null,
+        link = AlarmLink("owner", ownerAlarmId, LinkMode.RING, null, true, null, null, null, null),
+    )
+
+    private val ringAt = Instant.parse("2026-11-02T06:30:00Z")
+    private val partnerRing = RingState("a", "ring-1", now, null, occurrenceAt = ringAt)
+
+    private fun ctx(
+        ring: RingState? = null, merged: List<RingMember> = emptyList(), snoozes: List<ParkedSnooze> = emptyList(),
+    ) = RingContext(ring, merged, snoozes, null)
+
+    @Test fun joinedRowFlipsOnceLinkedRowExists() = runTest {
+        val e = env(partner(alarm("a"), alarm("b")), localAlarms = listOf(linkedRow("L1", "a")))
+        val state = e.collect(backgroundScope)
+        assertEquals("L1", state().alarms.first { it.id == "a" }.linkedAlarmId)
+        assertNull(state().alarms.first { it.id == "b" }.linkedAlarmId)
+    }
+
+    @Test fun joinCallsRepositoryAndDisablesButtonWhileRunning() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val e = env(partner(alarm("a")))
+        val slow = object : LinkRepository by e.links {
+            override suspend fun join(ownerAlarmId: String): LinkResult { gate.await(); return e.links.join(ownerAlarmId) }
+        }
+        val vm = PartnerViewModel(e.pairing, e.repo, e.sender, e.alarms, slow, e.ringing, clock, MutableStateFlow(Unit))
+        backgroundScope.launch(Dispatchers.Unconfined) { vm.state.collect {} }
+        vm.joinAlarm("a")
+        assertTrue(vm.state.value.alarms.single().joining)
+        vm.joinAlarm("a")
+        gate.complete(Unit)
+        assertFalse(vm.state.value.alarms.single().joining)
+        assertEquals(listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.Join("a")), e.links.calls)
+    }
+
+    @Test fun joinFailureShowsReasonOnRow() = runTest {
+        val e = env(partner(alarm("a")))
+        e.links.joinResult = LinkResult.Failed("Alex deleted this alarm")
+        val state = e.collect(backgroundScope)
+        e.vm.joinAlarm("a")
+        val row = state().alarms.single()
+        assertEquals("Alex deleted this alarm", row.joinError)
+        assertFalse(row.joining)
+        assertNull(row.linkedAlarmId)
+    }
+
+    @Test fun isLocalCopyLiveCoversSlotMergedAndParked() {
+        val slot = RingState("L1", "r", now, null, occurrenceAt = ringAt)
+        assertTrue(isLocalCopyLive(ctx(ring = slot), "L1", ringAt))
+        assertTrue(isLocalCopyLive(ctx(ring = slot.copy(snoozedUntil = ringAt.plusSeconds(60))), "L1", ringAt))
+        assertTrue(isLocalCopyLive(ctx(ring = slot.copy(alarmId = "other", merged = listOf(RingMember("L1", ringAt)))), "L1", ringAt))
+        assertTrue(isLocalCopyLive(ctx(merged = listOf(RingMember("L1", ringAt))), "L1", ringAt))
+        assertTrue(isLocalCopyLive(ctx(snoozes = listOf(ParkedSnooze("L1", ringAt, ringAt.plusSeconds(60)))), "L1", ringAt))
+    }
+
+    @Test fun isLocalCopyLiveRejectsOtherAlarmOrOccurrence() {
+        val later = ringAt.plusSeconds(86_400)
+        val slot = RingState("L1", "r", now, null, occurrenceAt = later)
+        assertFalse(isLocalCopyLive(ctx(), "L1", ringAt))
+        assertFalse(isLocalCopyLive(ctx(ring = slot), "L1", ringAt))
+        assertFalse(isLocalCopyLive(ctx(ring = slot.copy(alarmId = "L2", occurrenceAt = ringAt)), "L1", ringAt))
+        assertFalse(isLocalCopyLive(ctx(merged = listOf(RingMember("L1", later))), "L1", ringAt))
+        assertFalse(isLocalCopyLive(ctx(snoozes = listOf(ParkedSnooze("L1", null, ringAt))), "L1", ringAt))
+        assertFalse(isLocalCopyLive(ctx(snoozes = listOf(ParkedSnooze("L2", ringAt, ringAt))), "L1", ringAt))
+    }
+
+    private fun joinedEnv(context: RingContext): Env {
+        val e = env(partner(alarm("a"), ringing = partnerRing), localAlarms = listOf(linkedRow("L1", "a")))
+        e.ringing.ringContextResult = context
+        return e
+    }
+
+    @Test fun stopOnLiveSoundingCopyDismissesLocallyAndSendsNothing() = runTest {
+        val e = joinedEnv(ctx(ring = RingState("L1", "local", now, null, occurrenceAt = ringAt)))
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("L1", ringAt, RingOrigin.LOCAL)), e.ringing.dismissedOccurrences)
+        assertTrue(e.sender.sent.isEmpty())
+        assertEquals(listOf("L1"), e.ringing.ringContextAlarmIds)
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+    }
+
+    @Test fun stopOnMergedCopyDismissesLocally() = runTest {
+        val e = joinedEnv(ctx(ring = RingState("x", "local", now, null, merged = listOf(RingMember("L1", ringAt)))))
+        e.vm.stopRinging()
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun stopOnParkedSnoozeDismissesLocally() = runTest {
+        val e = joinedEnv(ctx(snoozes = listOf(ParkedSnooze("L1", ringAt, ringAt.plusSeconds(300)))))
+        e.vm.stopRinging()
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun stopWhenLocalCopyNotLiveSendsCommand() = runTest {
+        val e = joinedEnv(ctx())
+        e.vm.stopRinging()
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        assertEquals(listOf(Sent(CommandType.STOP_RINGING, "a", null, "ring-1")), e.sender.sent)
+    }
+
+    @Test fun stopWithoutOccurrenceSendsCommandWithoutReadingContext() = runTest {
+        val e = env(
+            partner(alarm("a"), ringing = partnerRing.copy(occurrenceAt = null)),
+            localAlarms = listOf(linkedRow("L1", "a")),
+        )
+        e.vm.stopRinging()
+        assertTrue(e.ringing.ringContextAlarmIds.isEmpty())
+        assertEquals(1, e.sender.sent.size)
+    }
+
+    @Test fun stopOnUnjoinedAlarmSendsCommand() = runTest {
+        val e = env(partner(alarm("a"), ringing = partnerRing))
+        e.vm.stopRinging()
+        assertTrue(e.ringing.ringContextAlarmIds.isEmpty())
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        assertEquals(listOf(Sent(CommandType.STOP_RINGING, "a", null, "ring-1")), e.sender.sent)
     }
 }

@@ -111,6 +111,9 @@ val partnerViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             pairing = container.pairingRepository,
             partnerRepository = container.partnerRepository,
             sender = container.commandSender,
+            alarmRepository = container.alarmRepository,
+            linkRepository = container.linkRepository,
+            ringingController = container.ringingController,
             clock = LiveZoneClock,
             ticker = tickerFlow(),
         )
