@@ -128,7 +128,7 @@ class TandemApp : Application() {
         // Background housekeeping, never on a fire path; its repository reads wait for the drain.
         container.syncScope.launch {
             try {
-                MediaOrphanSweeper(filesDir, container.alarmRepository, container.settingsRepository).sweep()
+                MediaOrphanSweeper(filesDir, container.alarmRepository, container.settingsRepository, container.linkedMediaCache).sweep()
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
                 Log.w(TAG, "media orphan sweep failed", e)
@@ -138,6 +138,7 @@ class TandemApp : Application() {
         // broken start can't take the others down or make a retry rebuild the container.
         syncStart("auth") { container.authManager.start(container.syncScope) }
         syncStart("state publisher") { container.statePublisher.start() }
+        syncStart("media publisher") { container.mediaPublisher.start() }
         syncStart("initial publish") { container.syncScope.launch { container.statePublisherImpl.publishNow() } }
         syncStart("ringing command listener") { container.ringingCommandListener.start() }
         // WorkManager's provider is only installed at unlock; schedule() catches its absence too.

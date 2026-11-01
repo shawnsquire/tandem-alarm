@@ -158,6 +158,8 @@ private fun title(item: HealthItem): String = stringResource(
         HealthItem.FCM_TOKEN -> R.string.health_token_title
         HealthItem.LAST_FCM -> R.string.health_lastfcm_title
         HealthItem.PARTNER_SEEN -> R.string.health_partner_title
+        HealthItem.STORAGE_REACHABLE -> R.string.health_storage_title
+        HealthItem.LINKED_MEDIA -> R.string.health_linkedmedia_title
     },
 )
 
@@ -176,6 +178,10 @@ private fun description(row: HealthRow): String {
             ok -> row.detail
             else -> row.detail + ". " + stringResource(R.string.health_partner_stale)
         }
+        HealthItem.STORAGE_REACHABLE -> stringResource(
+            if (ok) R.string.health_storage_ok else R.string.health_storage_bad,
+        ) + (row.detail?.let { " ($it)" } ?: "")
+        HealthItem.LINKED_MEDIA -> row.detail ?: stringResource(R.string.health_linkedmedia_ok)
     }
 }
 

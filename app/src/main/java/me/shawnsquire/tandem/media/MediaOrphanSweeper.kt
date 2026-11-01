@@ -13,20 +13,21 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 
 /**
- * Deletes imported wallpapers and ringtones that no alarm and no setting references any more.
+ * Deletes imported wallpapers, ringtones and cached linked media that no alarm, setting or linked row references any more.
  * Runs once at full startup, in the background; never on the fire path.
  */
 class MediaOrphanSweeper(
     private val filesDir: File,
     private val alarms: AlarmRepository,
     private val settings: SettingsRepository,
+    private val linkedMedia: LinkedMediaCache,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     /** Returns the number of files deleted. Never throws, except to cancel. */
     suspend fun sweep(): Int = withContext(Dispatchers.IO) {
         // An unreadable reference list would make every file look orphaned: delete nothing.
-        val referenced = try {
-            references()
+        val (referenced, linkedInUse) = try {
+            references() to linkedMedia.inUse()
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             Log.w(TAG, "reading media references failed; sweeping nothing", e)
@@ -38,16 +39,22 @@ class MediaOrphanSweeper(
             Log.w(TAG, "resolving $filesDir failed; sweeping nothing", e)
             return@withContext 0
         }
-        DIRS.sumOf { sweepDir(root, File(filesDir, it), referenced) }
+        DIRS.sumOf { sweepDir(root, File(filesDir, it), referenced) } +
+            sweepDir(root, File(filesDir, LinkedMediaCacheImpl.LINKED_DIR)) { it.name in linkedInUse }
     }
 
     private suspend fun references(): Set<File> {
-        val raw = alarms.alarms.first().flatMap { listOf(it.wallpaperPath, it.ringtoneUri) } +
+        val raw = alarms.alarms.first().flatMap {
+            listOf(it.wallpaperPath, it.ringtoneUri, it.link?.overrideWallpaperPath, it.link?.overrideRingtoneUri)
+        } +
             settings.defaultWallpaperPath.first() + settings.defaultRingtoneUri.first()
         return raw.mapNotNull(::localFile).map { it.canonicalFile }.toSet()
     }
 
-    private fun sweepDir(root: File, dir: File, referenced: Set<File>): Int {
+    private fun sweepDir(root: File, dir: File, referenced: Set<File>): Int =
+        sweepDir(root, dir) { it in referenced }
+
+    private fun sweepDir(root: File, dir: File, isReferenced: (File) -> Boolean): Int {
         if (!dir.isDirectory) return 0
         val canonicalDir = try { dir.canonicalFile } catch (e: Exception) { return 0 }
         // The directory itself must not be a link out of filesDir.
@@ -59,7 +66,7 @@ class MediaOrphanSweeper(
                 // A symlink is never a regular file here, so it is skipped rather than followed.
                 if (!Files.isRegularFile(f.toPath(), LinkOption.NOFOLLOW_LINKS)) continue
                 val canonical = f.canonicalFile
-                if (canonical.parentFile != canonicalDir || canonical in referenced) continue
+                if (canonical.parentFile != canonicalDir || isReferenced(canonical)) continue
                 // Young files may belong to an edit that hasn't saved its reference yet.
                 if (f.lastModified() > cutoff) continue
                 if (f.delete()) deleted++

@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.sync.HealthSignals
+import me.shawnsquire.tandem.sync.LinkedMediaStatus
+import me.shawnsquire.tandem.sync.StorageStatus
 import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.ui.MainDispatcherRule
@@ -42,11 +44,15 @@ class FakeBannerPrefs(var dismissed: Boolean = false) : BannerPrefs {
 private class TestSignals(
     lastFcm: Instant? = null,
     token: Boolean = true,
+    storage: StorageStatus? = null,
+    linked: LinkedMediaStatus? = null,
 ) : HealthSignals {
     val lastFcmFlow = MutableStateFlow(lastFcm)
     val tokenFlow = MutableStateFlow(token)
     override val lastFcmAt: Flow<Instant?> = lastFcmFlow
     override val fcmTokenPresent: Flow<Boolean> = tokenFlow
+    override val storageStatus: Flow<StorageStatus?> = MutableStateFlow(storage)
+    override val linkedMedia: Flow<LinkedMediaStatus?> = MutableStateFlow(linked)
 }
 
 private class TestPartner(lastSeen: Instant?, present: Boolean = true) : PartnerRepository {
@@ -130,6 +136,28 @@ class HealthViewModelTest {
         assertEquals(HealthStatus.OK, exactly.status)
         assertEquals(HealthStatus.INFO, partnerRow(null).rows().getValue(HealthItem.PARTNER_SEEN).status)
         assertEquals(HealthStatus.INFO, partnerRow(null, present = false).rows().getValue(HealthItem.PARTNER_SEEN).status)
+    }
+
+    @Test fun storageRowFollowsLastCall() = runTest {
+        val hidden = vm().rows()
+        assertFalse(HealthItem.STORAGE_REACHABLE in hidden)
+        val ok = vm(signals = TestSignals(storage = StorageStatus(true, NOW.minusSeconds(120)))).rows()
+        assertEquals(HealthStatus.OK, ok.getValue(HealthItem.STORAGE_REACHABLE).status)
+        assertEquals("2 min ago", ok.getValue(HealthItem.STORAGE_REACHABLE).detail)
+        val bad = vm(signals = TestSignals(storage = StorageStatus(false, NOW.minusSeconds(300)))).rows()
+        assertEquals(HealthStatus.WARNING, bad.getValue(HealthItem.STORAGE_REACHABLE).status)
+        assertEquals("5 min ago", bad.getValue(HealthItem.STORAGE_REACHABLE).detail)
+    }
+
+    @Test fun linkedMediaRowFollowsCacheCounts() = runTest {
+        assertFalse(HealthItem.LINKED_MEDIA in vm().rows())
+        assertFalse(HealthItem.LINKED_MEDIA in vm(signals = TestSignals(linked = LinkedMediaStatus(0, 0))).rows())
+        val ok = vm(signals = TestSignals(linked = LinkedMediaStatus(5, 0))).rows().getValue(HealthItem.LINKED_MEDIA)
+        assertEquals(HealthStatus.OK, ok.status)
+        assertNull(ok.detail)
+        val waiting = vm(signals = TestSignals(linked = LinkedMediaStatus(5, 2))).rows().getValue(HealthItem.LINKED_MEDIA)
+        assertEquals(HealthStatus.WARNING, waiting.status)
+        assertEquals("2 of 5 files waiting to download", waiting.detail)
     }
 }
 

@@ -116,6 +116,11 @@
     <string name="health_partner_title">Partner last seen</string>
     <string name="health_partner_none">No activity from your partner yet.</string>
     <string name="health_partner_stale">Their phone may be asleep or offline. Their alarms still ring on their own phone.</string>
+    <string name="health_storage_title">Storage reachable</string>
+    <string name="health_storage_ok">Photos and sounds can be shared with your partner.</string>
+    <string name="health_storage_bad">The last upload or download failed. Check your connection.</string>
+    <string name="health_linkedmedia_title">Linked media downloaded</string>
+    <string name="health_linkedmedia_ok">All shared photos and sounds are on this phone.</string>
     <string name="setup_banner_text">Alarms might not ring properly. Tap to finish setup.</string>
     <string name="setup_banner_dismiss">Dismiss</string>
 </resources>
