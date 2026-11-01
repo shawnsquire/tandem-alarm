@@ -40,7 +40,8 @@ class RingingSession(
     private val settingsRepository: SettingsRepository,
     private val preFireCheck: PreFireCheck,
     private val alarmScheduler: AlarmScheduler,
-    private val controller: RingingController,
+    // Unused since auto-silence ends the ring through [ringSlot]; kept for the service's wiring.
+    @Suppress("unused") private val controller: RingingController,
     private val ringSlot: RingSlot,
     private val sound: AlarmSound,
     private val vibration: AlarmVibration,
@@ -62,6 +63,17 @@ class RingingSession(
     private var autoSilence: Job? = null
     private var vibrationStarted = false
     private var silencing = false
+
+    /**
+     * Every member of this ring the session last saw: its own once known, then each observation of
+     * the stored ring. What auto-silence compares against; null until the session knows any.
+     */
+    private var seenMembers: Set<RingMember>? = null
+
+    /** The surface this ring sounds on (Ring or Notify) and what restarts it after an un-silence. */
+    private var fullSurface = false
+    private var surfaceAlarm: Alarm? = null
+    private var surfaceDefault: String? = null
     private var registeredRingId: String? = null
     @Volatile private var ownLedgerWrite = false
 
@@ -134,36 +146,84 @@ class RingingSession(
         guarded(what, Unit) { vibration.start(); vibrationStarted = true }
     }
 
+    /** Arms auto-silence once per ring; see [silence]. */
+    private fun ensureAutoSilence(ringId: String?) {
+        if (autoSilence != null) return
+        armAutoSilence(ringId)
+    }
+
     /**
-     * Auto-silence counts as a dismiss; with no known ringId it just ends the session.
+     * (Re)starts the [AUTO_SILENCE] countdown to [silence]: at the ring's start, whenever a member
+     * joins (each member gets its full span, so the ring ends that long after the last join) and
+     * after an un-silence. Not while silencing: the compare-and-dismiss in flight sees a new member.
+     */
+    private fun armAutoSilence(ringId: String?) {
+        if (finished || silencing) return
+        autoSilence?.let { it.cancel(); jobs -= it }
+        autoSilence = scope.launch {
+            delay(AUTO_SILENCE)
+            silence(ringId)
+        }.also { jobs += it }
+    }
+
+    /**
+     * Auto-silence counts as a LOCAL dismiss; with no known ringId it just ends the session.
      * 1. Sound and vibration stop at once: the dismiss waits on the ring-slot lock, and a stuck
      *    lock must never keep a ring going.
      * 2. The dismiss runs while the session (so the foreground service and its wake lock) is still
-     *    alive, bounded like a claim: the controller makes it NonCancellable, so only waiting on it
-     *    from outside can time out. It keeps running past the bound.
-     * 3. Only then does the session finish.
+     *    alive, bounded like a claim: the slot makes it NonCancellable, so only waiting on it from
+     *    outside can time out. It keeps running past the bound.
+     * 3. It is compare-and-dismiss ([RingSlot.autoSilence]): a member that joined after this
+     *    session last looked keeps the ring going ([unsilence]) instead of being resolved unheard.
+     * 4. Otherwise (dismissed, failed or timed out) the session finishes.
      */
-    private fun ensureAutoSilence(ringId: String?) {
-        if (autoSilence != null) return
-        autoSilence = scope.launch {
-            delay(10.minutes)
-            silencing = true
-            guardedNow("sound stop") { sound.stop() }
-            guardedNow("vibration stop") { vibration.stop() }
-            if (ringId != null) {
-                observeJob?.cancel() // the dismiss's clear must not end the session before the dismiss is done
-                val d = scope.async {
-                    try { controller.dismiss(ringId, RingOrigin.LOCAL) } catch (e: Throwable) { log("auto-silence dismiss failed", e) }
-                }
-                try {
-                    withTimeoutOrNull(DISMISS_TIMEOUT) { d.await() } ?: log("auto-silence dismiss timed out", null)
-                } catch (e: Throwable) {
-                    currentCoroutineContext().ensureActive()
-                    log("auto-silence dismiss failed", e)
-                }
+    private suspend fun silence(ringId: String?) {
+        silencing = true
+        val wasFull = fullSurface
+        guardedNow("sound stop") { sound.stop() }
+        guardedNow("vibration stop") { vibration.stop() }
+        vibrationStarted = false
+        if (ringId != null) {
+            // The dismiss's clear must not end the session before the dismiss is done.
+            observeJob?.cancel()
+            observing = false
+            val expected = seenMembers.orEmpty().toList()
+            val d = scope.async {
+                try { ringSlot.autoSilence(ringId, expected) } catch (e: Throwable) { log("auto-silence dismiss failed", e); true }
             }
-            finish()
-        }.also { jobs += it }
+            val ended = try {
+                withTimeoutOrNull(DISMISS_TIMEOUT) { d.await() } ?: true.also { log("auto-silence dismiss timed out", null) }
+            } catch (e: Throwable) {
+                currentCoroutineContext().ensureActive()
+                log("auto-silence dismiss failed", e)
+                true
+            }
+            if (!ended) {
+                unsilence(ringId, wasFull)
+                return
+            }
+        }
+        finish()
+    }
+
+    /**
+     * A member joined while auto-silence waited: the ring sounds on for it, on its surface (Ring:
+     * sound and vibration; Notify: the notification posted again; a Notify ring upgraded while
+     * silent comes back in full), observed again, with a fresh [AUTO_SILENCE] from now.
+     */
+    private suspend fun unsilence(ringId: String, wasFull: Boolean) {
+        if (finished) return
+        silencing = false
+        currentCoroutineContext().ensureActive()
+        if (fullSurface) {
+            startRingOutputs(surfaceAlarm, surfaceDefault)
+            if (!wasFull) guarded("notifier", Unit) { notifier.showRinging(surfaceAlarm, ringId) }
+        } else {
+            guarded("notifier", Unit) { notifier.showNotifyRinging(surfaceAlarm, ringId) }
+        }
+        observe(ringId)
+        autoSilence = null // this job: arming anew must not cancel it
+        armAutoSilence(ringId)
     }
 
     private sealed interface Claim<out T> {
@@ -325,6 +385,8 @@ class RingingSession(
 
         val ringId = guarded("newRingId", UUID.randomUUID().toString()) { newRingId() }
         register(ringId)
+        // Its own member, known even if it never sees the stored ring (a claim that completes late).
+        seenMembers = setOf(RingMember(alarmId, occurrence))
         // A sounding ring takes this alarm into its merged list; a snoozed one is parked and keeps its snooze.
         // The decision is re-checked inside the claim's critical section, so a skip, disable or delete
         // stored since the read above still suppresses; a failed re-check counts as due (I1).
@@ -408,6 +470,9 @@ class RingingSession(
         val default = if (notify) null else readDefaultRingtone()
         currentCoroutineContext().ensureActive() // never start sound after the session was cancelled
         ringStarted = true
+        surfaceAlarm = alarm
+        surfaceDefault = default
+        fullSurface = !notify
         if (!notify) startRingOutputs(alarm, default)
         // Marked after the ring has begun, so a process death before this point still gets a boot replay.
         if (fire != null) markRang(fire.first, fire.second)
@@ -445,7 +510,12 @@ class RingingSession(
      */
     private suspend fun ringInFull(primary: Alarm?, ringId: String) {
         val default = readDefaultRingtone()
-        if (finished || silencing) return
+        if (finished) return
+        // Recorded even while silencing: an un-silence then restarts the full surface.
+        fullSurface = true
+        surfaceAlarm = primary
+        surfaceDefault = default
+        if (silencing) return
         currentCoroutineContext().ensureActive()
         startRingOutputs(primary, default)
         guarded("notifier", Unit) { notifier.showRinging(primary, ringId) }
@@ -486,14 +556,22 @@ class RingingSession(
     private var ringPosted = false
     private var lateClaimed = false
 
-    /** Ends the session when the stored ring ends, is superseded or is snoozed. */
+    /**
+     * Ends the session when the stored ring ends, is superseded or is snoozed. Meanwhile notes its
+     * members: one not seen before (merged, or back from a snooze) re-arms auto-silence. The first
+     * look on the snooze path, which starts without its own member, only learns them.
+     */
     private fun observe(ringId: String) {
         if (observing) return
         observing = true
         observeJob = scope.launch {
             var ok = true
             try {
-                ringStateStore.state.first { it == null || it.ringId != ringId || it.snoozedUntil != null }
+                ringStateStore.state.first { s ->
+                    val ended = s == null || s.ringId != ringId || s.snoozedUntil != null
+                    if (s != null && !ended) noteMembers(ringId, s.members().toSet())
+                    ended
+                }
             } catch (e: Throwable) {
                 currentCoroutineContext().ensureActive()
                 log("ring state observation failed", e)
@@ -501,6 +579,12 @@ class RingingSession(
             }
             if (ok) finish()
         }.also { jobs += it }
+    }
+
+    private fun noteMembers(ringId: String, current: Set<RingMember>) {
+        val joined = seenMembers?.let { seen -> current.any { it !in seen } } ?: false
+        seenMembers = current
+        if (joined) armAutoSilence(ringId)
     }
 
     private fun finish() {
@@ -517,6 +601,8 @@ class RingingSession(
 
     private companion object {
         val CLAIM_TIMEOUT = 2.seconds
+        /** How long a ring sounds unanswered, counted from its start or its last member's join. */
+        val AUTO_SILENCE = 10.minutes
         val DISMISS_TIMEOUT = 5.seconds
     }
 }

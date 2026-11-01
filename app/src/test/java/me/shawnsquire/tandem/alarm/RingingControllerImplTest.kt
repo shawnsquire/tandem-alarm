@@ -1149,6 +1149,48 @@ class RingingControllerImplTest {
         assertTrue(mirror.calls.isEmpty())
     }
 
+    // ---- auto-silence: compare-and-dismiss ----
+
+    @Test fun autoSilenceDismissesWhenEveryMemberWasSeenAndMirrorsOnce() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        val seenMore = allMembers + RingMember("gone", occurrenceZ) // a superset: a member already resolved
+        assertTrue(h.controller(mirror).autoSilence("ring-1", seenMore))
+        h.assertEveryMemberResolved()
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, allMembers, null as Instant?)), mirror.calls)
+    }
+
+    @Test fun autoSilenceRefusesWhenAMemberJoinedSinceAndWritesNothing() = runTest {
+        val h = mergedH()
+        val mirror = RecordingMirror()
+        assertFalse(h.controller(mirror).autoSilence("ring-1", allMembers.take(2)))
+        assertEquals(mergedRing, h.store.state.first())
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertEquals(0, h.scheduler.rescheduleCount)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun autoSilenceLeavesARingSnoozedMeanwhileSnoozed() = runTest {
+        val h = snoozedA()
+        assertTrue(h.controller().autoSilence("ring-A", emptyList()))
+        assertEquals(ringA, h.store.state.first())
+        assertNotNull(h.ledger.get("ring-A"))
+        assertTrue(h.armer.cancelled.isEmpty())
+        assertTrue(h.repo.get("a")!!.enabled)
+    }
+
+    @Test fun autoSilenceOfARingNotInTheSlotDropsItsParkedSnoozeAsADismissWould() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX.copy(alarmId = "b", ringId = "ring-B"))
+        h.ledger.put("ring-P", "a", sevenTen, occurrenceX)
+        val mirror = RecordingMirror()
+        assertTrue(h.controller(mirror).autoSilence("ring-P", emptyList()))
+        assertNull(h.ledger.get("ring-P"))
+        assertEquals(listOf("ring-P"), h.armer.cancelled)
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertEquals("ring-B", h.store.state.first()!!.ringId) // the slot ring is untouched
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, listOf(RingMember("a", occurrenceX)), null as Instant?)), mirror.calls)
+    }
+
     @Test fun writeUnlessRingingStillRefusesForAPromotedMember() = runTest {
         // b fired at 10:03 while a (started 09:59) was sounding: after a's stop, b is the primary
         // of a ring that started before its own occurrence.

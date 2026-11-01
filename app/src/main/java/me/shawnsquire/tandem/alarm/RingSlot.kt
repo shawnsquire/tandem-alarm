@@ -58,6 +58,19 @@ interface RingSlot {
      * (the boot path passes false because its own reschedule follows and must see the old records).
      */
     suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean = true)
+
+    /**
+     * Auto-silence's end of [ringId], as compare-and-dismiss. [expected] is every member the
+     * sounding session has seen. When the slot holds [ringId] sounding and each of its members is in
+     * [expected], dismisses it exactly as a LOCAL dismiss does (every member resolved, mirrored
+     * once) and returns true. A member not in [expected] joined after the session decided to
+     * silence: nothing is dismissed and this returns false, so the session sounds on for it (I1).
+     * A [ringId] snoozed meanwhile keeps its snooze (true). When the slot holds another ring or
+     * none, does what a LOCAL dismiss of [ringId] does there (drops a snooze of that id parked behind
+     * another ring) and returns true: nothing of this ring is left sounding. A throw comes from the
+     * read or a step of the dismiss.
+     */
+    suspend fun autoSilence(ringId: String, expected: List<RingMember>): Boolean
 }
 
 /** The ring's members: the primary (left out without a known occurrence, never guessed) and every merged one. */

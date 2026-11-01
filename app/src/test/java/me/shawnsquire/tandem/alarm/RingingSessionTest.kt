@@ -26,7 +26,6 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
-import me.shawnsquire.tandem.fakes.FakeRingingController
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
@@ -99,6 +98,15 @@ private class GatedSlot(private val inner: RingSlot) : RingSlot {
         return inner.claimSnoozeResume(ringId, alarmId, onMerged)
     }
     override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = inner.clearStale(isLive, reschedule)
+    override suspend fun autoSilence(ringId: String, expected: List<RingMember>) = inner.autoSilence(ringId, expected)
+}
+
+/** Runs [block] in place of [inner]'s auto-silence. */
+private class AutoSilenceSlot(
+    private val inner: RingSlot,
+    private val block: suspend (ringId: String, expected: List<RingMember>) -> Boolean,
+) : RingSlot by inner {
+    override suspend fun autoSilence(ringId: String, expected: List<RingMember>) = block(ringId, expected)
 }
 
 /** A scheduler whose reschedule waits at [gate]: a dismiss calling it holds the controller lock. */
@@ -353,17 +361,10 @@ class RingingSessionTest {
 
     @Test fun autoSilenceFinishesEvenWhenDismissThrowsCancellation() = runTest {
         val h = harness()
-        val ctl = object : RingingController {
-            override suspend fun ringContext(alarmId: String) = me.shawnsquire.tandem.schedule.RingContext(null, emptyList(), emptyList(), null)
-            override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: java.time.Instant?, write: suspend () -> Unit) = true
-            override suspend fun dismiss(ringId: String, origin: me.shawnsquire.tandem.schedule.RingOrigin) { throw CancellationException("foreign") }
-            override suspend fun snooze(origin: me.shawnsquire.tandem.schedule.RingOrigin, until: java.time.Instant?) = Unit
-            override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: java.time.Instant, origin: me.shawnsquire.tandem.schedule.RingOrigin) = Unit
-            override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: java.time.Instant, until: java.time.Instant, origin: me.shawnsquire.tandem.schedule.RingOrigin) = Unit
-        }
+        val slot = AutoSilenceSlot(h.controller) { _, _ -> throw CancellationException("foreign") }
         val session = RingingSession(
             h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true },
-            h.scheduler, ctl, h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            h.scheduler, h.controller, slot, h.sound, h.vibration, h.notifier, backgroundScope,
             StandardTestDispatcher(testScheduler), { clockNow }, { "r" }, onFinished = { h.finished++ },
         )
         session.start("a", occurrence, false, null)
@@ -637,6 +638,7 @@ class RingingSessionTest {
         assertNull(h.rawStore.state.first())
         assertTrue(h.sound.stops >= 1)
         assertFalse(h.repo.get("a")!!.enabled) // one-shot
+        assertEquals(listOf(MirrorKind.DISMISS to listOf(RingMember("a", occurrence))), h.mirrored) // as LOCAL
         assertEquals(1, h.finished)
     }
 
@@ -1294,15 +1296,8 @@ class RingingSessionTest {
     @Test fun autoSilenceStopsSoundEvenWhenDismissHangs() = runTest {
         val h = harness()
         val dismissed = mutableListOf<String>()
-        val hanging = object : RingingController {
-            override suspend fun ringContext(alarmId: String) = me.shawnsquire.tandem.schedule.RingContext(null, emptyList(), emptyList(), null)
-            override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: java.time.Instant?, write: suspend () -> Unit) = true
-            override suspend fun dismiss(ringId: String, origin: me.shawnsquire.tandem.schedule.RingOrigin) { dismissed += ringId; awaitCancellation() }
-            override suspend fun snooze(origin: me.shawnsquire.tandem.schedule.RingOrigin, until: java.time.Instant?) = Unit
-            override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: java.time.Instant, origin: me.shawnsquire.tandem.schedule.RingOrigin) = Unit
-            override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: java.time.Instant, until: java.time.Instant, origin: me.shawnsquire.tandem.schedule.RingOrigin) = Unit
-        }
-        slotSession(h, h.controller, controller = hanging).start("a", occurrence, false, null)
+        val hanging = AutoSilenceSlot(h.controller) { ringId, _ -> dismissed += ringId; awaitCancellation() }
+        slotSession(h, hanging).start("a", occurrence, false, null)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
         advanceTimeBy(10.minutes + 1.seconds); runCurrent()
@@ -1317,15 +1312,8 @@ class RingingSessionTest {
     @Test fun autoSilenceFinishesOnlyAfterTheDismissCompletes() = runTest {
         val h = harness()
         val gate = CompletableDeferred<Unit>()
-        val gated = object : RingingController {
-            override suspend fun ringContext(alarmId: String) = me.shawnsquire.tandem.schedule.RingContext(null, emptyList(), emptyList(), null)
-            override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: java.time.Instant?, write: suspend () -> Unit) = true
-            override suspend fun dismiss(ringId: String, origin: me.shawnsquire.tandem.schedule.RingOrigin) { gate.await(); h.controller.dismiss(ringId) }
-            override suspend fun snooze(origin: me.shawnsquire.tandem.schedule.RingOrigin, until: java.time.Instant?) = Unit
-            override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: java.time.Instant, origin: me.shawnsquire.tandem.schedule.RingOrigin) = Unit
-            override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: java.time.Instant, until: java.time.Instant, origin: me.shawnsquire.tandem.schedule.RingOrigin) = Unit
-        }
-        slotSession(h, h.controller, controller = gated).start("a", occurrence, false, null)
+        val gated = AutoSilenceSlot(h.controller) { ringId, expected -> gate.await(); h.controller.autoSilence(ringId, expected) }
+        slotSession(h, gated).start("a", occurrence, false, null)
         runCurrent()
         advanceTimeBy(10.minutes + 1.seconds); runCurrent()
         assertTrue(h.sound.stops >= 1)
@@ -1338,12 +1326,128 @@ class RingingSessionTest {
 
     @Test fun autoSilenceDismissIsLocal() = runTest {
         val h = harness()
-        val recording = FakeRingingController()
-        slotSession(h, h.controller, controller = recording).start("a", occurrence, false, null)
+        h.fire(occ = occurrence)
         runCurrent()
         advanceTimeBy(10.minutes + 1.seconds); runCurrent()
-        assertEquals(listOf("ring-1"), recording.dismissed)
-        assertEquals(listOf(RingOrigin.LOCAL), recording.dismissOrigins)
+        assertEquals(listOf(MirrorKind.DISMISS to listOf(RingMember("a", occurrence))), h.mirrored) // LOCAL: mirrored
+    }
+
+    // ---- auto-silence and merged members ----
+
+    @Test fun threeMergedAlarmsEachRingTenMinutes() = runTest {
+        // 7:00, 7:05 and 7:09 merged: the ring ends ten minutes after the last one joined.
+        val h = harness(alarms = listOf(alarm("a"), alarm("b"), alarm("c")))
+        h.fire("a", occurrence)
+        runCurrent()
+        advanceTimeBy(5.minutes); runCurrent()
+        val bAt = occurrence.plusSeconds(300)
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt)))
+        runCurrent()
+        advanceTimeBy(4.minutes); runCurrent()
+        val cAt = occurrence.plusSeconds(540)
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("c", "ring-c", h.clock, null, cAt)))
+        runCurrent()
+
+        advanceTimeBy(10.minutes - 1.seconds); runCurrent() // 18:59 in: a's and b's own ten minutes are long gone
+        assertNotNull(h.rawStore.state.first())
+        assertEquals(0, h.sound.stops)
+        assertEquals(0, h.finished)
+        advanceTimeBy(2.seconds); runCurrent()
+        assertNull(h.rawStore.state.first())
+        assertEquals(listOf(MirrorKind.DISMISS to listOf(RingMember("a", occurrence), RingMember("b", bAt), RingMember("c", cAt))), h.mirrored)
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertFalse(h.repo.get("b")!!.enabled)
+        assertFalse(h.repo.get("c")!!.enabled)
+        assertEquals(1, h.finished)
+        assertEquals(1, h.sound.starts.size) // one sound throughout
+    }
+
+    @Test fun memberMergingWhileAutoSilenceWaitsKeepsTheRingSounding() = runTest {
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")))
+        val bAt = occurrence.plusSeconds(600)
+        var silencedWith: List<RingMember>? = null
+        // b's claim lands on the lock just before auto-silence's dismiss.
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            silencedWith = expected
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+
+        assertEquals(listOf(RingMember("a", occurrence)), silencedWith)
+        assertTrue(h.sound.stops >= 1) // it did go silent first
+        assertEquals(2, h.sound.starts.size) // and sounds again for b
+        assertEquals(2, h.vibration.starts)
+        assertEquals(0, h.finished)
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence, listOf(RingMember("b", bAt))), h.rawStore.state.first())
+        assertTrue(h.repo.get("b")!!.enabled) // b is not resolved
+        assertTrue(h.repo.get("a")!!.enabled)
+        assertTrue(h.mirrored.isEmpty())
+
+        // A fresh ten minutes from the resume, and Stop works again.
+        advanceTimeBy(10.minutes - 2.seconds); runCurrent()
+        assertNotNull(h.rawStore.state.first())
+        assertEquals(0, h.finished)
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        assertEquals(1, h.finished)
+        assertFalse(h.repo.get("b")!!.enabled)
+    }
+
+    @Test fun resumedRingAutoSilencesTenMinutesLater() = runTest {
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")))
+        val bAt = occurrence.plusSeconds(600)
+        var calls = 0
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            if (calls++ == 0) h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(0, h.finished)
+        advanceTimeBy(10.minutes - 2.seconds); runCurrent()
+        assertNotNull(h.rawStore.state.first())
+        advanceTimeBy(3.seconds); runCurrent()
+        assertEquals(2, calls)
+        assertNull(h.rawStore.state.first())
+        assertEquals(listOf(MirrorKind.DISMISS to listOf(RingMember("a", occurrence), RingMember("b", bAt))), h.mirrored)
+        assertEquals(1, h.finished)
+    }
+
+    @Test fun notifyRingResumedForANotifyMemberRepostsTheNotifyNotification() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        val bAt = occurrence.plusSeconds(600)
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(listOf("ring-1", "ring-1"), h.notifier.notify)
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, h.vibration.starts)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun notifyRingResumedForARingMemberComesBackInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), alarm("b")))
+        val bAt = occurrence.plusSeconds(600)
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            repeat(10) { yield() } // the member watcher sees b while the ring is silent
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertEquals(0, h.finished)
     }
 
     @Test fun lateClaimFireWriteBehindStuckLockIsClearedByAutoSilence() = runTest {

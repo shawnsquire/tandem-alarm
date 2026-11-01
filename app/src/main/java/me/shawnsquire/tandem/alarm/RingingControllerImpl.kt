@@ -61,22 +61,33 @@ class RingingControllerImpl(
     override suspend fun dismiss(ringId: String, origin: RingOrigin) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         val local = origin == RingOrigin.LOCAL
-        when {
-            state != null && state.ringId == ringId -> dismissCurrentLocked(state, local)
-            // A snooze parked behind a newer ring (Dismiss on its snoozed notification).
-            else -> {
-                val parked = ledger.get(ringId)
-                if (parked != null) {
-                    dropParkedLocked(parked, local)
-                } else {
-                    // I3: a stop pinned to another (or no) ring is ignored. It stops no ring, but a
-                    // snoozed notification whose ledger entry is gone would otherwise stay forever.
-                    bestEffort("cancel stuck snoozed notification") { notifier.cancelSnoozed(ringId) }
-                }
-            }
-        }
-        Unit
+        if (state != null && state.ringId == ringId) dismissCurrentLocked(state, local) else dismissNotInSlotLocked(ringId, local)
     } }
+
+    /** Compare-and-dismiss; see [RingSlot.autoSilence]. */
+    override suspend fun autoSilence(ringId: String, expected: List<RingMember>): Boolean = withContext(NonCancellable) { mutex.withLock {
+        val state = ringStateStore.state.first()
+        when {
+            state == null || state.ringId != ringId -> dismissNotInSlotLocked(ringId, local = true)
+            state.snoozedUntil != null -> Unit // snoozed while auto-silence waited: the snooze stands
+            !expected.containsAll(state.members()) -> return@withLock false
+            else -> dismissCurrentLocked(state, mirrored = true)
+        }
+        true
+    } }
+
+    /** [dismiss] of a [ringId] the slot doesn't hold. */
+    private suspend fun dismissNotInSlotLocked(ringId: String, local: Boolean) {
+        // A snooze parked behind a newer ring (Dismiss on its snoozed notification).
+        val parked = ledger.get(ringId)
+        if (parked != null) {
+            dropParkedLocked(parked, local)
+        } else {
+            // I3: a stop pinned to another (or no) ring is ignored. It stops no ring, but a
+            // snoozed notification whose ledger entry is gone would otherwise stay forever.
+            bestEffort("cancel stuck snoozed notification") { notifier.cancelSnoozed(ringId) }
+        }
+    }
 
     /**
      * Resolves only X, wherever it lives: the slot ring (a merged ring keeps sounding under the same
