@@ -23,6 +23,8 @@ class LinkedMediaCacheImpl(
     private val storage: MediaStorage,
     private val enqueueDownload: () -> Unit,
     private val systemAlarmSound: String? = Settings.System.DEFAULT_ALARM_ALERT_URI?.toString(),
+    /** Fire-and-forget report of (distinct referenced files, those not cached) after [update] and [downloadMissing]. */
+    private val onStatus: (referenced: Int, missing: Int) -> Unit = { _, _ -> },
 ) : LinkedMediaCache {
     private val linkedDir = File(filesDir, LINKED_DIR)
     private val storeFile = File(filesDir, "linked-media.json")
@@ -49,6 +51,16 @@ class LinkedMediaCacheImpl(
             } catch (e: Exception) {
                 Log.w(TAG, "could not enqueue linked media download", e)
             }
+        }
+        report(refs)
+    }
+
+    private fun report(refs: Refs) {
+        try {
+            val shas = refs.shas()
+            onStatus(shas.size, shas.count { pathFor(it) == null })
+        } catch (e: Exception) {
+            Log.w(TAG, "reporting linked media status failed", e)
         }
     }
 
@@ -108,6 +120,7 @@ class LinkedMediaCacheImpl(
                 if (!fetch(hid, refs.ownerUid, sha)) failed = true
             }
         }
+        report(refs())
         !failed
     }
 

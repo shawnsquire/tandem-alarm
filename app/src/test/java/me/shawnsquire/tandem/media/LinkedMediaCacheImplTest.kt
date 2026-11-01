@@ -249,6 +249,35 @@ class LinkedMediaCacheImplTest {
         assertEquals(1, enqueued)
     }
 
+    @Test fun onStatusReportsAfterUpdateAndAfterDownload() = runTest {
+        val reports = mutableListOf<Pair<Int, Int>>()
+        storage.blobs[sha256(photoBytes)] = photoBytes
+        storage.blobs[sha256(ringBytes)] = ringBytes
+        storage.blobs[sha256(defBytes)] = defBytes
+        val c = LinkedMediaCacheImpl(tmp.root, storage, { enqueued++ }, sys) { r, m -> reports += r to m }
+        fullRefs(c)
+        assertEquals(listOf(3 to 3), reports)
+        assertTrue(c.downloadMissing("hid"))
+        assertEquals(listOf(3 to 3, 3 to 0), reports)
+    }
+
+    @Test fun onStatusCountsDistinctShasAndStillReportsAfterAFailure() = runTest {
+        val reports = mutableListOf<Pair<Int, Int>>()
+        storage.blobs[sha256(photoBytes)] = photoBytes
+        storage.failing += sha256(ringBytes)
+        val c = LinkedMediaCacheImpl(tmp.root, storage, { enqueued++ }, sys) { r, m -> reports += r to m }
+        c.update("owner", mapOf("a" to AlarmMedia(ref(photoBytes), ref(ringBytes)), "b" to AlarmMedia(ref(photoBytes), null)), null)
+        assertFalse(c.downloadMissing("hid"))
+        assertEquals(listOf(2 to 2, 2 to 1), reports)
+    }
+
+    @Test fun aThrowingOnStatusDoesNotBreakUpdate() = runTest {
+        val c = LinkedMediaCacheImpl(tmp.root, storage, { enqueued++ }, sys) { _, _ -> error("boom") }
+        c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), null)), null)
+        assertEquals(1, enqueued)
+        assertEquals(setOf(sha256(photoBytes)), c.inUse())
+    }
+
     @Test fun downloadMissingFetchesVerifiesAndRenames() = runTest {
         storage.blobs[sha256(photoBytes)] = photoBytes
         storage.blobs[sha256(ringBytes)] = ringBytes

@@ -35,6 +35,25 @@ class HealthSignalsImplTest {
     }
 
     @Test
+    fun storageStatusNullThenRecorded() = runTest {
+        val h = HealthSignalsImpl(ds(), FcmTokenStore(ds()))
+        assertNull(h.storageStatus.first())
+        val at = Instant.ofEpochMilli(1_700_000_000_000)
+        h.recordStorage(false, at)
+        assertEquals(StorageStatus(false, at), h.storageStatus.first())
+        h.recordStorage(true, at.plusSeconds(5))
+        assertEquals(StorageStatus(true, at.plusSeconds(5)), h.storageStatus.first())
+    }
+
+    @Test
+    fun linkedMediaNullThenRecorded() = runTest {
+        val h = HealthSignalsImpl(ds(), FcmTokenStore(ds()))
+        assertNull(h.linkedMedia.first())
+        h.recordLinkedMedia(5, 2)
+        assertEquals(LinkedMediaStatus(5, 2), h.linkedMedia.first())
+    }
+
+    @Test
     fun tokenPresence() = runTest {
         val store = ds()
         val tokens = FcmTokenStore(store)
