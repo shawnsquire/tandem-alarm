@@ -282,6 +282,37 @@ class LinkSyncImplTest {
         assertTrue(e2.notifier.ownerTurnedOff.isEmpty())
     }
 
+    // A solo-skipped one-shot: the owner skipped only its own ring of X, so the joiner rang. At
+    // X + FIRE_GRACE skip expiry turns the owner's one-shot off and it publishes enabled = false (the
+    // solo skip itself was dropped at X). That is the one-shot finishing, not a turn-off.
+    private val soloX = Instant.parse("2026-03-02T06:30:00Z")
+    private val pastSoloGrace = Instant.parse("2026-03-02T06:32:30Z")
+
+    @Test fun `solo-skipped one-shot expiring after the joiner rang and dismissed does not notify`() = runTest {
+        val rang = RingContext(null, emptyList(), emptyList(), soloX)
+        val e = turnOff(row(days = emptySet(), joinerEnabled = false), pastSoloGrace, rang)
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+        assertFalse(e.row()!!.enabled)
+        assertFalse(e.row()!!.link!!.joinerEnabled)
+    }
+
+    @Test fun `solo-skipped one-shot expiring after the joiner rang does not notify before its dismiss lands`() = runTest {
+        val rang = RingContext(null, emptyList(), emptyList(), soloX)
+        val e = turnOff(row(days = emptySet()), pastSoloGrace, rang)
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+    }
+
+    @Test fun `solo-skipped one-shot expiring while the joiner is snoozed does not notify or touch the snooze`() = runTest {
+        val snoozed = RingContext(
+            null, emptyList(), listOf(ParkedSnooze("row1", soloX, pastSoloGrace.plusSeconds(300))), soloX,
+        )
+        val e = turnOff(row(days = emptySet()), pastSoloGrace, snoozed)
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+        assertTrue(e.ringing.dismissed.isEmpty())
+        assertEquals(0, e.ringing.snoozeCount)
+        assertTrue(e.row()!!.link!!.joinerEnabled) // the snooze's own dismiss turns the copy off later
+    }
+
     @Test fun `notifies once not again on the next identical pass`() = runTest {
         val e = turnOff(row())
         e.partner.value = state(owner(enabled = false), owner("other"))

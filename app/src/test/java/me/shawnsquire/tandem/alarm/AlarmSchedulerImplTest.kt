@@ -178,6 +178,22 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
+    fun snoozeOfALinkedOneShotWhoseCopyTurnedOffIsStillArmed() = runTest {
+        // The owner's solo-skipped one-shot expired (X + FIRE_GRACE) and LinkSync copied enabled = false
+        // while the joiner was snoozed on X: the row arms nothing, but its snooze runs out.
+        clock = at(2, 6, 33)
+        val row = alarm("a", enabled = false).copy(
+            link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null),
+        )
+        val until = at(2, 6, 40)
+        scheduler(FakeAlarmRepository(listOf(row)), ledger = ledgerOf(SnoozeEntry("ring-1", "a", until, at(2, 6, 30))))
+            .rescheduleAll()
+        val armed = scheduled.single()
+        assertEquals(until.toEpochMilli(), armed.triggerAtMs)
+        assertTrue(shadowOf(armed.operation!!).savedIntent.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false))
+    }
+
+    @Test
     fun futureLedgerSnoozeIsScheduledAndCancelSnoozeClearsIt() = runTest {
         val repo = FakeAlarmRepository(emptyList())
         val until = at(2, 5, 10)
