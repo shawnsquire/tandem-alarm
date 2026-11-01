@@ -141,9 +141,8 @@ fun isArmed(alarm: Alarm): Boolean {
  * upgrades it to a shared skip). The pinned checks (SKIP_NEXT, DISABLE, one-shot SKIP_NEXT)
  * accept a target matching either view: the shared view, ignoring `soloSkippedOccurrenceAt`
  * (the linked row's copy still sees X), or the full view the owner publishes (which skips X,
- * so the Partner tab sends X'). "already skipped" looks only at the shared
- * `skippedOccurrenceAt`. UNSKIP
- * counts only the shared skip ("nothing to unskip" if only a solo skip exists).
+ * so the Partner tab sends X'). "already skipped" looks only at the shared `skippedOccurrenceAt`.
+ * UNSKIP counts only the shared skip ("nothing to unskip" if only a solo skip exists).
  *
  * INVITE_LINK applies if the alarm exists, is an own row (`link == null`) and hasn't expired,
  * regardless of [context].
