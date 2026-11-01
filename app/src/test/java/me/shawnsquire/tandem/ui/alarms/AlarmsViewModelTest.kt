@@ -514,4 +514,37 @@ class AlarmsViewModelTest {
         assertEquals(1, e.scheduler.rescheduleCount)
         assertTrue(e.links.calls.isEmpty())
     }
+
+    // An own one-shot skipped "just me" is on with no next ring; the screen shows the skipped text, not "Off".
+
+    @Test fun soloSkippedOwnOneShotIsOnWithNoNextRing() {
+        val oneShot = alarm("w", days = emptySet()).copy(soloSkippedOccurrenceAt = future)
+        val row = buildAlarmsState(listOf(oneShot), now, ZoneOffset.UTC).rows.single()
+        assertTrue(row.enabled)
+        assertNull(row.nextRing)
+        assertNull(row.ringsInText)
+        assertTrue(row.skipped)
+        assertTrue(row.skippedSolo)
+    }
+
+    // A failing switch action must not crash the app.
+
+    private class ThrowingLinks(private val delegate: FakeLinkRepository = FakeLinkRepository()) :
+        me.shawnsquire.tandem.sync.LinkRepository by delegate {
+        override suspend fun setJoinerEnabled(alarmId: String, enabled: Boolean) = throw java.io.IOException("boom")
+        override suspend fun sendBoth(alarmId: String, type: CommandType, occurrenceAt: Instant?) =
+            throw java.io.IOException("boom")
+    }
+
+    @Test fun linkedSwitchActionsSwallowFailures() = runTest {
+        val repo = FakeAlarmRepository(listOf(linkedAlarm("j")))
+        val partner = FakePartnerRepository(partnerWith(ownerAlarm()))
+        val vm = AlarmsViewModel(
+            repo, AlarmEdits(repo, FakeAlarmScheduler()), ThrowingLinks(), FakePairingRepository(), partner, clock,
+            MutableStateFlow(Unit),
+        ) {}
+        vm.setLinkedJustMe("j")
+        vm.setLinkedBoth("j")
+        assertEquals(linkedAlarm("j"), repo.get("j"))
+    }
 }

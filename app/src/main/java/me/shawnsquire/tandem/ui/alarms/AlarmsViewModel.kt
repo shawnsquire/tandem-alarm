@@ -2,6 +2,7 @@ package me.shawnsquire.tandem.ui.alarms
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -175,7 +176,7 @@ class AlarmsViewModel(
     fun setLinkedJustMe(id: String) {
         viewModelScope.launch {
             val row = repository.get(id)?.takeIf { it.link != null } ?: return@launch
-            actions.setJustMe(row, on = !isArmed(row))
+            quietly { actions.setJustMe(row, on = !isArmed(row)) }
         }
     }
 
@@ -184,7 +185,17 @@ class AlarmsViewModel(
         viewModelScope.launch {
             val row = repository.get(id)?.takeIf { it.link != null } ?: return@launch
             val owner = partnerRepository.partner.first()?.alarms?.firstOrNull { it.id == row.link?.ownerAlarmId }
-            actions.setBoth(row, owner, on = !isArmed(row))
+            quietly { actions.setBoth(row, owner, on = !isArmed(row)) }
+        }
+    }
+
+    /** A failed switch action leaves the row as it was; it must not crash the app. */
+    private suspend fun quietly(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
         }
     }
 

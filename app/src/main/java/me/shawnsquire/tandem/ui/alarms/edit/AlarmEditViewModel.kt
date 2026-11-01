@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -90,8 +91,17 @@ class AlarmEditViewModel(
     /** True once a saved own alarm has loaded; only then can the partner be invited to it. */
     private val invitable = MutableStateFlow(false)
 
-    /** This screen's own invite is waiting for the partner. */
+    /**
+     * This screen's own invite is waiting for the partner: from the send until the partner's links show the
+     * alarm, or the open invite has come and gone. Held past APPLIED so the button does not flash back to
+     * "Invite" before `openInvites` or `links` catch up.
+     */
     private val invitePending = MutableStateFlow(false)
+
+    /** The held invite has shown up in `openInvites`, so its leaving means it closed. */
+    private var inviteSeenOpen = false
+
+    private var inviteJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -99,14 +109,20 @@ class AlarmEditViewModel(
                 invitable, pairing.status, partnerRepository.partner, links.openInvites, invitePending,
             ) { canInvite, status, partner, open, pending ->
                 val joined = partner?.links?.any { it.ownerAlarmId == alarmId } == true
+                val isOpen = alarmId in open
+                if (pending && isOpen) inviteSeenOpen = true
+                val held = pending && !joined && !(inviteSeenOpen && !isOpen)
                 val invite = when {
                     !canInvite || status !is PairingStatus.Paired -> EditInvite.Hidden
                     joined -> EditInvite.Joined
-                    pending || alarmId in open -> EditInvite.Invited
+                    held || isOpen -> EditInvite.Invited
                     else -> EditInvite.Invite
                 }
-                invite to resolvePartnerName(status, partner)
-            }.collect { (invite, name) -> _state.update { it.copy(invite = invite, partnerName = name) } }
+                Triple(invite, resolvePartnerName(status, partner), pending && !held)
+            }.collect { (invite, name, release) ->
+                if (release) invitePending.value = false
+                _state.update { it.copy(invite = invite, partnerName = name) }
+            }
         }
         viewModelScope.launch {
             if (alarmId == null) {
@@ -134,15 +150,19 @@ class AlarmEditViewModel(
     /** Invites the partner to join this alarm; the result shows as Invited, then Joined, or a reason. */
     fun invite() {
         val id = alarmId ?: return
-        if (_state.value.invite != EditInvite.Invite) return
+        // The job guard covers the gap before the state below catches up with a first tap.
+        if (inviteJob?.isActive == true || _state.value.invite != EditInvite.Invite) return
         _state.update { it.copy(inviteStatus = null) }
-        viewModelScope.launch {
+        inviteJob = viewModelScope.launch {
+            inviteSeenOpen = false
             invitePending.value = true
+            var applied = false
             try {
                 links.invite(id).collect { (status, reason) ->
                     when (status) {
                         CommandStatus.PENDING -> invitePending.value = true
-                        CommandStatus.APPLIED -> invitePending.value = false
+                        // Stays held: the partner joining or the invite closing releases it.
+                        CommandStatus.APPLIED -> applied = true
                         CommandStatus.REJECTED -> {
                             invitePending.value = false
                             _state.update {
@@ -151,12 +171,13 @@ class AlarmEditViewModel(
                         }
                     }
                 }
+                if (!applied) invitePending.value = false
             } catch (e: CancellationException) {
+                invitePending.value = false
                 throw e
             } catch (_: Exception) {
-                _state.update { it.copy(inviteStatus = CommandUiStatus.Rejected(inviteFailedReason)) }
-            } finally {
                 invitePending.value = false
+                _state.update { it.copy(inviteStatus = CommandUiStatus.Rejected(inviteFailedReason)) }
             }
         }
     }

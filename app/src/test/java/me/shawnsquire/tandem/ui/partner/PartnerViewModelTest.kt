@@ -284,6 +284,27 @@ class PartnerViewModelTest {
         assertTrue(e.sender.sent.isEmpty())
     }
 
+    @Test fun ownersSoloSkipShowsOnlyForAnEnabledAlarmAndAFutureOccurrence() = runTest {
+        val future = Instant.parse("2026-11-03T06:30:00Z")
+        val past = Instant.parse("2026-11-02T04:00:00Z")
+        val e = env(
+            partner(
+                alarm("solo").copy(soloSkippedOccurrenceAt = future),
+                alarm("stale").copy(soloSkippedOccurrenceAt = past),
+                alarm("off", enabled = false, nextAt = null).copy(soloSkippedOccurrenceAt = future),
+                alarm("plain"),
+            ),
+        )
+        val rows = e.collect(backgroundScope)().alarms.associateBy { it.id }
+        assertTrue(rows.getValue("solo").soloSkipping)
+        assertFalse(rows.getValue("stale").soloSkipping)
+        assertFalse(rows.getValue("off").soloSkipping)
+        assertFalse(rows.getValue("plain").soloSkipping)
+        // Chip and actions are untouched by the solo skip.
+        assertEquals(AlarmChip.ON, rows.getValue("solo").chip)
+        assertEquals(listOf(PartnerAction.SKIP_NEXT, PartnerAction.TURN_OFF), rows.getValue("solo").actions)
+    }
+
     @Test fun alarmsSortedByTime() = runTest {
         val e = env(partner(alarm("late", hour = 9), alarm("early", hour = 5)))
         val state = e.collect(backgroundScope)

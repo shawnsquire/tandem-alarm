@@ -379,6 +379,13 @@ private fun AlarmCard(
                     }
                 }
             }
+            if (row.soloSkipping) {
+                Text(
+                    stringResource(R.string.link_state_owner_skipping_solo, partnerName),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             CommandStatusLine(row.commandStatus, partnerName, onContainer = false)
             row.joinError?.let { CommandStatusLine(CommandUiStatus.Rejected(it), partnerName, onContainer = false) }
         }
@@ -455,6 +462,14 @@ private fun JoinPreview() {
 private fun JoinedPreview() {
     TandemTheme {
         PartnerScreen(pairedPreview.copy(alarms = listOf(sampleAlarms[0].copy(linkedAlarmId = "linked-1"))), PartnerCallbacks())
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun SoloSkippingPreview() {
+    TandemTheme {
+        PartnerScreen(pairedPreview.copy(alarms = listOf(sampleAlarms[0].copy(soloSkipping = true))), PartnerCallbacks())
     }
 }
 

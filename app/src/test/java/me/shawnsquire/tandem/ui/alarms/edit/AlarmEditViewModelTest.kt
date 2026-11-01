@@ -423,9 +423,40 @@ class AlarmEditViewModelTest {
         paired(e)
         e.vm.invite()
         assertEquals(listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.Invite("a1")), e.links.calls)
-        // The fake's flow ends APPLIED; the partner joining (or the invite closing) is what changes the row next.
-        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+        // The fake's flow ends APPLIED; the row stays Invited until the partner joins or the invite closes.
+        assertEquals(EditInvite.Invited, e.vm.state.value.invite)
         assertNull(e.vm.state.value.inviteStatus)
+    }
+
+    @Test fun invitedStaysAfterAppliedUntilTheInviteOpensAndCloses() = runTest {
+        val e = edit()
+        paired(e)
+        e.vm.invite()
+        assertEquals(EditInvite.Invited, e.vm.state.value.invite)
+        e.links.openInvites.value = setOf("a1")
+        assertEquals(EditInvite.Invited, e.vm.state.value.invite)
+        e.links.openInvites.value = emptySet()
+        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+    }
+
+    @Test fun invitedAfterAppliedBecomesJoinedWhenThePartnerJoins() = runTest {
+        val e = edit()
+        paired(e)
+        e.vm.invite()
+        e.partner.set(PartnerState("Alex", emptyList(), null, null, links = listOf(PublishedLink("a1", LinkMode.RING))))
+        assertEquals(EditInvite.Joined, e.vm.state.value.invite)
+    }
+
+    @Test fun aSecondTapWhileTheInviteIsInFlightStartsNothing() = runTest {
+        val gate = kotlinx.coroutines.flow.MutableSharedFlow<Pair<CommandStatus, String?>>()
+        var started = 0
+        val e = Env("a1", listOf(existing), linkOverride = { fake ->
+            object : LinkRepository by fake { override fun invite(alarmId: String) = gate.also { started++ } }
+        })
+        paired(e)
+        e.vm.invite()
+        e.vm.invite()
+        assertEquals(1, started)
     }
 
     @Test fun invitedWhileTheAlarmHasAnOpenInvite() = runTest {
@@ -447,7 +478,7 @@ class AlarmEditViewModelTest {
         gate.emit(CommandStatus.PENDING to null)
         assertEquals(EditInvite.Invited, e.vm.state.value.invite)
         gate.emit(CommandStatus.APPLIED to null)
-        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+        assertEquals(EditInvite.Invited, e.vm.state.value.invite)
     }
 
     @Test fun joinedTakesPrecedence() = runTest {

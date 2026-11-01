@@ -299,7 +299,12 @@ private fun AlarmRow(
                 }
             }
             Text(
-                row.ringsInText ?: stringResource(R.string.alarm_off),
+                row.ringsInText ?: when {
+                    // On but nothing left to ring (an own one-shot skipped "just me"): not "Off" beside an on switch.
+                    row.enabled && row.skipped ->
+                        stringResource(if (row.skippedSolo) R.string.link_state_skipped_for_you else R.string.alarm_skipped)
+                    else -> stringResource(R.string.alarm_off)
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

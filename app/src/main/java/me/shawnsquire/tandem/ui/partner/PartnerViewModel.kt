@@ -65,6 +65,8 @@ data class PartnerAlarmRow(
     val joining: Boolean = false,
     /** Why the last join failed, or null. */
     val joinError: String? = null,
+    /** The partner skips their next ring "just me" while this phone's copy still rings. */
+    val soloSkipping: Boolean = false,
 )
 
 data class RingingBanner(
@@ -144,6 +146,7 @@ internal fun partnerAlarmRow(
         linkedAlarmId = linkedAlarmId,
         joining = join == JoinUi.Joining,
         joinError = (join as? JoinUi.Failed)?.reason,
+        soloSkipping = a.enabled && a.soloSkippedOccurrenceAt?.let { it > now } == true,
     )
 }
 
