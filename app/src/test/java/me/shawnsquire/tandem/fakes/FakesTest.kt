@@ -4,6 +4,7 @@ import app.cash.turbine.test
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.alarm.MirrorKind
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.sync.PairingStatus
@@ -92,5 +93,14 @@ class FakesTest {
         check.pullAndApply(3.seconds)
         check.pullAndApply(3.seconds, "owner-1")
         assertEquals(listOf(null, "owner-1"), check.linkedOwnerAlarmIds)
+    }
+
+    @Test
+    fun commandSenderReportsEachCreatedId() {
+        val sender = FakeCommandSender()
+        val ids = mutableListOf<String>()
+        sender.send(CommandType.SKIP_NEXT, "a", null, null, onCreated = { ids += it })
+        sender.send(CommandType.STOP_RINGING, "a", null, "r", onCreated = { ids += it })
+        assertEquals(2, ids.distinct().size)
     }
 }

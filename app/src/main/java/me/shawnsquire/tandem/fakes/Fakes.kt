@@ -234,6 +234,7 @@ class FakeCommandSender : CommandSender {
         onCreated: (String) -> Unit,
     ): Flow<Pair<CommandStatus, String?>> {
         sent += Sent(type, alarmId, occurrenceAt, ringId, snoozedUntil)
+        onCreated("fake-cmd-${sent.size}")
         return flowOf(CommandStatus.PENDING to null, CommandStatus.APPLIED to null)
     }
 }
