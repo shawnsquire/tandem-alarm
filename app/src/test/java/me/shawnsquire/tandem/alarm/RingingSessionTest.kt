@@ -571,7 +571,7 @@ class RingingSessionTest {
         h.fire(occ = occurrence)
         assertQuiet(h)
         assertEquals(0, h.vibration.starts)
-        assertNull(h.fired.lastRang("a")) // not a skip: a replay of X re-checks the schedule itself
+        assertNull(h.fired.lastRang("a")) // not recorded as rung: a replay of X carries no zone, so movedOff is false and it rings
         assertEquals(1, h.scheduler.rescheduleCount)
         // 7:15 the same morning is what the scheduler now arms.
         assertEquals(occurrence.plusSeconds(45 * 60), nextOccurrence(h.repo.get("a")!!, clockNow, TEST_ZONE))
