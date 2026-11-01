@@ -23,10 +23,12 @@ import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.fallsOnSchedule
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.schedule.skippedOccurrences
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
+import java.time.ZoneId
 import java.util.UUID
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -59,6 +61,8 @@ class RingingSession(
     private val isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
     /** The system alarm sound's Uri as the media cache places it; see [startRingOutputs]. */
     private val systemAlarmUri: () -> String? = ::systemDefaultAlarmUri,
+    /** The scheduler's zone, read at each fire; see [movedOff]. */
+    private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val onFinished: () -> Unit,
 ) {
     private val jobs = mutableListOf<Job>()
@@ -400,7 +404,7 @@ class RingingSession(
             finish()
             return
         }
-        if (alarm != null && (!isArmed(alarm) || isSkipped(alarm, occurrence))) {
+        if (alarm != null && (!isArmed(alarm) || isSkipped(alarm, occurrence) || movedOff(alarm, occurrence))) {
             suppressFire(alarmId, occurrence, alarm)
             return
         }
@@ -421,8 +425,8 @@ class RingingSession(
         // Its own member, known even if it never sees the stored ring (a claim that completes late).
         seenMembers = setOf(RingMember(alarmId, occurrence))
         // A sounding ring takes this alarm into its merged list; a snoozed one is parked and keeps its snooze.
-        // The decision is re-checked inside the claim's critical section, so a skip, disable or delete
-        // stored since the read above still suppresses; a failed re-check counts as due (I1).
+        // The decision is re-checked inside the claim's critical section, so a skip, disable, delete or moved
+        // linked time stored since the read above still suppresses; a failed re-check counts as due (I1).
         var suppressedAlarm: Alarm? = null
         val claim = boundedClaim(
             "ring slot claim",
@@ -440,7 +444,7 @@ class RingingSession(
                 // Resolved in advance (ledger written under this lock): quiet, no skip to clear.
                 if (!ownLedgerWrite && firedLedger.lastRang(alarmId) == occurrence) return@claimFire false
                 suppressedAlarm = current
-                current != null && isArmed(current) && !isSkipped(current, occurrence)
+                current != null && isArmed(current) && !isSkipped(current, occurrence) && !movedOff(current, occurrence)
             }
         }
         if (claim is Claim.Done && claim.value == SlotClaim.NotDue) {
@@ -461,7 +465,20 @@ class RingingSession(
         ring(alarm, ringId, observe = claim is Claim.Done, fire = alarmId to occurrence)
     }
 
-    /** Quiet end for a deleted, disabled or skipped occurrence, all of them commands already stored locally. */
+    /**
+     * A linked row whose copied hour, minute or days no longer put [occurrence] on its schedule: the
+     * owner moved the alarm and LinkSync (often the pre-fire read) copied it, so X is not an
+     * occurrence any more and the owner would reject this ring's mirrored STOP. By the schedule alone,
+     * never `nextOccurrence`, so the owner's solo skip can't suppress. Own rows are never checked: an
+     * edit there re-arms the alarm itself, and no stored command asked to drop X (I1).
+     */
+    private fun movedOff(alarm: Alarm, occurrence: Instant): Boolean =
+        alarm.link != null && !fallsOnSchedule(alarm, occurrence, zone())
+
+    /**
+     * Quiet end for a deleted, disabled or skipped occurrence, all of them commands already stored
+     * locally, or a linked occurrence the owner moved away ([movedOff]).
+     */
     private suspend fun suppressFire(alarmId: String, occurrence: Instant, alarm: Alarm?) {
         if (alarm != null && isSkipped(alarm, occurrence)) {
             // Recorded as handled, so a replay of this skipped occurrence cannot ring once the skip is cleared.
@@ -750,7 +767,8 @@ class RingingSession(
  * ([skippedOccurrences]): what `nextOccurrence` skips is exactly what a fire or replay suppresses,
  * so a pending "unskip for both" re-arms and rings X, and a linked row's solo skip is ignored. By
  * exact stored instant, never by recomputing the next occurrence: a zone change, DST or a time
- * edit must not suppress a ring no stored command asked for (I1).
+ * edit must not suppress a ring no stored command asked for (I1). The one exception is a linked
+ * row whose owner moved the time or days, which [RingingSession] checks separately (`movedOff`).
  */
 internal fun isSkippedOccurrence(alarm: Alarm, occurrence: Instant): Boolean =
     occurrence in alarm.skippedOccurrences()
