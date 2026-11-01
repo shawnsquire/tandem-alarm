@@ -15,7 +15,7 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
 
     data class Created(
         val hid: String, val from: String, val to: String, val type: CommandType, val alarmId: String,
-        val occurrenceAt: Instant?, val ringId: String?, val now: Instant,
+        val occurrenceAt: Instant?, val ringId: String?, val now: Instant, val snoozedUntil: Instant? = null,
     )
 
     val resolved = mutableListOf<Resolved>()
@@ -39,10 +39,10 @@ class FakeCommandRemote(var status: CommandStatus? = CommandStatus.PENDING) : Co
 
     override fun create(
         householdId: String, from: String, to: String, type: CommandType, alarmId: String,
-        occurrenceAt: Instant?, ringId: String?, now: Instant,
+        occurrenceAt: Instant?, ringId: String?, now: Instant, snoozedUntil: Instant?,
     ): String {
         createFailure?.let { throw it }
-        created += Created(householdId, from, to, type, alarmId, occurrenceAt, ringId, now)
+        created += Created(householdId, from, to, type, alarmId, occurrenceAt, ringId, now, snoozedUntil)
         return createdId
     }
 

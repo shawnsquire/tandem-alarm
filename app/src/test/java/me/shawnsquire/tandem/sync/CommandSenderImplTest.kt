@@ -35,6 +35,15 @@ class CommandSenderImplTest {
     }
 
     @Test
+    fun `snoozedUntil reaches the remote`() {
+        val until = now.plusSeconds(540)
+        sender.send(CommandType.SNOOZE, "a1", null, "r1", until)
+        assertEquals(until, remote.created.single().snoozedUntil)
+        sender.send(CommandType.SKIP_NEXT, "a1", occurrence, null)
+        assertEquals(null, remote.created.last().snoozedUntil)
+    }
+
+    @Test
     fun `stop ringing carries the ring id`() {
         sender.send(CommandType.STOP_RINGING, "a1", null, "r1")
         val c = remote.created.single()

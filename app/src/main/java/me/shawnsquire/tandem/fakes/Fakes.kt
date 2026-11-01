@@ -180,13 +180,26 @@ class FakeCommandApplier : CommandApplier {
 }
 
 class FakeCommandSender : CommandSender {
+    data class Sent(
+        val type: CommandType,
+        val alarmId: String,
+        val occurrenceAt: Instant?,
+        val ringId: String?,
+        val snoozedUntil: Instant? = null,
+    )
+
+    val sent = mutableListOf<Sent>()
+
     override fun send(
         type: CommandType,
         alarmId: String,
         occurrenceAt: Instant?,
         ringId: String?,
-    ): Flow<Pair<CommandStatus, String?>> =
-        flowOf(CommandStatus.PENDING to null, CommandStatus.APPLIED to null)
+        snoozedUntil: Instant?,
+    ): Flow<Pair<CommandStatus, String?>> {
+        sent += Sent(type, alarmId, occurrenceAt, ringId, snoozedUntil)
+        return flowOf(CommandStatus.PENDING to null, CommandStatus.APPLIED to null)
+    }
 }
 
 class FakePartnerRepository(initial: PartnerState? = sampleState()) : PartnerRepository {

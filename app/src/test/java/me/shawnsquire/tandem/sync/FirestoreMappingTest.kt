@@ -9,6 +9,8 @@ import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -180,6 +182,106 @@ class FirestoreMappingTest {
         assertEquals(1, s.alarms.size)
         assertEquals(setOf(DayOfWeek.TUESDAY), s.alarms[0].days)
         assertEquals(6, s.alarms[0].hour)
+    }
+
+    @Test
+    fun snoozedUntilAbsentFromCreateMapWhenNull() {
+        val m = commandCreateMap("u1", "u2", CommandType.SKIP_NEXT, "a1", null, null, now)
+        assertFalse(m.containsKey("snoozedUntil"))
+        assertNull(commandFromDoc("c1", m)?.snoozedUntil)
+    }
+
+    @Test
+    fun snoozedUntilDocRoundTrip() {
+        val until = now.plusSeconds(540)
+        val m = commandCreateMap("u1", "u2", CommandType.SNOOZE, "a1", null, "r1", now, until)
+        assertEquals(Timestamp(until.epochSecond, 0), m["snoozedUntil"])
+        assertEquals(
+            Command("c1", "u1", "u2", CommandType.SNOOZE, "a1", null, "r1", now, now.plusSeconds(86_400), until),
+            commandFromDoc("c1", m),
+        )
+        assertNull(commandFromDoc("c1", m + ("snoozedUntil" to 5L))?.snoozedUntil)
+    }
+
+    @Test
+    fun snoozedUntilFcmRoundTrip() {
+        val until = Instant.ofEpochMilli(1_700_000_540_000)
+        val data = fcm + ("type" to "SNOOZE") + ("snoozedUntil" to until.toEpochMilli().toString())
+        assertEquals(until, commandFromFcm(data)?.snoozedUntil)
+        assertNull(commandFromFcm(fcm)?.snoozedUntil)
+        assertNull(commandFromFcm(data + ("snoozedUntil" to "abc")))
+    }
+
+    @Test
+    fun deviceDocDefaultsHaveNoNewKeys() {
+        val ring = RingState("a1", "r1", now, null)
+        val m = deviceDocMap("P", null, listOf(alarm), ring, now, zone)
+        assertFalse(m.containsKey("links"))
+        assertFalse(m.containsKey("defaultWallpaper"))
+        assertEquals(setOf("alarmId", "ringId", "startedAt", "snoozedUntil"), (m["ringing"] as Map<*, *>).keys)
+    }
+
+    @Test
+    fun deviceDocLinksAndMediaRoundTrip() {
+        val solo = now.plusSeconds(7200)
+        val wall = MediaRef("w1", 100L)
+        val tone = MediaRef("t1", 2000L, "Birdsong")
+        val def = MediaRef("d1", 5L)
+        val a2 = alarm.copy(id = "a2", soloSkippedOccurrenceAt = solo)
+        val past = alarm.copy(id = "a3", soloSkippedOccurrenceAt = now)
+        val links = listOf(PublishedLink("o1", LinkMode.RING), PublishedLink("o2", LinkMode.NOTIFY))
+        val media = PublishedMedia(def, mapOf("a1" to AlarmMedia(wall, tone), "a2" to AlarmMedia(null, null)))
+        val occ = Instant.parse("2026-03-02T07:30:00Z")
+        val ring = RingState("a1", "r1", now, null, occ, listOf(RingMember("a2", occ.plusSeconds(60))))
+        val m = deviceDocMap("P", null, listOf(alarm, a2, past), ring, now, zone, links, media)
+        val alarmMaps = (m["alarms"] as List<*>).map { it as Map<*, *> }
+        assertFalse(alarmMaps[0].containsKey("soloSkippedOccurrenceAt"))
+        assertFalse(alarmMaps[2].containsKey("soloSkippedOccurrenceAt"))
+        assertFalse(alarmMaps[2].containsKey("media"))
+        val s = partnerStateFromDoc(m + ("updatedAt" to Timestamp(now.epochSecond, 0)))!!
+        assertEquals(links, s.links)
+        assertEquals(def, s.defaultWallpaper)
+        assertEquals(AlarmMedia(wall, tone), s.alarms[0].media)
+        assertEquals(AlarmMedia(null, null), s.alarms[1].media)
+        assertNull(s.alarms[2].media)
+        assertEquals(solo, s.alarms[1].soloSkippedOccurrenceAt)
+        assertNull(s.alarms[2].soloSkippedOccurrenceAt)
+        assertEquals(ring, s.ringing)
+        assertEquals(emptyList<PublishedLink>(), partnerStateFromDoc(deviceDocMap("P", null, listOf(alarm), null, now, zone, emptyList()))!!.links)
+        val cleared = deviceDocMap("P", null, listOf(alarm), null, now, zone, null, PublishedMedia(null, emptyMap()))
+        assertTrue(cleared.containsKey("defaultWallpaper") && cleared["defaultWallpaper"] == null)
+    }
+
+    @Test
+    fun malformedNewFieldsNeverDropAlarmOrRing() {
+        val s = partnerStateFromDoc(
+            mapOf(
+                "displayName" to "P",
+                "links" to listOf(mapOf("ownerAlarmId" to "o", "mode" to "WEIRD"), "junk", mapOf("ownerAlarmId" to "o", "mode" to "RING")),
+                "defaultWallpaper" to "nope",
+                "alarms" to listOf(
+                    mapOf(
+                        "id" to "ok", "hour" to 6L, "minute" to 5L, "enabled" to true,
+                        "media" to mapOf("wallpaper" to mapOf("sha" to 3), "ringtone" to mapOf("sha" to "t", "size" to 7)),
+                        "soloSkippedOccurrenceAt" to "x",
+                    ),
+                    mapOf("id" to "ok2", "hour" to 6L, "minute" to 5L, "enabled" to true, "media" to 5),
+                ),
+                "ringing" to mapOf(
+                    "alarmId" to "a", "ringId" to "r", "startedAt" to Timestamp(1, 0),
+                    "occurrenceAt" to "bad", "merged" to listOf("x", mapOf("alarmId" to "m"), mapOf("alarmId" to "m", "occurrenceAt" to Timestamp(5, 0))),
+                ),
+            ),
+        )!!
+        assertEquals(listOf(PublishedLink("o", LinkMode.RING)), s.links)
+        assertNull(s.defaultWallpaper)
+        assertEquals(2, s.alarms.size)
+        assertEquals(AlarmMedia(null, MediaRef("t", 7L)), s.alarms[0].media)
+        assertNull(s.alarms[0].soloSkippedOccurrenceAt)
+        assertNull(s.alarms[1].media)
+        val ring = s.ringing!!
+        assertNull(ring.occurrenceAt)
+        assertEquals(listOf(RingMember("m", Instant.ofEpochSecond(5))), ring.merged)
     }
 
     @Test
