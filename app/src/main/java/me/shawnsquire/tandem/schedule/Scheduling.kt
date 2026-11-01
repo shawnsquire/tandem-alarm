@@ -122,16 +122,17 @@ fun isArmed(alarm: Alarm): Boolean {
  * on X alone or `cmd.alarmId`, so on a joiner [alarm] is the resolved linked row. With a null
  * [context], SNOOZE is "not supported yet" (the only such case) and STOP_RINGING needs a
  * `ringId`. A SNOOZE missing X or T is rejected "incomplete snooze". Merged members come from
- * [RingContext.merged] and the slot ring's own `merged`:
+ * [RingContext.merged] and the slot ring's own `merged`. The rules keep the design's numbers but are
+ * checked in the order listed, not numeric order:
  * 1. Expired or duplicate: reject (I3).
- * 2. Already resolved ("already rang or changed"): X was dismissed, auto-silenced or dismissed in
+ * 3. Already resolved ("already rang or changed"): X was dismissed, auto-silenced or dismissed in
  *    advance on this phone and is not live. Checked against FiredLedger (`lastRang`) plus the live
  *    ring state, so it holds inside [FIRE_GRACE] too and a late SNOOZE can't re-arm a dismissed ring.
- * 3. Live: X is sounding, snoozed (current or parked), or a member of a merged ring: apply. A
+ * 4. Live: X is sounding, snoozed (current or parked), or a member of a merged ring: apply. A
  *    SNOOZE whose T is not later than X's current snooze end is rejected ("already snoozed
  *    later"), so two crossing snoozes settle on the later T. For a merged member the slot ring's
  *    `snoozedUntil` is that end.
- * 4. Not ringing here ("skipped here"), reached only when X isn't live: this phone's own state says
+ * 2. Not ringing here ("skipped here"), reached only when X isn't live: this phone's own state says
  *    X wouldn't ring: its `skippedOccurrenceAt` or `soloSkippedOccurrenceAt`,
  *    `link.ownerSkippedOccurrenceAt`, a pending "both" skip or off, copied `enabled = false`, or
  *    `joinerEnabled = false`. Live comes first because a ring that is sounding must be stoppable
@@ -141,7 +142,7 @@ fun isArmed(alarm: Alarm): Boolean {
  *    `now` (the same two forms as the pinned checks, on the full alarm) and at most [FIRE_GRACE]
  *    from `now` on either side. Before X, STOP_RINGING dismisses it in advance and SNOOZE arms the
  *    snooze with no ring first. After X (inside the grace), the partner's dismissal beat this
- *    phone's pre-fire check, so it applies the same way. X is not resolved (rule 2 ran first).
+ *    phone's pre-fire check, so it applies the same way. X is not resolved (rule 3 ran first).
  *    The window is X - FIRE_GRACE ..< X + FIRE_GRACE (inclusive before, exclusive after, like skip
  *    expiry).
  * 6. Otherwise reject ("already rang or changed").
@@ -243,7 +244,7 @@ fun validate(
 
 private val RING_COMMANDS = setOf(CommandType.STOP_RINGING, CommandType.SNOOZE)
 
-/** Ring-command rules 2 to 6 (see [validate]); expiry and a missing alarm are handled by the caller. */
+/** Ring-command rules 2 to 6 in [validate]'s listed order; expiry and a missing alarm are the caller's job. */
 private fun validateRingOccurrence(
     cmd: Command,
     alarm: Alarm,

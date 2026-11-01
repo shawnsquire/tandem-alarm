@@ -658,6 +658,15 @@ class ValidateTest {
     }
 
     @Test
+    fun dismissAtOneSecondPastWhilePartnerIsInPreFireApplies() {
+        val a = alarm().copy(hour = 6, minute = 30)
+        val fire = Instant.parse("2026-11-07T11:30:00Z") // 06:30:00 EST
+        val at = fire.plusSeconds(1)
+        assertEquals(apply, run(stop(fire), a, ctx(), at))
+        assertEquals(apply, run(snooze(at = fire), a, ctx(), at))
+    }
+
+    @Test
     fun occurrenceAtOrBeyondFireGraceAfterRejects() {
         for (at in listOf(x.plusSeconds(120), x.plusSeconds(121))) {
             assertEquals(resolved, run(stop(), alarm(), ctx(), at))
