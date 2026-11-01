@@ -64,12 +64,12 @@ class SwitchableAlarmRepository(
     override val alarms: Flow<List<Alarm>> = view({ it.alarms }) { true }
 
     /**
-     * Locked, the mirrored list filtered to link == null. The mirror doesn't encode [Alarm.link]
-     * yet (unit L2 adds it), so until then locked linked rows appear here as own alarms.
+     * Locked, the mirrored list filtered to link == null. The mirror encodes [Alarm.link], so
+     * locked linked rows are excluded here like unlocked.
      */
     override val ownAlarms: Flow<List<Alarm>> = view({ it.ownAlarms }) { it.link == null }
 
-    /** Locked, the mirrored list filtered to link != null; empty until the mirror encodes the link (L2). */
+    /** Locked, the mirrored list filtered to link != null. */
     override val linkedAlarms: Flow<List<Alarm>> = view({ it.linkedAlarms }) { it.link != null }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -124,9 +124,8 @@ class SwitchableAlarmRepository(
         write(DeferredWrite.SetSoloSkip(id, occurrence), { it.copy(soloSkippedOccurrenceAt = occurrence) }) { it.setSoloSkip(id, occurrence) }
 
     /**
-     * Deferrable like [setEnabled]: queued and replayed on attach. The mirror doesn't encode the
-     * link yet (L2), so today it holds no linked rows and the locked view shows no change; the
-     * change below applies to a linked mirrored row once the mirror carries the link.
+     * Deferrable like [setEnabled]: queued and replayed on attach. The mirror carries the link,
+     * so the change below applies to a linked mirrored row while locked.
      */
     override suspend fun setJoinerEnabled(id: String, enabled: Boolean) =
         write(

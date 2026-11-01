@@ -92,9 +92,13 @@ class SwitchableRingMirrorPort(private val outbox: MirrorOutbox = InMemoryMirror
     }
 }
 
-/** Loops the first candidate URI that opens; the adapter appends system-default fallbacks after [candidates]. */
+/**
+ * Loops the first candidate URI that opens. With [appendSystemDefaults] the adapter tries the
+ * system defaults after [candidates]; a linked ring whose candidates already carry the system alarm
+ * Uri, in the order the media cache chose, passes false. The bundled tone is always last.
+ */
 interface AlarmSound {
-    fun start(candidates: List<String>)
+    fun start(candidates: List<String>, appendSystemDefaults: Boolean = true)
     fun stop()
 }
 
@@ -103,10 +107,14 @@ interface AlarmVibration {
     fun stop()
 }
 
-/** UI side effects of ringing. Implemented with NotificationManager in the Android layer. */
+/**
+ * UI side effects of ringing. Implemented with NotificationManager in the Android layer. A ringing
+ * notification's [labels] are every member's resolved label (a linked ring takes it from its
+ * override or owner), primary first and none blank; the notifier joins them for display.
+ */
 interface RingingNotifier {
-    /** Update the foreground notification: label plus Stop and Snooze actions. */
-    fun showRinging(alarm: Alarm?, ringId: String)
+    /** Update the foreground notification: [labels] plus Stop and Snooze actions. */
+    fun showRinging(alarm: Alarm?, ringId: String, labels: List<String>)
 
     /**
      * Ringing notification for a fallback ring with no stored RingState: full-screen and content
@@ -114,11 +122,35 @@ interface RingingNotifier {
      */
     fun showFallbackRinging(ringId: String) {}
 
+    /**
+     * Foreground notification for a Notify-mode ring: heads-up with Stop and Snooze, no full-screen
+     * intent. A later [showRinging] for the same [ringId] replaces it with the full ringing notification.
+     * [alertAgain] (an un-silence) makes it alert again even though one is already up.
+     *
+     * Returns false, having posted nothing, when the post couldn't alert (notifications off for the
+     * app, the channel blocked or silent): the Notify surface has no sound of its own, so the caller
+     * rings in full instead (I1).
+     */
+    fun showNotifyRinging(alarm: Alarm?, ringId: String, labels: List<String>, alertAgain: Boolean = false): Boolean
+
+    /**
+     * Shows [labels] on [ringId]'s posted notification, the Notify one when [notifySurface]: a merge
+     * or a promotion changed who rings. The same notification updated in place, never a new one: it
+     * must not alert again or launch the full-screen intent again. False, as [showNotifyRinging],
+     * when the Notify surface can't alert any more; always true for the full one.
+     */
+    fun updateRingingLabel(alarm: Alarm?, ringId: String, labels: List<String>, notifySurface: Boolean): Boolean
+
     /** Removes [ringId]'s ringing notification (a stale ring cleared without a session to do it). */
     fun cancelRinging(ringId: String) {}
 
-    /** Non-foreground notification with a Dismiss action, one per ring so parked snoozes coexist. */
-    fun showSnoozed(ringId: String, until: Instant)
+    /**
+     * Non-foreground notification with a Dismiss action (its intent carries [ringId]), one per ring
+     * so parked snoozes coexist. A snoozed merged ring posts one, under its group's id, whose
+     * [labels] name every member still in it, primary first; blank ones are left out, and none shows
+     * no label. Posting again under the same [ringId] updates it in place.
+     */
+    fun showSnoozed(ringId: String, until: Instant, labels: List<String> = emptyList())
     fun cancelSnoozed(ringId: String)
 }
 

@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import java.time.Duration
 import java.time.Instant
@@ -40,6 +41,8 @@ class AlarmSchedulerImpl(
     private val now: () -> Instant = Instant::now,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
+    private val isArmed: (Alarm) -> Boolean = ::isArmed,
+    private val isSkipped: (Alarm, Instant) -> Boolean = ::isSkippedOccurrence,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val onScheduled: suspend (alarms: List<Alarm>, triggers: Map<String, Long>) -> Unit = { _, _ -> },
 ) : AlarmScheduler, SnoozeArmer {
@@ -116,19 +119,16 @@ class AlarmSchedulerImpl(
         // mutex before the boot or time-change rearm run, and its records would otherwise drop the
         // occurrence it moves past; so it carries them forward and the rearm run replays them.
         val recent = recentlyDue(old, nowInstant)
-        val missed = if (rearmOverdueSnooze) {
-            armReplays(recent, alarms, nowInstant)
-            emptyMap()
-        } else {
-            recent
-        }
+        // Replays armed by this very run; the cleanup below must not take them back.
+        val replayed = if (rearmOverdueSnooze) armReplays(recent, alarms, nowInstant) else emptySet()
+        val missed = if (rearmOverdueSnooze) emptyMap() else recent
         // Persisted before any PendingIntent is registered, so a process death in between
         // cannot orphan one.
         val persisted = old.records.toMutableMap()
         val scheduledNow = mutableMapOf<String, Long?>()
         for (alarm in alarms) {
             try {
-                val at = if (alarm.enabled) next(alarm, nowInstant, zoneId) else null
+                val at = if (isArmed(alarm)) next(alarm, nowInstant, zoneId) else null
                 if (at == null) continue
                 if (!at.isAfter(nowInstant)) {
                     // Would fire immediately, reschedule itself and loop.
@@ -158,8 +158,9 @@ class AlarmSchedulerImpl(
         for (id in (old.records.keys + old.legacyIds) - scheduledNow.keys) {
             try {
                 cancel(AlarmIntents.existingFirePendingIntent(context, id))
-                // A replay armed at boot for an alarm disabled or deleted within its 5 s window.
-                cancel(AlarmIntents.existingReplayPendingIntent(context, id))
+                // A replay armed at boot for an alarm disabled or deleted within its 5 s window; not
+                // one armed above for an alarm that is due now but has no next occurrence.
+                if (id !in replayed) cancel(AlarmIntents.existingReplayPendingIntent(context, id))
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
                 Log.e(TAG, "cancel failed for alarm $id", e)
@@ -222,8 +223,10 @@ class AlarmSchedulerImpl(
      * Boot or time change: an occurrence that fell inside the last [OVERDUE_SNOOZE_WINDOW] while
      * nothing was running rings shortly, through AlarmReceiver like any other fire. One bad record
      * never stops the rest. Null [alarms] means they couldn't be read: every one is replayed (I1).
+     * Returns the ids whose replay was armed.
      */
-    private fun armReplays(previous: Map<String, Long>, alarms: List<Alarm>?, nowInstant: Instant) {
+    private fun armReplays(previous: Map<String, Long>, alarms: List<Alarm>?, nowInstant: Instant): Set<String> {
+        val armed = mutableSetOf<String>()
         val byId = alarms?.associateBy { it.id }
         val earliest = nowInstant.minus(OVERDUE_SNOOZE_WINDOW).toEpochMilli()
         for ((id, atMs) in previous) {
@@ -232,17 +235,19 @@ class AlarmSchedulerImpl(
                 val at = Instant.ofEpochMilli(atMs)
                 if (byId != null) {
                     val alarm = byId[id] ?: continue
-                    if (!alarm.enabled || alarm.skippedOccurrenceAt == at) continue
+                    if (!isArmed(alarm) || isSkipped(alarm, at)) continue
                 }
                 alarmManager.setAlarmClock(
                     AlarmManager.AlarmClockInfo(nowInstant.plus(OVERDUE_SNOOZE_DELAY).toEpochMilli(), AlarmIntents.showPendingIntent(context)),
                     AlarmIntents.replayPendingIntent(context, id, at),
                 )
+                armed += id
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
                 Log.e(TAG, "replay arming failed for alarm $id", e)
             }
         }
+        return armed
     }
 
     private class Records(val records: Map<String, Long>, val legacyIds: Set<String>, val missed: Map<String, Long>)

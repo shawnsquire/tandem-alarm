@@ -79,8 +79,9 @@ class BootReceiverTest {
 
     private class OrderedSlot(val events: MutableList<String>, val fail: Boolean = false) : RingSlot {
         var reschedule: Boolean? = null
-        override suspend fun claimFire(newRing: me.shawnsquire.tandem.schedule.RingState, stillDue: suspend () -> Boolean) = true
-        override suspend fun claimSnoozeResume(ringId: String, alarmId: String) = false
+        override suspend fun claimFire(newRing: me.shawnsquire.tandem.schedule.RingState, stillDue: suspend () -> Boolean) = SlotClaim.Claimed
+        override suspend fun claimSnoozeResume(ringId: String, alarmId: String, onMerged: (me.shawnsquire.tandem.schedule.RingMember) -> Unit) = SlotClaim.NotDue
+        override suspend fun autoSilence(ringId: String, expected: List<me.shawnsquire.tandem.schedule.RingMember>) = true
         override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) {
             events += "clearStale"
             this.reschedule = reschedule

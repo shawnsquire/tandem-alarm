@@ -11,7 +11,12 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,10 +60,11 @@ class AlarmSchedulerImplTest {
         repo: AlarmRepository,
         ring: FakeRingStateStore = FakeRingStateStore(),
         next: (Alarm, Instant, ZoneId) -> Instant? = ::nextOccurrence,
+        isArmed: (Alarm) -> Boolean = ::isArmed,
         ledger: SnoozeLedger = InMemorySnoozeLedger(),
         onScheduled: suspend (List<Alarm>, Map<String, Long>) -> Unit = { _, _ -> },
         ctx: Context = context,
-    ) = AlarmSchedulerImpl(ctx, repo, ring, ledger, now = { clock }, zone = { zone }, next = next, io = UnconfinedTestDispatcher(), onScheduled = onScheduled)
+    ) = AlarmSchedulerImpl(ctx, repo, ring, ledger, now = { clock }, zone = { zone }, next = next, isArmed = isArmed, io = UnconfinedTestDispatcher(), onScheduled = onScheduled)
 
     private fun ledgerOf(vararg entries: SnoozeEntry) = InMemorySnoozeLedger().apply {
         entries.forEach { put(it.ringId, it.alarmId, it.until) }
@@ -640,6 +646,81 @@ class AlarmSchedulerImplTest {
         repo.setSkip("a", at(2, 5, 0))
         s.rescheduleAll(rearmOverdueSnooze = true)
         assertTrue(replays.isEmpty())
+    }
+
+    @Test
+    fun disarmedPerIsArmedIsNotScheduledEvenIfEnabled() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a")))
+        scheduler(repo, isArmed = { false }).rescheduleAll()
+        assertTrue(scheduled.isEmpty())
+    }
+
+    @Test
+    fun armedPerIsArmedIsScheduledEvenIfNotEnabled() = runTest {
+        val repo = FakeAlarmRepository(listOf(alarm("a", enabled = false)))
+        scheduler(repo, next = { _, n, _ -> n.plusSeconds(60) }, isArmed = { true }).rescheduleAll()
+        assertEquals(1, scheduled.size)
+    }
+
+    private val replayAt get() = at(2, 5, 0)
+
+    private suspend fun replaysWith(stored: Alarm): List<ShadowAlarmManager.ScheduledAlarm> {
+        armedThenLater(FakeAlarmRepository(listOf(alarm("a", 5, 0))), replayAt.plusSeconds(180))
+        scheduler(FakeAlarmRepository(listOf(stored))).rescheduleAll(rearmOverdueSnooze = true)
+        return replays
+    }
+
+    private val link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null)
+
+    @Test
+    fun noReplayForSoloSkippedOccurrence() = runTest {
+        assertTrue(replaysWith(alarm("a", 5, 0).copy(soloSkippedOccurrenceAt = replayAt)).isEmpty())
+    }
+
+    @Test
+    fun noReplayForOwnerSkippedOccurrence() = runTest {
+        assertTrue(replaysWith(alarm("a", 5, 0).copy(link = link.copy(ownerSkippedOccurrenceAt = replayAt))).isEmpty())
+    }
+
+    @Test
+    fun noReplayForPendingSkipNextOccurrence() = runTest {
+        val pending = PendingBoth(CommandType.SKIP_NEXT, replayAt, "c1")
+        assertTrue(replaysWith(alarm("a", 5, 0).copy(link = link.copy(pendingBoth = pending))).isEmpty())
+    }
+
+    @Test
+    fun replayForOwnerSkipCancelledByPendingUnskip() = runTest {
+        val stored = alarm("a", 5, 0, days = DayOfWeek.entries.toSet()).copy(
+            link = link.copy(ownerSkippedOccurrenceAt = replayAt, pendingBoth = PendingBoth(CommandType.UNSKIP, replayAt, "c1")),
+        )
+        assertEquals(1, replaysWith(stored).size)
+    }
+
+    @Test
+    fun replayForSoloSkipOnALinkedRow() = runTest {
+        val stored = alarm("a", 5, 0, days = DayOfWeek.entries.toSet()).copy(soloSkippedOccurrenceAt = replayAt, link = link)
+        assertEquals(1, replaysWith(stored).size)
+    }
+
+    @Test
+    fun replayStillArmedWhenStoredSkipsAreForOtherInstants() = runTest {
+        val other = replayAt.plusSeconds(86_400)
+        // Repeating, so tomorrow's skipped occurrence still leaves a next fire: an armed alarm with
+        // no next occurrence is not "scheduled" and would have its replay cancelled.
+        val stored = alarm("a", 5, 0, days = DayOfWeek.entries.toSet()).copy(
+            soloSkippedOccurrenceAt = other,
+            link = link.copy(ownerSkippedOccurrenceAt = other, pendingBoth = PendingBoth(CommandType.SKIP_NEXT, other, "c1")),
+        )
+        assertEquals(1, replaysWith(stored).size)
+    }
+
+    @Test
+    fun replayArmedThisRunSurvivesWhenTheAlarmHasNoNextOccurrence() = runTest {
+        // An own one-shot solo-skipped for tomorrow has no next fire, but today's missed X still rings.
+        val stored = alarm("a", 5, 0).copy(soloSkippedOccurrenceAt = replayAt.plusSeconds(86_400))
+        assertEquals(1, replaysWith(stored).size)
+        assertNotNull(AlarmIntents.existingReplayPendingIntent(context, "a"))
+        assertNull(AlarmIntents.existingFirePendingIntent(context, "a")) // its old fire is still cancelled
     }
 
     @Test

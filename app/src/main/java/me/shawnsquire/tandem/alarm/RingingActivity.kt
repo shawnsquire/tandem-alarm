@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
 import android.graphics.BitmapFactory
@@ -48,14 +49,22 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.R
-import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.TandemApp
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.ui.theme.TandemTheme
 import java.io.File
+import java.time.Instant
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -77,9 +86,13 @@ internal suspend fun guardedRingEnd(block: suspend () -> Unit, onFailure: (Throw
 private suspend fun runLogged(what: String, block: suspend () -> Unit) =
     guardedRingEnd(block) { Log.e(TAG, "$what failed", it) }
 
+/** [content] as resolved for the ring [ringId]: a merge keeps showing it until the new one resolves, a new ring doesn't. */
+private class ShownContent(val ringId: String, val content: RingScreenContent)
+
 /** Full-screen ringing UI. Finishes when the ring ends (see [RingingScreenModel]). */
 class RingingActivity : ComponentActivity() {
     private var ring by mutableStateOf<RingState?>(null)
+    private var notice by mutableStateOf<RemoteRingEnd?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,7 +111,12 @@ class RingingActivity : ComponentActivity() {
         lifecycleScope.launch {
             // A failure here must never crash the process: it hosts the service and the sound.
             guardedRingEnd(
-                { awaitRingEnd(engine.ringStateStore.state, model, userStopped = userStopped, onRing = { ring = it }) },
+                {
+                    awaitRingEnd(
+                        engine.ringStateStore.state, model, userStopped = userStopped,
+                        remoteNotices = engine.remoteRingNotices.latest, onNotice = { notice = it }, onRing = { ring = it },
+                    )
+                },
                 onFailure = { Log.e(TAG, "ring state observation failed; closing screen", it) },
             )
             finish()
@@ -107,16 +125,6 @@ class RingingActivity : ComponentActivity() {
         setContent {
             TandemTheme {
                 val current = ring
-                val alarm by produceState<Alarm?>(null, current?.ringId) {
-                    value = null
-                    value = try {
-                        current?.let { engine.alarmRepository.get(it.alarmId) }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
                 val defaultPath by produceState<String?>(null) {
                     try {
                         engine.settings.defaultWallpaperPath.collect { value = it }
@@ -126,32 +134,94 @@ class RingingActivity : ComponentActivity() {
                         value = null
                     }
                 }
+                val partnerName by produceState<String?>(null) { partnerNames().collect { value = it } }
+                // Keyed on the members as well as the ringId: a merge or a promotion changes what is shown.
+                val shown by produceState<ShownContent?>(
+                    null, current?.ringId, current?.alarmId, current?.occurrenceAt, current?.merged, defaultPath, partnerName,
+                ) {
+                    val r = current ?: return@produceState
+                    val content = try {
+                        ringScreenContent(r, engine.alarmRepository::get, engine.linkedMediaCache, defaultPath, partnerName)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "resolving the ring's labels failed", e)
+                        null
+                    }
+                    value = content?.let { ShownContent(r.ringId, it) }
+                }
+                val content = shown?.takeIf { it.ringId == current?.ringId }?.content
+                val ended = notice?.endsRing == true
                 RingingScreen(
-                    label = alarm?.label.orEmpty(),
-                    wallpaperPaths = chooseWallpaperPaths(alarm?.wallpaperPath, defaultPath),
-                    canAct = current != null,
+                    labels = content?.labels.orEmpty(),
+                    withPartner = content?.withPartner,
+                    notice = notice,
+                    partnerName = partnerName,
+                    wallpaperPaths = content?.wallpaperPaths ?: chooseWallpaperPaths(null, defaultPath),
+                    // The ring is over; the notice is only saying who ended it.
+                    canAct = current != null && !ended,
                     onStop = {
                         val id = current?.ringId ?: return@RingingScreen
                         lifecycleScope.launch {
-                            runLogged("dismiss") { engine.controller.dismiss(id) }
+                            runLogged("dismiss") { engine.controller.dismiss(id, RingOrigin.LOCAL) }
                         }
                         // Close at once; the controller's dismiss is NonCancellable.
                         userStopped.complete(Unit)
                     },
                     onSnooze = {
                         lifecycleScope.launch {
-                            runLogged("snooze") { engine.controller.snooze() }
+                            runLogged("snooze") { engine.controller.snooze(RingOrigin.LOCAL) }
                         }
                     },
                 )
             }
         }
     }
+
+    /**
+     * The partner's display name, or null whenever it can't be had. The repository lives in the
+     * CE-only AppContainer, whose getter throws while locked and may run full startup, so it is
+     * fetched off the main thread; any failure just means no name. Never throws but for cancellation.
+     */
+    private fun partnerNames(): Flow<String?> = flow {
+        val partner = withContext(Dispatchers.IO) { (application as? TandemApp)?.container?.partnerRepository?.partner }
+        if (partner != null) emitAll(partner.map { it?.displayName?.takeIf { name -> name.isNotBlank() } })
+    }.catch { e ->
+        Log.w(TAG, "partner name unavailable", e)
+        emit(null)
+    }
+}
+
+/**
+ * The notice for a REMOTE end: "Shawn dismissed", "Shawn snoozed to 6:40", or for one member of a
+ * ring that sounds on "Shawn dismissed the 6:30 alarm". Without a name, a neutral "on your partner's phone".
+ */
+private fun remoteNoticeText(context: Context, end: RemoteRingEnd, partner: String?, format: (Instant) -> String): String {
+    val until = end.snoozedUntil?.let(format)
+    val member = end.member?.takeIf { !end.endsRing }?.let { format(it.occurrenceAt) }
+    return if (end.kind == MirrorKind.SNOOZE && until != null) {
+        when {
+            member != null && partner != null -> context.getString(R.string.ringing_remote_snoozed_member, partner, member, until)
+            member != null -> context.getString(R.string.ringing_remote_snoozed_member_unnamed, member, until)
+            partner != null -> context.getString(R.string.ringing_remote_snoozed, partner, until)
+            else -> context.getString(R.string.ringing_remote_snoozed_unnamed, until)
+        }
+    } else {
+        when {
+            member != null && partner != null -> context.getString(R.string.ringing_remote_dismissed_member, partner, member)
+            member != null -> context.getString(R.string.ringing_remote_dismissed_member_unnamed, member)
+            partner != null -> context.getString(R.string.ringing_remote_dismissed, partner)
+            else -> context.getString(R.string.ringing_remote_dismissed_unnamed)
+        }
+    }
 }
 
 @Composable
 private fun RingingScreen(
-    label: String,
+    labels: List<String>,
+    withPartner: String?,
+    notice: RemoteRingEnd?,
+    partnerName: String?,
     wallpaperPaths: List<String>,
     canAct: Boolean,
     onStop: () -> Unit,
@@ -199,10 +269,27 @@ private fun RingingScreen(
                 color = Color.White,
                 textAlign = TextAlign.Center,
             )
-            if (label.isNotBlank()) {
+            for (label in labels) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     label, style = MaterialTheme.typography.headlineMedium,
+                    color = Color.White, textAlign = TextAlign.Center,
+                )
+            }
+            if (withPartner != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.ringing_with_partner, withPartner), style = MaterialTheme.typography.titleMedium,
+                    color = Color.White.copy(alpha = 0.85f), textAlign = TextAlign.Center,
+                )
+            }
+            if (notice != null) {
+                val text = remember(notice, partnerName, formatter) {
+                    remoteNoticeText(context, notice, partnerName) { formatter.format(it.atZone(ZoneId.systemDefault())) }
+                }
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    text, style = MaterialTheme.typography.titleLarge,
                     color = Color.White, textAlign = TextAlign.Center,
                 )
             }

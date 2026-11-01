@@ -14,10 +14,13 @@ import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.util.Log
 import me.shawnsquire.tandem.R
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Loops the first candidate that prepares, then falls back to the system alarm, ringtone and
- * notification defaults and finally the bundled tone. One instance per [RingingSession].
+ * notification defaults (unless the caller's candidates already carry them) and finally the
+ * bundled tone. One instance per [RingingSession].
  *
  * Audio never blocks the ring: [start] returns at once and all player work runs on a dedicated
  * "alarm-audio" thread. [stop] is idempotent and safe from any thread.
@@ -26,14 +29,15 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
     private var run: Run? = null
 
     @Synchronized
-    override fun start(candidates: List<String>) {
+    override fun start(candidates: List<String>, appendSystemDefaults: Boolean) {
         run?.stop()
         val bundled = bundledToneUri(context)
-        val all = candidates + listOf(
+        val defaults = if (!appendSystemDefaults) emptyList() else listOf(
             RingtoneManager.TYPE_ALARM,
             RingtoneManager.TYPE_RINGTONE,
             RingtoneManager.TYPE_NOTIFICATION,
         ).mapNotNull { runCatching { RingtoneManager.getDefaultUri(it) }.getOrNull()?.toString() }
+        val all = candidates + defaults
         run = Run(context.applicationContext, SoundSequencer(all, bundled)).also { it.begin() }
     }
 
@@ -199,25 +203,26 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
 }
 
 /**
- * Service-level vibration ownership. `Vibrator.cancel()` cancels all of the app's vibration, so a
- * superseded session's late `stop()` must not silence the session that replaced it.
+ * Service-level vibration ownership. `Vibrator.cancel()` cancels all of the app's vibration, so it
+ * runs only when the last session that started vibrating stops: a superseded session's late
+ * `stop()`, or a session that merged into a sounding ring, must not silence the one still ringing.
  */
 class VibrationArbiter(
     private val startVibration: () -> Unit,
     private val cancelVibration: () -> Unit,
 ) {
-    private var owner: Any? = null
+    private val owners: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap())
 
     @Synchronized
     fun start(owner: Any) {
-        this.owner = owner
+        // Before starting: a start that throws is still undone by the owner's stop.
+        owners += owner
         startVibration()
     }
 
     @Synchronized
     fun stop(owner: Any) {
-        if (this.owner !== owner) return
-        this.owner = null
+        if (!owners.remove(owner) || owners.isNotEmpty()) return
         cancelVibration()
     }
 

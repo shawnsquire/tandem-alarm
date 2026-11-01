@@ -24,6 +24,28 @@ class VibrationArbiterTest {
     }
 
     @Test
+    fun vibrationStopsOnlyWhenTheLastOwnerStops() {
+        val a = Any()
+        val b = Any()
+        arbiter.start(a)
+        arbiter.start(b) // a merging session vibrates before it learns it plays nothing
+
+        arbiter.stop(b)
+        assertEquals(0, cancels)
+
+        arbiter.stop(a)
+        assertEquals(1, cancels)
+    }
+
+    @Test
+    fun stopOfAnOwnerThatNeverStartedIsANoOp() {
+        val a = Any()
+        arbiter.start(a)
+        arbiter.stop(Any())
+        assertEquals(0, cancels)
+    }
+
+    @Test
     fun stopIsIdempotent() {
         val a = Any()
         arbiter.start(a)
