@@ -194,6 +194,30 @@ class AlarmRepositoryImplTest {
     }
 
     @Test
+    fun reEnablingAOneShotWithAnExpiredSoloSkipKeepsItOn() = runTest {
+        val x = clock.now.plusSeconds(60)
+        upsertSolo("a", emptySet(), x)
+        clock.now = x.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(1)
+        // Cleanup hasn't run: the row still says enabled with the expired solo skip.
+        repo.setEnabled("a", false)
+        repo.setEnabled("a", true)
+        val read = repo.get("a")!!
+        assertTrue(read.enabled)
+        assertNull(read.soloSkippedOccurrenceAt)
+        assertTrue(dao.get("a")!!.enabled)
+    }
+
+    @Test
+    fun reEnablingAOneShotKeepsALiveSoloSkip() = runTest {
+        val x = clock.now.plusSeconds(60)
+        upsertSolo("a", emptySet(), x)
+        repo.setEnabled("a", false)
+        repo.setEnabled("a", true)
+        assertEquals(x.toEpochMilli(), dao.get("a")!!.soloSkippedOccurrenceAt)
+        assertTrue(repo.get("a")!!.enabled)
+    }
+
+    @Test
     fun liveSoloSkipLeavesOneShotEnabledInDb() = runTest {
         val x = clock.now.plusSeconds(60)
         upsertSolo("a", emptySet(), x)
@@ -356,7 +380,7 @@ class AlarmRepositoryImplTest {
         mode: LinkMode = LinkMode.NOTIFY,
         ownerSkip: Instant? = null,
         joinerEnabled: Boolean = false,
-        pending: PendingBoth? = PendingBoth(CommandType.SKIP_NEXT, Instant.ofEpochMilli(1_700_000_500_000), "cmd-1"),
+        pending: PendingBoth? = PendingBoth(CommandType.SKIP_NEXT, Instant.ofEpochMilli(1_700_000_500_000), "cmd-1", Instant.ofEpochMilli(1_700_000_400_000)),
     ) = AlarmLink(
         ownerUid = "owner",
         ownerAlarmId = "owner-alarm",

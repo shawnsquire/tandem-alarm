@@ -46,7 +46,7 @@ cd ..
 npx firebase-tools emulators:start --project demo-tandem
 ```
 
-Ports: auth 9099, Firestore 8080, functions 5001.
+Ports: auth 9099, Firestore 8080, functions 5001, Storage 9199. The same `emulators:start` command starts Storage too. Joined alarms ship the owner's photo and ringtone through it.
 
 Debug builds reach the host at `10.0.2.2`, the Android emulator's alias for it. For a physical phone on the same network, build with the host's LAN address:
 
@@ -87,7 +87,16 @@ With the Firebase emulators and an Android emulator running:
 ./gradlew connectedDebugAndroidTest
 ```
 
-This runs one test, `TwoDeviceSmokeTest`. It uses two named FirebaseApps in one process to act as two devices: pair, the partner sees the alarm, SKIP_NEXT through the pre-fire pull, a stale skip is rejected, STOP_RINGING by ring ID, unpair. It grants the local network permission itself. CI does not run it.
+This runs `TwoDeviceSmokeTest`. It uses two named FirebaseApps in one process to act as two devices, each with its own Room, DataStores and files, and needs all four emulators, Storage included. Its cases:
+
+- Pair, the partner sees the alarm, SKIP_NEXT through the pre-fire pull, a stale skip is rejected, STOP_RINGING by ring ID, unpair.
+- Join, then both phones ring. B snoozes and A snoozes to the same time. A dismisses, B's ring ends, and B sends nothing back.
+- Invite, then accept.
+- The owner skips "just me": B still rings, and B's stop is rejected on A as "skipped here".
+- The owner turns the alarm off: B's copy is off and B gets the turn-off notification.
+- The owner's photo and sound are uploaded, downloaded on B, and resolved for B's ring.
+
+Rings go through the real ringing controller and the ring mirror, without sound, notifications or the ringing service. It grants the local network permission itself. CI does not run it.
 
 ## Setup before first use
 
@@ -120,7 +129,7 @@ After installing, open Settings, then Health check, and fix anything that is not
 
 ## On-device checklist
 
-Run on both phones. Alarms are the point of the app, so do not skip the reboot and Doze items.
+Run on both phones. The linked-alarm items need two phones paired with each other, with phone A's alarm joined from phone B. Alarms are the point of the app, so do not skip the reboot and Doze items.
 
 - [ ] Health check (under Settings) shows all green.
 - [ ] An alarm rings with the screen off.
@@ -135,6 +144,17 @@ Run on both phones. Alarms are the point of the app, so do not skip the reboot a
 - [ ] Snooze an alarm, then stop it from the partner: the pending snooze is cancelled.
 - [ ] A one-shot alarm turns itself off after it rings.
 - [ ] A custom ringtone file plays, and the per-alarm wallpaper shows on the lock screen.
+- [ ] Merged rings at the same minute: set an alarm on B for a minute from now and join A's alarm for the same minute. Both phones ring. On B, the ringing screen lists both labels and one sound plays. A rings its one alarm. Dismiss on B: A's alarm stops too.
+- [ ] Mirrored dismiss while the other phone dozes: force-idle phone A (`adb shell dumpsys deviceidle force-idle`), ring the joined alarm, dismiss it on B. A goes quiet. A shows "B dismissed" briefly, then closes. A sends nothing back.
+- [ ] Both phones offline (airplane mode): the joined alarm still rings on both at the owner's time. Dismiss on B, then turn the network back on. A keeps ringing until it is dismissed locally or auto-silences after 10 minutes. On reconnect, B's queued stop ends A's ring if it is still sounding. If A's ring has already ended, the stop is rejected as already resolved.
+- [ ] Reboot before unlock: reboot phone B and leave it locked. The joined alarm rings. Dismiss it, then unlock. B sends the dismiss after unlock and A's ring stops, or the command is rejected as stale.
+- [ ] An 11 pm skip with the joiner dozing: the night before, set a 6:30 alarm on A and join it from B. At 11 pm skip it for both of us on A, then force-idle B. In the morning B does not ring. The pre-fire read caught the skip. If the read fails or takes more than 3 seconds, B rings.
+- [ ] Notify mode: set the link on B to Notify. The alarm shows a heads-up notification with Snooze and Stop, plays the channel's sound once and does not open the ringing screen. Stop on B stops A. It goes quiet by itself after 10 minutes.
+- [ ] Notify heads-up while locked and while unlocked: while unlocked, the notification appears as a heads-up pop-up. While locked, it sits on the lock screen and never launches the ringing screen. Android shows the pop-up only on an unlocked phone.
+- [ ] Notify channel set to Silent: in system settings, set the "Linked alarm notifications" channel to Silent. The linked alarm rings in full, since a Notify alarm that cannot alert rings.
+- [ ] A Ring alarm merging into a Notify ring: while a Notify ring is sounding on B, let one of B's own Ring alarms fire. B switches to the full ringing screen and sound, with both labels listed.
+- [ ] Three alarms 5 minutes apart: set three alarms on one phone at X, X+5 and X+10 minutes. Own and joined alarms both merge into one ring. Each alarm gets 10 minutes counted from when it joined, so the ring ends 10 minutes after the last one.
+- [ ] Relabel without relaunch: while a ring is sounding, let another alarm merge in. The labels and notification update, and the ringing screen does not relaunch or flicker.
 
 ## Known limitations
 
@@ -142,3 +162,6 @@ Run on both phones. Alarms are the point of the app, so do not skip the reboot a
 - Right after the first unlock, the app replays changes that were made while the phone was locked. An alarm that fires during that replay waits up to 2 seconds to claim the ring slot. If the claim times out, the alarm rings regardless, and a partner's skip or turn-off may show as applied while the alarm still rings. Stop from the partner won't reach that ring.
 - If the alarm list can't be read when alarms are re-armed (for example after a reboot), each alarm is re-armed for its recorded time from a small record. A repeating alarm armed this way rings that once, and its next occurrence isn't armed until a later run that can read the alarm list, normally the next app start after unlock.
 - Daylight saving: an alarm set for a time that does not exist (02:30 on the spring-forward night) rings at 03:30. An alarm set for a time that happens twice rings at the first one.
+- A merged ring that is snoozed shows one snoozed notification for the whole group. If the group record fails to save and the process dies before a later save succeeds, a stale record can make one Dismiss end several snoozes. This needs a SharedPreferences write failure.
+- If a member joins a Notify ring in the instant after a late member re-arms auto-silence, before the ring is first re-read, that member's alarm joins quietly: its label shows, but it gets no heads-up or chime of its own.
+- If a snooze claim fails or times out for a merged ring's member other than its first, the group's "Snoozed until" notification stays up (it is ongoing, with a Dismiss button) while the alarm rings. Tap Dismiss, or it clears when the group's first member resumes or the next cleanup runs.

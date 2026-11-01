@@ -4,7 +4,10 @@ import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NextOccurrenceTest {
@@ -476,5 +479,102 @@ class NextOccurrenceTest {
             false,
             isArmed(alarm(8, enabled = false, link = link(pendingBoth = pending(CommandType.SKIP_NEXT, satEight)))),
         )
+    }
+
+    // ---- fallsOnSchedule ----
+
+    @Test
+    fun fallsOnScheduleMatchesTheRowsHourMinuteAndDays() {
+        val monSixThirty = Instant.parse("2026-11-09T11:30:00Z") // Monday 06:30 EST
+        val weekly = alarm(6, 30, days = setOf(DayOfWeek.MONDAY))
+        assertTrue(fallsOnSchedule(weekly, monSixThirty, newYork))
+        assertFalse(fallsOnSchedule(weekly.copy(minute = 31), monSixThirty, newYork))
+        assertFalse(fallsOnSchedule(weekly.copy(hour = 7, minute = 15), monSixThirty, newYork))
+        assertFalse(fallsOnSchedule(weekly.copy(days = setOf(DayOfWeek.TUESDAY)), monSixThirty, newYork))
+        // A one-shot matches its time on any day.
+        assertTrue(fallsOnSchedule(alarm(6, 30), monSixThirty, newYork))
+        // The same instant in another zone is another local time.
+        assertFalse(fallsOnSchedule(alarm(6, 30), monSixThirty, kolkata))
+    }
+
+    @Test
+    fun fallsOnScheduleIgnoresArmingAndEverySkip() {
+        val x = Instant.parse("2026-11-09T11:30:00Z")
+        val skippedEverywhere = alarm(
+            6, 30, enabled = false, skippedOccurrenceAt = x, soloSkippedOccurrenceAt = x,
+            link = link(ownerSkippedOccurrenceAt = x, joinerEnabled = false),
+        )
+        assertTrue(fallsOnSchedule(skippedEverywhere, x, newYork))
+    }
+
+    @Test
+    fun fallsOnScheduleAcceptsTheTimeTheSchedulerShiftedOutOfADstGap() {
+        // 02:30 doesn't exist on 2026-03-08 in New York; nextOccurrence arms 03:30 EDT.
+        val a = alarm(2, 30)
+        val shifted = nextOccurrence(a, Instant.parse("2026-03-08T05:00:00Z"), newYork)!!
+        assertEquals(Instant.parse("2026-03-08T07:30:00Z"), shifted)
+        assertTrue(fallsOnSchedule(a, shifted, newYork))
+        // A real 03:30 alarm also matches that instant, as the scheduler would arm it there too.
+        assertTrue(fallsOnSchedule(alarm(3, 30), shifted, newYork))
+    }
+
+    @Test
+    fun fallsOnScheduleOnAnOverlapMatchesTheInstantTheSchedulerPicks() {
+        // 01:30 happens twice on 2026-11-01 in New York; the scheduler takes the earlier (EDT) one.
+        val a = alarm(1, 30)
+        val armed = nextOccurrence(a, Instant.parse("2026-11-01T04:00:00Z"), newYork)!!
+        assertEquals(Instant.parse("2026-11-01T05:30:00Z"), armed)
+        assertTrue(fallsOnSchedule(a, armed, newYork))
+        assertFalse(fallsOnSchedule(a, Instant.parse("2026-11-01T06:30:00Z"), newYork))
+    }
+
+    // ---- earlierOccurrenceThatDay ----
+
+    @Test
+    fun earlierOccurrenceThatDayNeedsAnEarlierTimeOnXsOwnDate() {
+        val monSixThirty = Instant.parse("2026-11-09T11:30:00Z") // Monday 06:30 EST
+        val monday = setOf(DayOfWeek.MONDAY)
+        assertEquals(Instant.parse("2026-11-09T11:00:00Z"), earlierOccurrenceThatDay(alarm(6, 0, days = monday), monSixThirty, newYork))
+        assertNotNull(earlierOccurrenceThatDay(alarm(0, 0, days = monday), monSixThirty, newYork))
+        // Later, or the same time, is not earlier.
+        assertNull(earlierOccurrenceThatDay(alarm(7, 15, days = monday), monSixThirty, newYork))
+        assertNull(earlierOccurrenceThatDay(alarm(6, 30, days = monday), monSixThirty, newYork))
+        // Not on that day any more.
+        assertNull(earlierOccurrenceThatDay(alarm(6, 0, days = setOf(DayOfWeek.TUESDAY)), monSixThirty, newYork))
+        // A one-shot counts on any day.
+        assertNotNull(earlierOccurrenceThatDay(alarm(6, 0), monSixThirty, newYork))
+        // Checked in the zone given: 11:30Z is 17:00 in Kolkata, so 18:00 there is later.
+        assertNull(earlierOccurrenceThatDay(alarm(18, 0), monSixThirty, kolkata))
+        assertNotNull(earlierOccurrenceThatDay(alarm(16, 0), monSixThirty, kolkata))
+    }
+
+    @Test
+    fun earlierOccurrenceThatDayIgnoresArmingAndEverySkip() {
+        val x = Instant.parse("2026-11-09T11:30:00Z")
+        val earlier = Instant.parse("2026-11-09T11:00:00Z")
+        val skippedEverywhere = alarm(
+            6, 0, enabled = false, skippedOccurrenceAt = earlier, soloSkippedOccurrenceAt = earlier,
+            link = link(ownerSkippedOccurrenceAt = earlier, joinerEnabled = false),
+        )
+        assertNotNull(earlierOccurrenceThatDay(skippedEverywhere, x, newYork))
+    }
+
+    @Test
+    fun earlierOccurrenceThatDayShiftsADstGapTimeAsTheSchedulerDoes() {
+        // 2026-03-08 in New York: 02:30 doesn't exist and is armed at 03:30 EDT (07:30Z).
+        val sixThirty = Instant.parse("2026-03-08T10:30:00Z")
+        assertEquals(Instant.parse("2026-03-08T07:30:00Z"), earlierOccurrenceThatDay(alarm(2, 30), sixThirty, newYork))
+        val threeFifteen = Instant.parse("2026-03-08T07:15:00Z") // 03:15 EDT
+        assertNull(earlierOccurrenceThatDay(alarm(2, 30), threeFifteen, newYork))
+    }
+
+    @Test
+    fun earlierOccurrenceThatDayOnAnOverlapUsesTheInstantTheSchedulerPicks() {
+        // 01:30 happens twice on 2026-11-01 in New York; a 01:15 alarm is armed at 01:15 EDT (05:15Z).
+        val secondOneThirty = Instant.parse("2026-11-01T06:30:00Z") // 01:30 EST
+        assertEquals(Instant.parse("2026-11-01T05:15:00Z"), earlierOccurrenceThatDay(alarm(1, 15), secondOneThirty, newYork))
+        val firstOneThirty = Instant.parse("2026-11-01T05:30:00Z") // 01:30 EDT
+        assertNotNull(earlierOccurrenceThatDay(alarm(1, 15), firstOneThirty, newYork))
+        assertNull(earlierOccurrenceThatDay(alarm(1, 45), firstOneThirty, newYork))
     }
 }

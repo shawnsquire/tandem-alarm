@@ -39,9 +39,16 @@ enum class RingOrigin { LOCAL, REMOTE }
 /**
  * A "both of us" command sent by the joiner and not yet reflected in the owner's doc.
  * [type] is SKIP_NEXT, UNSKIP, DISABLE or ENABLE; [occurrenceAt] pins it (I3) and [commandId]
- * identifies the sent command.
+ * identifies the sent command. [createdAt] starts its 24 h window (I3), so a restart does not
+ * restart the window; null only for a command stored before it was recorded, which then gets a
+ * full window from the first time it is watched.
  */
-data class PendingBoth(val type: CommandType, val occurrenceAt: Instant?, val commandId: String)
+data class PendingBoth(
+    val type: CommandType,
+    val occurrenceAt: Instant?,
+    val commandId: String,
+    val createdAt: Instant? = null,
+)
 
 /**
  * The joiner-side link from a local alarm row to the owner's alarm. A linked row's hour, minute,
@@ -69,7 +76,8 @@ data class AlarmLink(
  *
  * [alarmId] is this phone's local row id: on the owner it equals the owner's alarm id; on the joiner
  * it is the linked row's id, which RingMirror and the applier map to `link.ownerAlarmId` when building
- * or matching commands. So the shared key across phones is `(ownerAlarmId, occurrenceAt)`, not [alarmId].
+ * or matching commands, and the device doc's `ringing` publishes as `link.ownerAlarmId`. So the shared
+ * key across phones is `(ownerAlarmId, occurrenceAt)`, not [alarmId].
  */
 data class RingMember(val alarmId: String, val occurrenceAt: Instant)
 

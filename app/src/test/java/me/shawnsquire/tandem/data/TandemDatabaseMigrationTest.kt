@@ -75,7 +75,7 @@ class TandemDatabaseMigrationTest {
 
         // The migrated file also opens through Room and the entity conversion.
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3)
             .allowMainThreadQueries()
             .build()
         try {
@@ -87,6 +87,55 @@ class TandemDatabaseMigrationTest {
                 val once = db.alarmDao().get("once")!!.toAlarm()
                 assertNull(once.link)
                 assertNull(once.soloSkippedOccurrenceAt)
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun migrate2To3StampsPendingCommandsAndLeavesOthersNull() {
+        helper.createDatabase(dbName, 2).apply {
+            execSQL(
+                "INSERT INTO alarms (id, label, hour, minute, days, enabled, skippedOccurrenceAt, ringtoneUri, wallpaperPath, " +
+                    "linkOwnerUid, linkOwnerAlarmId, linkMode, linkJoinerEnabled, " +
+                    "linkPendingBothType, linkPendingBothOccurrenceAt, linkPendingBothCommandId) " +
+                    "VALUES ('pend', 'Wake', 6, 30, 31, 1, NULL, NULL, NULL, 'them', 'o1', 'RING', 1, 'DISABLE', 1700000000000, 'c1')",
+            )
+            execSQL(
+                "INSERT INTO alarms (id, label, hour, minute, days, enabled, skippedOccurrenceAt, ringtoneUri, wallpaperPath, " +
+                    "linkOwnerUid, linkOwnerAlarmId, linkMode, linkJoinerEnabled) " +
+                    "VALUES ('plain', 'Wake', 6, 30, 31, 1, NULL, NULL, NULL, 'them', 'o2', 'RING', 1)",
+            )
+            execSQL(
+                "INSERT INTO alarms (id, label, hour, minute, days, enabled, skippedOccurrenceAt, ringtoneUri, wallpaperPath) " +
+                    "VALUES ('solo', 'Dentist', 14, 5, 0, 0, NULL, NULL, NULL)",
+            )
+            close()
+        }
+
+        val before = System.currentTimeMillis()
+        val migrated = helper.runMigrationsAndValidate(dbName, 3, true, TandemDatabase.MIGRATION_2_3)
+        val after = System.currentTimeMillis()
+        migrated.query("SELECT id, linkPendingBothCreatedAt FROM alarms").use { c ->
+            val stamps = buildMap { while (c.moveToNext()) put(c.getString(0), if (c.isNull(1)) null else c.getLong(1)) }
+            assertEquals(3, stamps.size)
+            assertTrue(stamps.getValue("pend")!! in before..after)
+            assertNull(stamps["plain"])
+            assertNull(stamps["solo"])
+        }
+        migrated.close()
+
+        val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            runBlocking {
+                val pending = db.alarmDao().get("pend")!!.toAlarm().link!!.pendingBoth!!
+                assertEquals("c1", pending.commandId)
+                assertTrue(pending.createdAt!!.toEpochMilli() in before..after)
+                assertNull(db.alarmDao().get("plain")!!.toAlarm().link!!.pendingBoth)
             }
         } finally {
             db.close()

@@ -71,10 +71,10 @@ class AlarmMirrorTest {
         plainLink.copy(mode = LinkMode.NOTIFY, joinerEnabled = false),
         plainLink.copy(
             ownerSkippedOccurrenceAt = Instant.parse("2026-03-02T11:30:00Z"),
-            pendingBoth = PendingBoth(CommandType.SKIP_NEXT, Instant.parse("2026-03-04T11:30:00Z"), "c1"),
+            pendingBoth = PendingBoth(CommandType.SKIP_NEXT, Instant.parse("2026-03-04T11:30:00Z"), "c1", Instant.parse("2026-03-02T05:00:00Z")),
             overrideLabel = "Mine", overrideRingtoneUri = "content://media/2",
         ),
-        plainLink.copy(pendingBoth = PendingBoth(CommandType.DISABLE, null, "c2")),
+        plainLink.copy(pendingBoth = PendingBoth(CommandType.DISABLE, null, "c2")), // no createdAt: a legacy mirror
     )
 
     @Test fun linkAndSoloSkipRoundTrip() {

@@ -199,22 +199,22 @@ class PreFireCheckImplTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private fun linkedRow() = Alarm(
-        "row1", "Wake", 6, 30, weekdays, true, null, null, null,
+    private fun linkedRow(days: Set<DayOfWeek> = weekdays) = Alarm(
+        "row1", "Wake", 6, 30, days, true, null, null, null,
         link = AlarmLink("them", "o1", LinkMode.NOTIFY, null, true, null, null, null, null),
     )
 
     private fun ownerAlarm(
         hour: Int = 6, minute: Int = 30, enabled: Boolean = true,
-        skip: Instant? = null, solo: Instant? = null, next: Instant? = x,
-    ) = PartnerAlarm("o1", "L", hour, minute, weekdays, enabled, next, skip, null, solo)
+        skip: Instant? = null, solo: Instant? = null, next: Instant? = x, days: Set<DayOfWeek> = weekdays,
+    ) = PartnerAlarm("o1", "L", hour, minute, days, enabled, next, skip, null, solo)
 
     private fun ownerState(vararg a: PartnerAlarm) = PartnerState("Shawn", a.toList(), null, null)
 
     private class Linked(val check: PreFireCheckImpl, val alarms: FakeAlarmRepository, val sync: RecordingLinkSync, val repo: ReadRepo)
 
-    private fun TestScope.linked(read: suspend () -> PartnerState?): Linked {
-        val alarms = FakeAlarmRepository(listOf(linkedRow()))
+    private fun TestScope.linked(read: suspend () -> PartnerState?, row: Alarm = linkedRow()): Linked {
+        val alarms = FakeAlarmRepository(listOf(row))
         val partner = MutableStateFlow<PartnerState?>(null)
         val real = LinkSyncImpl(
             partner, MutableStateFlow(hh), alarms, FakeRingingController(), MutableStateFlow(null),
@@ -271,6 +271,20 @@ class PreFireCheckImplTest {
         assertTrue(l.check.pullAndApply(3.seconds, "o1"))
         assertNull(l.row()!!.link!!.ownerSkippedOccurrenceAt)
         assertEquals(x, l.nextAt())
+    }
+
+    @Test
+    fun `a solo-skipped one-shot read at X still rings the joiner`() = runTest {
+        // The owner's own one-shot stays enabled until X + FIRE_GRACE (skip expiry). Before X it
+        // publishes the solo skip; from X it drops it. Neither its nextOccurrenceAt (null for a
+        // solo-skipped own one-shot) nor the solo skip is copied, so the joiner's X still rings.
+        for (doc in listOf(ownerAlarm(solo = x, next = null, days = emptySet()), ownerAlarm(next = null, days = emptySet()))) {
+            val l = linked({ ownerState(doc) }, linkedRow(days = emptySet()))
+            assertTrue(l.check.pullAndApply(3.seconds, "o1"))
+            assertTrue(l.row()!!.enabled)
+            assertNull(l.row()!!.link!!.ownerSkippedOccurrenceAt)
+            assertEquals(x, l.nextAt())
+        }
     }
 
     @Test

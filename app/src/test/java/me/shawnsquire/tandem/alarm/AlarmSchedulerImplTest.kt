@@ -91,6 +91,8 @@ class AlarmSchedulerImplTest {
         val intentA = shadowOf(a.operation!!).savedIntent
         assertEquals("a", intentA.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
         assertEquals(at(2, 6, 30).toEpochMilli(), intentA.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
+        // The zone the occurrence was computed in travels with it (RingingSession.movedOff).
+        assertEquals(zone.id, intentA.getStringExtra(AlarmIntents.EXTRA_ZONE))
         assertEquals("b", shadowOf(b.operation!!).savedIntent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
         assertNotNull(a.showIntent)
     }
@@ -175,6 +177,22 @@ class AlarmSchedulerImplTest {
         scheduler(FakeAlarmRepository(listOf(alarm("a"))), ctx = locked).rescheduleAll()
         scheduler(FakeAlarmRepository(emptyList()), ctx = locked).rescheduleAll()
         assertTrue(scheduled.isEmpty())
+    }
+
+    @Test
+    fun snoozeOfALinkedOneShotWhoseCopyTurnedOffIsStillArmed() = runTest {
+        // The owner's solo-skipped one-shot expired (X + FIRE_GRACE) and LinkSync copied enabled = false
+        // while the joiner was snoozed on X: the row arms nothing, but its snooze runs out.
+        clock = at(2, 6, 33)
+        val row = alarm("a", enabled = false).copy(
+            link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null),
+        )
+        val until = at(2, 6, 40)
+        scheduler(FakeAlarmRepository(listOf(row)), ledger = ledgerOf(SnoozeEntry("ring-1", "a", until, at(2, 6, 30))))
+            .rescheduleAll()
+        val armed = scheduled.single()
+        assertEquals(until.toEpochMilli(), armed.triggerAtMs)
+        assertTrue(shadowOf(armed.operation!!).savedIntent.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false))
     }
 
     @Test
@@ -539,6 +557,8 @@ class AlarmSchedulerImplTest {
         assertEquals("a", intent.getStringExtra(AlarmIntents.EXTRA_ALARM_ID))
         assertEquals(at(2, 5, 0).toEpochMilli(), intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, -1))
         assertEquals("tandem://alarm/a/replay", intent.data.toString())
+        // A replay comes from the records, which hold no zone: its fire is never treated as moved.
+        assertNull(intent.getStringExtra(AlarmIntents.EXTRA_ZONE))
     }
 
     @Test

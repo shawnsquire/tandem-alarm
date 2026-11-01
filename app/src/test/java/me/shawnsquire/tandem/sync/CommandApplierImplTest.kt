@@ -24,6 +24,7 @@ import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.nextOccurrence
@@ -36,6 +37,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import java.io.File
 import java.time.Clock
 import java.time.DayOfWeek
@@ -66,6 +69,8 @@ class CommandApplierImplTest {
         val notifier: FakeCommandNotifier,
         val processed: ProcessedCommands,
         val applier: CommandApplierImpl,
+        val store: DataStore<Preferences>,
+        val removals: LinkRemovals,
     )
 
     private fun TestScope.env(
@@ -75,6 +80,7 @@ class CommandApplierImplTest {
         name: String? = "Sam",
         wrapAlarms: (AlarmRepository) -> AlarmRepository = { it },
         partner: Flow<PartnerState?> = flowOf(null),
+        inviteStore: DataStore<Preferences>? = null,
     ): Env {
         val a = FakeAlarmRepository(alarms)
         val r = FakeRingStateStore(ring)
@@ -87,10 +93,11 @@ class CommandApplierImplTest {
             produceFile = { File(tmp.root, "t${n.hashCode()}.preferences_pb") },
         )
         val p = ProcessedCommands(ds, clock)
+        val removals = LinkRemovals(ds)
         val applier = CommandApplierImpl(
-            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), partner, p, n, clock, backgroundScope,
+            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), partner, p, InviteLedger(inviteStore ?: ds, clock), removals, n, clock, backgroundScope,
         )
-        return Env(a, r, s, rc, remote, n, p, applier)
+        return Env(a, r, s, rc, remote, n, p, applier, ds, removals)
     }
 
     private fun cmd(
@@ -173,6 +180,24 @@ class CommandApplierImplTest {
             listOf(FakeCommandRemote.Resolved("h1", "c1", CommandStatus.REJECTED, "already rang or changed")),
             e.remote.resolved,
         )
+    }
+
+    @Test fun `a late ring's stop or snooze at the old time of an alarm moved earlier is rejected quietly`() = runTest {
+        // Our 5:00 moved to 4:30, which has rung. The joiner learned of the move at 5:00 and rang late
+        // (RingingSession); its mirrored commands for 5:00 are stale here.
+        val old = now // Monday 05:00Z
+        for (type in listOf(CommandType.STOP_RINGING, CommandType.SNOOZE)) {
+            val e = env(alarms = listOf(weekly.copy(hour = 4, minute = 30)))
+            e.ringing.ringContextResult = RingContext(
+                ring = null, merged = emptyList(), snoozes = emptyList(), lastRang = Instant.parse("2026-03-02T04:30:00Z"),
+            )
+            val until = now.plusSeconds(600).takeIf { type == CommandType.SNOOZE }
+            e.applier.apply(Command("c1", "them", "me", type, "a1", old, null, now.minusSeconds(1), now.plusSeconds(3600), until))
+            assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+            assertTrue(e.ringing.snoozedOccurrences.isEmpty())
+            assertTrue(e.notifier.calls.isEmpty())
+            rejection(e, "already rang or changed")
+        }
     }
 
     @Test fun `expired is rejected`() = runTest {
@@ -428,6 +453,63 @@ class CommandApplierImplTest {
         assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
     }
 
+    @Test fun `owner's Partner-tab stop on its alarm merged into our ring stops only that member`() = runTest {
+        // Our own a1 rings with the linked row L1 merged in, published under the owner's id. The owner's
+        // copy is silent, so its Stop names its own id at X (PartnerViewModel): never our ringId.
+        val ring = RingState("a1", "r1", now.minusSeconds(5), null, occurrenceAt = x, merged = listOf(RingMember("L1", x)))
+        val e = env(alarms = listOf(weekly, linkedRow), ring = ring)
+        e.ringing.ringContextResult = RingContext(ring = ring, merged = emptyList(), snoozes = emptyList(), lastRang = null)
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+        // Only L1's occurrence (the controller then keeps a1 sounding: RingingControllerImplTest).
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("L1", x, RingOrigin.REMOTE)), e.ringing.dismissedOccurrences)
+        assertTrue(e.ringing.dismissed.isEmpty())
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        assertEquals(Outcome.Applied, e.processed.outcome("c1"))
+        // A STOP by occurrence posts no notice.
+        assertTrue(e.notifier.calls.isEmpty())
+    }
+
+    @Test fun `ring commands onto a row pending LEFT removal are rejected`() = runTest {
+        for (type in listOf(CommandType.STOP_RINGING, CommandType.SNOOZE)) {
+            val e = env(alarms = listOf(weekly, linkedRow))
+            e.ringing.ringContextResult = liveContext()
+            e.removals.add("L1", RemovalReason.LEFT)
+            e.applier.apply(fromOwner(type, snoozedUntil = now.plusSeconds(600)))
+            assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+            assertTrue(e.ringing.snoozedOccurrences.isEmpty())
+            assertEquals(0, e.scheduler.rescheduleCount)
+            assertTrue(e.notifier.calls.isEmpty())
+            rejection(e, "left this alarm")
+        }
+    }
+
+    @Test fun `ring commands onto a row pending another removal still apply`() = runTest {
+        for (reason in listOf(RemovalReason.OWNER_DELETED, RemovalReason.UNPAIRED)) {
+            val e = env(alarms = listOf(weekly, linkedRow))
+            e.ringing.ringContextResult = liveContext()
+            e.removals.add("L1", reason)
+            e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+            assertEquals(1, e.ringing.dismissedOccurrences.size)
+            assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        }
+    }
+
+    @Test fun `a mirrored stop by occurrence posts no notification`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.ringing.ringContextResult = liveContext()
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        assertTrue(e.notifier.calls.isEmpty())
+    }
+
+    @Test fun `a stop by ringId still notifies once`() = runTest {
+        val e = env(ring = RingState("a1", "r1", now.minusSeconds(10), null))
+        val c = cmd(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1")
+        e.applier.apply(c)
+        assertEquals(1, e.notifier.calls.size)
+        assertEquals(c, e.notifier.calls[0].cmd)
+    }
+
     @Test fun `stop by ringId for a ring on another alarm is rejected`() = runTest {
         val e = env(alarms = listOf(weekly, linkedRow), ring = RingState("a1", "r1", now.minusSeconds(5), null))
         e.applier.apply(fromOwner(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1"))
@@ -490,7 +572,7 @@ class CommandApplierImplTest {
         e.applier.apply(cmd(CommandType.STOP_RINGING, occurrenceAt = ownX))
         assertEquals(listOf("a1"), e.ringing.ringContextAlarmIds)
         assertEquals(listOf(FakeRingingController.OccurrenceCall("a1", ownX, RingOrigin.REMOTE)), e.ringing.dismissedOccurrences)
-        assertEquals(1, e.notifier.calls.size)
+        assertTrue(e.notifier.calls.isEmpty()) // a mirrored dismiss shows on the ringing screen only
     }
 
     @Test fun `skip on a solo skipped occurrence upgrades it to a shared skip`() = runTest {
@@ -619,6 +701,18 @@ class CommandApplierImplTest {
         e.applier.apply(c)
         assertEquals(1, e.notifier.invites.size)
         assertTrue(e.remote.resolved.isEmpty())
+    }
+
+    @Test fun `a notified invite is not posted again after a restart`() = runTest {
+        val ps = flowOf(partnerWith(ownerId))
+        val first = env(partner = ps)
+        val c = invite()
+        first.applier.apply(c)
+        assertEquals(1, first.notifier.invites.size)
+        val second = env(partner = ps, inviteStore = first.store)
+        second.applier.apply(c)
+        assertTrue(second.notifier.invites.isEmpty())
+        assertTrue(second.remote.resolved.isEmpty())
     }
 
     @Test fun `invite with unknown partner state stays pending`() = runTest {

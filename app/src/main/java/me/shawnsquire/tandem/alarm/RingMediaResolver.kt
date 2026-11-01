@@ -8,6 +8,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
+import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
 import me.shawnsquire.tandem.schedule.Alarm
@@ -42,11 +43,7 @@ suspend fun resolveRingMedia(
         soundCandidates = listOfNotNull(alarm?.ringtoneUri, defaultRingtone),
         wallpaperPaths = chooseWallpaperPaths(alarm?.wallpaperPath, defaultWallpaper),
     )
-    fun fallback() = RingMedia(
-        label = link.overrideLabel ?: alarm.label,
-        soundCandidates = listOfNotNull(link.overrideRingtoneUri, alarm.ringtoneUri, systemAlarmUri(), defaultRingtone),
-        wallpaperPaths = listOfNotNull(link.overrideWallpaperPath, alarm.wallpaperPath, defaultWallpaper).filter { it.isNotBlank() },
-    )
+    fun fallback() = DefaultLinkedMediaCache.resolveFromRow(alarm, defaultRingtone, defaultWallpaper, systemAlarmUri())
     // Its own Job: a throw stays in the Deferred (await rethrows it) and never cancels the caller.
     val resolving = CoroutineScope(dispatcher).async { cache.resolve(alarm, defaultRingtone, defaultWallpaper) }
     return try {

@@ -167,6 +167,20 @@ class StatePublisherImplTest {
     }
 
     @Test
+    fun `a ringing linked row is published under the owner's alarm id`() = runTest {
+        val e = env(initial = listOf(weekly, linkedRow))
+        e.publisher.start()
+        e.ring.set(RingState("l1", "r1", start, null))
+        advance(2_000)
+        val ringing = e.writer.writes.last().second["ringing"] as Map<*, *>
+        assertEquals("oa1", ringing["alarmId"])
+        assertEquals("r1", ringing["ringId"])
+        // The heartbeat must not merge-write the row id back.
+        assertTrue(e.publisher.publishNow())
+        assertEquals("oa1", (e.writer.awaited.single().second["ringing"] as Map<*, *>)["alarmId"])
+    }
+
+    @Test
     fun `written maps never contain ringtone or wallpaper`() = runTest {
         val e = env()
         e.publisher.start()

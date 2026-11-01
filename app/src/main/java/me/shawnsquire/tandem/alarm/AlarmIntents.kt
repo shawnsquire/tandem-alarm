@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import me.shawnsquire.tandem.MainActivity
 import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Single home for the intents, actions and extras shared by the alarm engine.
@@ -18,6 +19,8 @@ object AlarmIntents {
     const val EXTRA_OCCURRENCE = "me.shawnsquire.tandem.extra.OCCURRENCE"
     const val EXTRA_RING_ID = "me.shawnsquire.tandem.extra.RING_ID"
     const val EXTRA_IS_SNOOZE = "me.shawnsquire.tandem.extra.IS_SNOOZE"
+    /** The zone id the scheduler computed EXTRA_OCCURRENCE in; absent on replays and older intents. */
+    const val EXTRA_ZONE = "me.shawnsquire.tandem.extra.ZONE"
 
     const val ACTION_FIRE = "me.shawnsquire.tandem.action.FIRE"
     const val ACTION_SNOOZE_FIRE = "me.shawnsquire.tandem.action.SNOOZE_FIRE"
@@ -41,13 +44,15 @@ object AlarmIntents {
     private fun snoozeIntent(context: Context, ringId: String) =
         Intent(ACTION_SNOOZE_FIRE, Uri.parse("tandem://snooze/${Uri.encode(ringId)}"), context, AlarmReceiver::class.java)
 
-    fun firePendingIntent(context: Context, alarmId: String, occurrence: Instant): PendingIntent =
+    /** [zone] is the one [occurrence] was computed in; null when unknown (a re-arm from the records). */
+    fun firePendingIntent(context: Context, alarmId: String, occurrence: Instant, zone: ZoneId? = null): PendingIntent =
         PendingIntent.getBroadcast(
             context,
             alarmId.hashCode(),
             fireIntent(context, alarmId)
                 .putExtra(EXTRA_ALARM_ID, alarmId)
-                .putExtra(EXTRA_OCCURRENCE, occurrence.toEpochMilli()),
+                .putExtra(EXTRA_OCCURRENCE, occurrence.toEpochMilli())
+                .apply { if (zone != null) putExtra(EXTRA_ZONE, zone.id) },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 

@@ -3,6 +3,8 @@ package me.shawnsquire.tandem.media
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeLinkedMediaCache
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.LinkMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -22,6 +24,37 @@ class LinkedMediaCacheDefaultsTest {
     @Test fun defaultResolveSkipsAbsentRingtonesAndBlankWallpapers() = runTest {
         val media = DefaultLinkedMediaCache.resolve(alarm(ringtone = null), null, " ")
         assertEquals(RingMedia("Wake", emptyList(), emptyList()), media)
+    }
+
+    private fun linked(label: String?, ring: String?, wall: String?) = alarm().copy(
+        wallpaperPath = "/w/own.jpg",
+        link = AlarmLink("owner", "oa", LinkMode.RING, null, true, null, label, ring, wall),
+    )
+
+    @Test fun linkedResolveKeepsTheJoinersOverrideFirst() = runTest {
+        val media = DefaultLinkedMediaCache.resolve(linked("Mine", "content://override", "/w/override.jpg"), "content://joiner", "/w/joiner.jpg")
+        assertEquals("Mine", media.label)
+        assertEquals("content://override", media.soundCandidates.first())
+        assertEquals(listOf("content://override", "content://own"), media.soundCandidates.take(2))
+        assertEquals("content://joiner", media.soundCandidates.last())
+        assertEquals(listOf("/w/override.jpg", "/w/own.jpg", "/w/joiner.jpg"), media.wallpaperPaths)
+    }
+
+    @Test fun linkedRowOrderIsOverrideAlarmSystemJoiner() {
+        val media = DefaultLinkedMediaCache.resolveFromRow(linked("Mine", "content://override", null), "content://joiner", null, "content://system")
+        assertEquals(listOf("content://override", "content://own", "content://system", "content://joiner"), media.soundCandidates)
+    }
+
+    @Test fun linkedRowWithoutOverridesFallsToTheAlarm() {
+        val media = DefaultLinkedMediaCache.resolveFromRow(linked(null, null, null), null, null, "content://system")
+        assertEquals(RingMedia("Wake", listOf("content://own", "content://system"), listOf("/w/own.jpg")), media)
+    }
+
+    @Test fun linkedRowDropsDuplicatesAndBlanksAndABlankLabelFallsToTheAlarm() {
+        val media = DefaultLinkedMediaCache.resolveFromRow(linked(" ", "content://own", " "), "content://system", null, "content://system")
+        assertEquals(listOf("content://own", "content://system"), media.soundCandidates)
+        assertEquals("Wake", media.label)
+        assertEquals(listOf("/w/own.jpg"), media.wallpaperPaths)
     }
 
     @Test fun defaultOtherMembersAreInert() {

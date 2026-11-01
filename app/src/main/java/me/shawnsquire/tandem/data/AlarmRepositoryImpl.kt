@@ -37,7 +37,12 @@ class AlarmRepositoryImpl(
 
     override suspend fun delete(id: String) = dao.delete(id)
 
-    override suspend fun setEnabled(id: String, enabled: Boolean) = dao.setEnabled(id, enabled)
+    override suspend fun setEnabled(id: String, enabled: Boolean) {
+        // Turning a one-shot back on must not meet its own expired solo skip, which reads as "done".
+        // The cleanup applies the same expiry rule, so run it first and let the enable win.
+        if (enabled) clearExpiredSkipsBestEffort()
+        dao.setEnabled(id, enabled)
+    }
 
     override suspend fun setSkip(id: String, occurrence: Instant?) = dao.setSkip(id, occurrence?.toEpochMilli())
 

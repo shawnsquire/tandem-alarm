@@ -51,6 +51,7 @@ import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.sync.PairingRepositoryImpl
 import me.shawnsquire.tandem.sync.PartnerRepositoryImpl
 import me.shawnsquire.tandem.sync.PreFireCheckImpl
+import me.shawnsquire.tandem.sync.InviteLedger
 import me.shawnsquire.tandem.sync.ProcessedCommands
 import me.shawnsquire.tandem.sync.RingingCommandListener
 import me.shawnsquire.tandem.sync.StatePublisherImpl
@@ -123,8 +124,12 @@ class AppContainer private constructor(
     // use anything declared above (alarmRepository, settingsRepository, partnerRepository,
     // commandSender, commandRemote, householdFlow, commandNotifier, alarmScheduler, ringingController,
     // syncScope, context). They are declared before the consumers below, which take them as inputs,
-    // and the init block hands ringMirror and linkedMediaCache to the engine. Their order lets each use
-    // the earlier ones: LinkSync feeds linkedMediaCache, MediaPublisher reads linkRepository.openInvites.
+    // and the init block hands ringMirror and linkedMediaCache to the engine. The order is
+    // linkedMediaCache, linkRemovals, linkRepositoryImpl, linkSyncImpl (takes linkedMediaCache, which
+    // it feeds), ringMirror, then mediaPublisher (takes linkRepository, whose openInvites it reads);
+    // healthSignalsImpl is declared further down, after those and after commandApplierImpl,
+    // preFireCheckImpl, statePublisherImpl and ringingCommandListener, so the earlier ones reach it only
+    // through lambdas.
     // L5: real (the engine gets it in init). healthSignalsImpl is declared below; the lambdas run later.
     val linkedMediaCache: LinkedMediaCache = LinkedMediaCacheImpl(
         context.filesDir,
@@ -136,7 +141,7 @@ class AppContainer private constructor(
     // L4: linkSyncImpl is declared below; the lambda runs later.
     val linkRepositoryImpl = LinkRepositoryImpl(
         alarmRepository, partnerRepository.partner, householdFlow, commandSender, commandRemote,
-        ProcessedCommands(context.syncDataStore, LiveZoneClock), linkRemovals,
+        ProcessedCommands(context.syncDataStore, LiveZoneClock), InviteLedger(context.syncDataStore, LiveZoneClock), linkRemovals,
         { id, reason -> linkSyncImpl.requestRemoval(id, reason) },
         { id -> linkSyncImpl.cancelRemoval(id) },
         { row, cmd -> linkSyncImpl.noteApplied(row, cmd) },
@@ -168,8 +173,8 @@ class AppContainer private constructor(
         alarmRepository, ringStateStore, alarmScheduler, ringingController, commandRemote, householdFlow,
         partnerRepository.partner.map { it?.displayName }.stateIn(syncScope, SharingStarted.Eagerly, null),
         partnerRepository.partner,
-        ProcessedCommands(context.syncDataStore, LiveZoneClock),
-        commandNotifier, LiveZoneClock, syncScope,
+        ProcessedCommands(context.syncDataStore, LiveZoneClock), InviteLedger(context.syncDataStore, LiveZoneClock),
+        linkRemovals, commandNotifier, LiveZoneClock, syncScope,
     )
     val commandApplier: CommandApplier = commandApplierImpl
     val preFireCheckImpl = PreFireCheckImpl(
@@ -197,8 +202,8 @@ class AppContainer private constructor(
     // retry builds another. The provider runs when a fire pulls, not here.
     // The delegates come after attach, so they too are set only by a container that fully built:
     // assigning the mirror delegate replays the locked-boot outbox into it, and a failed attempt's
-    // mirror must never receive that. ringMirror and linkedMediaCache are the
-    // real implementations.
+    // mirror must never receive that. Until then the engine queues mirror calls on disk and uses the
+    // default media cache, which resolves from the alarm row alone; ringMirror and linkedMediaCache replace them.
     init {
         alarmEngine.attach(roomAlarmRepository, roomSettings) { preFireCheck }
         alarmEngine.ringMirrorPort.delegate = ringMirror

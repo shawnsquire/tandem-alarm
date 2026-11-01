@@ -37,6 +37,8 @@ data class AlarmEntity(
     /** Epoch millis. */
     val linkPendingBothOccurrenceAt: Long? = null,
     val linkPendingBothCommandId: String? = null,
+    /** Epoch millis. Null only for a command stored before v3, which the v2 -> v3 migration stamps with its own time. */
+    val linkPendingBothCreatedAt: Long? = null,
     val linkOverrideLabel: String? = null,
     val linkOverrideRingtoneUri: String? = null,
     val linkOverrideWallpaperPath: String? = null,
@@ -68,7 +70,12 @@ private fun AlarmEntity.toLink(): AlarmLink? {
     val ownerAlarmId = linkOwnerAlarmId ?: return null
     val pendingType = linkPendingBothType?.let { name -> CommandType.entries.firstOrNull { it.name == name } }
     val pending = if (pendingType != null && linkPendingBothCommandId != null) {
-        PendingBoth(pendingType, linkPendingBothOccurrenceAt?.let(Instant::ofEpochMilli), linkPendingBothCommandId)
+        PendingBoth(
+            pendingType,
+            linkPendingBothOccurrenceAt?.let(Instant::ofEpochMilli),
+            linkPendingBothCommandId,
+            linkPendingBothCreatedAt?.let(Instant::ofEpochMilli),
+        )
     } else null
     return AlarmLink(
         ownerUid = uid,
@@ -101,6 +108,7 @@ fun Alarm.toEntity(): AlarmEntity = AlarmEntity(
     linkPendingBothType = link?.pendingBoth?.type?.name,
     linkPendingBothOccurrenceAt = link?.pendingBoth?.occurrenceAt?.toEpochMilli(),
     linkPendingBothCommandId = link?.pendingBoth?.commandId,
+    linkPendingBothCreatedAt = link?.pendingBoth?.createdAt?.toEpochMilli(),
     linkOverrideLabel = link?.overrideLabel,
     linkOverrideRingtoneUri = link?.overrideRingtoneUri,
     linkOverrideWallpaperPath = link?.overrideWallpaperPath,

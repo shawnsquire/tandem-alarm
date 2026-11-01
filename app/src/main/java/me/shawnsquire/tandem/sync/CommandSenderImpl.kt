@@ -15,7 +15,8 @@ import me.shawnsquire.tandem.schedule.CommandType
 
 /**
  * Creates the command doc when [send] is called (not on collect, so collecting twice never sends
- * twice) and reports its status until the owner resolves it. The caller supplies the pins
+ * twice) and reports its status until the owner resolves it or the listener fails (the flow then ends
+ * at PENDING; collecting it again listens again). The caller supplies the pins
  * (`occurrenceAt`, `ringId`) from the partner state it is looking at (I3); nothing is computed here.
  */
 class CommandSenderImpl(
@@ -29,6 +30,7 @@ class CommandSenderImpl(
         occurrenceAt: Instant?,
         ringId: String?,
         snoozedUntil: Instant?,
+        onCreated: (String) -> Unit,
     ): Flow<Pair<CommandStatus, String?>> {
         val h = household.value ?: return flowOf(CommandStatus.REJECTED to "not paired")
         val id = try {
@@ -39,6 +41,7 @@ class CommandSenderImpl(
             Log.w(TAG, "create command failed", e)
             return flowOf(CommandStatus.REJECTED to "couldn't send")
         }
+        onCreated(id)
         return remote.observe(h.id, id)
             .onStart { emit(CommandStatus.PENDING to null) }
             .distinctUntilChanged()

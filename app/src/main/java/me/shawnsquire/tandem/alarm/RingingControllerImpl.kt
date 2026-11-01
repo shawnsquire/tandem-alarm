@@ -90,7 +90,7 @@ class RingingControllerImpl(
             !local && state.snoozedUntil == null && state.merged.isNotEmpty() -> {
                 // A legacy primary (no occurrence) promotes too; its notice just names no member.
                 val notice = RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = false)
-                dismissMemberLocked(state.alarmId, state.promoteFirstMember(), mirroredAs = null, notice)
+                dismissMemberLocked(state.alarmId, state.occurrenceAt, state.promoteFirstMember(), mirroredAs = null, notice)
             }
             else -> {
                 val notice = if (!local) RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = true) else null
@@ -155,8 +155,8 @@ class RingingControllerImpl(
             // Snoozed or solo, the slot ring is X alone: its members() is just X.
             state != null && state.isPrimary(x) && (state.snoozedUntil != null || state.merged.isEmpty()) ->
                 dismissCurrentLocked(state, local, remote(endsRing = true))
-            state != null && state.isPrimary(x) -> dismissMemberLocked(alarmId, state.promoteFirstMember(), x.takeIf { local }, remote(endsRing = false))
-            state != null && x in state.merged -> dismissMemberLocked(alarmId, state.copy(merged = state.merged - x), x.takeIf { local }, remote(endsRing = false))
+            state != null && state.isPrimary(x) -> dismissMemberLocked(alarmId, occurrenceAt, state.promoteFirstMember(), x.takeIf { local }, remote(endsRing = false))
+            state != null && x in state.merged -> dismissMemberLocked(alarmId, occurrenceAt, state.copy(merged = state.merged - x), x.takeIf { local }, remote(endsRing = false))
             else -> {
                 val parked = parkedEntryLocked(x, state)
                 when {
@@ -505,9 +505,9 @@ class RingingControllerImpl(
         // Ledger before the PendingIntent and the reschedule: the scheduler arms from the ledger.
         steps.run { ledger.remove(state.ringId) }
         steps.run { snoozeArmer.cancelSnooze(state.ringId) }
-        steps.run { disableIfOneShot(state.alarmId) }
+        steps.run { disableIfOneShot(state.alarmId, state.occurrenceAt) }
         // Merged members have no snooze of their own: the claim that merged them dropped it.
-        for (member in state.merged) steps.run { disableIfOneShot(member.alarmId) }
+        for (member in state.merged) steps.run { disableIfOneShot(member.alarmId, member.occurrenceAt) }
         // The slot as it was: a ring that sounded is no member of a group named after it.
         steps.run { leaveGroupLocked(state.ringId, state) }
         steps.run { alarmScheduler.rescheduleAll() }
@@ -520,10 +520,16 @@ class RingingControllerImpl(
      * Like [dismissCurrentLocked], once [rest] is written every step runs and [mirroredAs] (a LOCAL
      * stop's member, null for REMOTE) is still reported; [notice] goes out with the write.
      */
-    private suspend fun dismissMemberLocked(alarmId: String, rest: RingState, mirroredAs: RingMember?, notice: RemoteRingEnd?) {
+    private suspend fun dismissMemberLocked(
+        alarmId: String,
+        occurrenceAt: Instant?,
+        rest: RingState,
+        mirroredAs: RingMember?,
+        notice: RemoteRingEnd?,
+    ) {
         writeNoticed(notice) { ringStateStore.set(rest) }
         val steps = Steps()
-        steps.run { disableIfOneShot(alarmId) }
+        steps.run { disableIfOneShot(alarmId, occurrenceAt) }
         steps.run { alarmScheduler.rescheduleAll() }
         mirroredAs?.let { mirrorLocal(MirrorKind.DISMISS, listOf(it), null) }
         steps.rethrow()
@@ -536,7 +542,7 @@ class RingingControllerImpl(
     private suspend fun dismissInAdvanceLocked(x: RingMember, mirrored: Boolean) {
         markRangForwardLocked(x)
         val steps = Steps()
-        steps.run { disableIfOneShot(x.alarmId) }
+        steps.run { disableIfOneShot(x.alarmId, x.occurrenceAt) }
         steps.run { alarmScheduler.rescheduleAll() }
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, listOf(x), null)
         steps.rethrow()
@@ -564,7 +570,7 @@ class RingingControllerImpl(
         steps.run { ledger.remove(entry.ringId) }
         steps.run { snoozeArmer.cancelSnooze(entry.ringId) }
         steps.run { leaveGroupLocked(entry.ringId, state) }
-        steps.run { disableIfOneShot(entry.alarmId) }
+        steps.run { disableIfOneShot(entry.alarmId, entry.occurrenceAt) }
         steps.run { alarmScheduler.rescheduleAll() }
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, listOfNotNull(entry.occurrenceAt?.let { RingMember(entry.alarmId, it) }), null)
         steps.rethrow()
@@ -629,8 +635,8 @@ class RingingControllerImpl(
             steps.run { ledger.remove(id) }
             steps.run { snoozeArmer.cancelSnooze(id) }
         }
-        slot?.let { steps.run { disableIfOneShot(it.alarmId) } }
-        for (entry in parked) steps.run { disableIfOneShot(entry.alarmId) }
+        slot?.let { steps.run { disableIfOneShot(it.alarmId, it.occurrenceAt) } }
+        for (entry in parked) steps.run { disableIfOneShot(entry.alarmId, entry.occurrenceAt) }
         steps.run { notifier.cancelSnoozed(group.id) }
         bestEffort("snooze group remove") { snoozeGroups.remove(group.id) }
         steps.run { alarmScheduler.rescheduleAll() }
@@ -770,9 +776,15 @@ class RingingControllerImpl(
         bestEffort("mirror $kind") { mirror.onLocal(kind, members, snoozedUntil) }
     }
 
-    private suspend fun disableIfOneShot(alarmId: String) {
+    /**
+     * Turns a one-shot off once [occurrenceAt] is resolved. A linked one-shot's late ring (marked in
+     * [firedLedger] by RingingSession) is not the owner's occurrence and leaves it on: the row then
+     * follows the owner's enabled and next occurrence.
+     */
+    private suspend fun disableIfOneShot(alarmId: String, occurrenceAt: Instant?) {
         val alarm = alarmRepository.get(alarmId)
         if (alarm == null || !alarm.isOneShot()) return
+        if (alarm.link != null && occurrenceAt != null && firedLedger.lateAt(alarmId) == occurrenceAt) return
         // A linked row's enabled is the owner's, written only by LinkSync; turn off our own side.
         if (alarm.link != null) alarmRepository.setJoinerEnabled(alarm.id, false)
         else alarmRepository.setEnabled(alarm.id, false)

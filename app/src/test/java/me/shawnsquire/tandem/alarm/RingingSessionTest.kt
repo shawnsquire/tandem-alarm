@@ -41,6 +41,7 @@ import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
+import me.shawnsquire.tandem.schedule.nextOccurrence
 import me.shawnsquire.tandem.sync.PreFireCheck
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -57,6 +58,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /** What the media cache places as the system alarm sound (Settings.System.DEFAULT_ALARM_ALERT_URI). */
 private const val SYSTEM_ALARM_URI = "content://settings/system/alarm_alert"
+
+/** The zone the fixtures are written in: 11:30Z on 2 March 2026 is 6:30 local. */
+private val TEST_ZONE: java.time.ZoneId = java.time.ZoneId.of("America/New_York")
 
 class RecordingSound(private val clock: () -> Long) : AlarmSound {
     val starts = mutableListOf<List<String>>()
@@ -205,7 +209,8 @@ class RingingSessionTest {
             firedLedger = fired, linkedMediaCache = cache, liveRings = live, isArmed = isArmed, isSkipped = isSkipped,
             systemAlarmUri = systemAlarmUri, onFinished = { finished++ },
         )
-        fun fire(id: String = "a", occ: Instant) = session.start(id, occ, false, null)
+        /** Armed in [TEST_ZONE], as the scheduler's fire intent carries it. */
+        fun fire(id: String = "a", occ: Instant, zone: java.time.ZoneId? = TEST_ZONE) = session.start(id, occ, false, null, zone)
     }
 
     private class RecordingRegistry(val events: MutableList<String>) : RingRegistry {
@@ -218,6 +223,8 @@ class RingingSessionTest {
     private class ThrowingFired : FiredLedger {
         override fun lastRang(alarmId: String): Instant? = throw IllegalStateException("prefs")
         override fun markRang(alarmId: String, occurrence: Instant) = throw IllegalStateException("prefs")
+        override fun lateAt(alarmId: String): Instant? = throw IllegalStateException("prefs")
+        override fun markLate(alarmId: String, occurrence: Instant) = throw IllegalStateException("prefs")
     }
 
     private fun TestScope.harness(
@@ -551,6 +558,307 @@ class RingingSessionTest {
         h.fire(occ = occurrence)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
+    }
+
+    // ---- a linked row whose owner moved the time ----
+
+    /** The pre-fire read copied the owner's move of 6:30 to 7:15 onto the row (LinkSync's write). */
+    private suspend fun Harness.moveTo715(id: String = "a") {
+        repo.upsertLinked(repo.get(id)!!.copy(hour = 7, minute = 15))
+    }
+
+    @Test fun linkedFireAtTheOldTimeIsSuppressedOnceThePreFireReadMovedIt() = runTest {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked()), preFire = LambdaPreFire { h.moveTo715(); true })
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+        assertEquals(0, h.vibration.starts)
+        assertNull(h.fired.lastRang("a")) // not recorded as rung: a replay of X carries no zone, so movedOff is false and it rings
+        assertEquals(1, h.scheduler.rescheduleCount)
+        // 7:15 the same morning is what the scheduler now arms.
+        assertEquals(occurrence.plusSeconds(45 * 60), nextOccurrence(h.repo.get("a")!!, clockNow, TEST_ZONE))
+    }
+
+    @Test fun linkedTimeMovedBetweenReadAndClaimSuppressesTheRing() = runTest {
+        val h = harness(alarms = listOf(linked()))
+        val slot = h.controller.before { h.moveTo715() }
+        slotSession(h, slot).start("a", occurrence, false, null, TEST_ZONE)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        assertTrue(h.vibration.stops >= 1)
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+    }
+
+    @Test fun linkedDaysMovedOffXSuppressesTheRing() = runTest {
+        // 2 March 2026 is a Monday; the owner now rings only on Tuesdays.
+        lateinit var h: Harness
+        val monday = linked().copy(days = setOf(java.time.DayOfWeek.MONDAY))
+        h = harness(alarms = listOf(monday), preFire = LambdaPreFire {
+            h.repo.upsertLinked(monday.copy(days = setOf(java.time.DayOfWeek.TUESDAY))); true
+        })
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+    }
+
+    @Test fun linkedFireCheckedInItsArmedZoneRingsWhateverTheCurrentZone() = runTest {
+        // Armed at 6:30 New York (11:30Z); the phone has since moved to Chicago, where 11:30Z is 5:30.
+        // A zone change is no stored command, so the fire still rings (I1).
+        val saved = java.util.TimeZone.getDefault()
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("America/Chicago"))
+        try {
+            val h = harness(alarms = listOf(linked()))
+            h.fire(occ = occurrence)
+            runCurrent()
+            assertEquals(1, h.sound.starts.size)
+            assertEquals(0, h.finished)
+        } finally {
+            java.util.TimeZone.setDefault(saved)
+        }
+    }
+
+    @Test fun linkedFireIsCheckedInTheZoneItWasArmedIn() = runTest {
+        // The same instant checked in the zone it was armed in matches; only that zone counts.
+        val h = harness(alarms = listOf(linked().copy(hour = 5, minute = 30)))
+        h.fire(occ = occurrence, zone = java.time.ZoneId.of("America/Chicago"))
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun linkedFireWithoutAZoneRingsEvenWhenTheOwnerMovedIt() = runTest {
+        // A replay, a re-arm from the records or an intent from an older build carries no zone.
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked()), preFire = LambdaPreFire { h.moveTo715(); true })
+        h.fire(occ = occurrence, zone = null)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.finished)
+    }
+
+    // ---- moved earlier the same day: ring late at the old time (Shawn's call, 2026-11-01) ----
+
+    /** The pre-fire read copied the owner's move of 6:30 to 6:00 the same morning, already passed. */
+    private suspend fun Harness.moveTo600(id: String = "a") {
+        repo.upsertLinked(repo.get(id)!!.copy(hour = 6, minute = 0))
+    }
+
+    private suspend fun TestScope.assertRangAt(h: Harness, x: Instant = occurrence) {
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.finished)
+        assertEquals(x, h.rawStore.state.first()!!.occurrenceAt)
+    }
+
+    private val monday = setOf(java.time.DayOfWeek.MONDAY)
+
+    @Test fun linkedMovedEarlierTheSameDayRingsLateAtTheOldTime() = runTest {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked().copy(days = monday)), preFire = LambdaPreFire { h.moveTo600(); true })
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+        // Marked late, so its dismiss leaves a linked one-shot on (RingingControllerImplTest).
+        assertEquals(occurrence, h.fired.lateAt("a"))
+    }
+
+    @Test fun linkedRingAtItsOwnTimeIsNotMarkedLate() = runTest {
+        val h = harness(alarms = listOf(linked().copy(days = monday)))
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+        assertNull(h.fired.lateAt("a"))
+    }
+
+    @Test fun linkedMovedLaterTheSameDayIsSuppressedAndArmsTheNewTime() = runTest {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked().copy(days = monday)), preFire = LambdaPreFire { h.moveTo715(); true })
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+        assertEquals(occurrence.plusSeconds(45 * 60), nextOccurrence(h.repo.get("a")!!, clockNow, TEST_ZONE))
+    }
+
+    @Test fun linkedMovedEarlierButNoLongerOnThatDayIsSuppressed() = runTest {
+        // 6:00 on Tuesdays only: no occurrence on Monday, so nothing was moved earlier that day.
+        lateinit var h: Harness
+        val row = linked().copy(days = monday)
+        h = harness(alarms = listOf(row), preFire = LambdaPreFire {
+            h.repo.upsertLinked(row.copy(hour = 6, minute = 0, days = setOf(java.time.DayOfWeek.TUESDAY))); true
+        })
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+    }
+
+    /** 6:00 the same Monday: the time the owner moved X to. */
+    private val sixAm = occurrence.minusSeconds(30 * 60)
+
+    /** A Monday row the pre-fire read moves to 6:00, after [stored] put a skip on it. */
+    private fun TestScope.movedEarlierWith(stored: (Alarm) -> Alarm): Harness {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(stored(linked().copy(days = monday))), preFire = LambdaPreFire { h.moveTo600(); true })
+        h.fire(occ = occurrence)
+        return h
+    }
+
+    @Test fun linkedMovedEarlierToATimeTheJoinerSkippedIsSuppressed() = runTest {
+        assertQuiet(movedEarlierWith { it.copy(skippedOccurrenceAt = sixAm) })
+    }
+
+    @Test fun linkedMovedEarlierToATimeTheOwnerSkippedForBothIsSuppressed() = runTest {
+        assertQuiet(movedEarlierWith { it.copy(link = it.link!!.copy(ownerSkippedOccurrenceAt = sixAm)) })
+    }
+
+    @Test fun linkedMovedEarlierToATimeWithAPendingBothSkipIsSuppressed() = runTest {
+        assertQuiet(movedEarlierWith { it.copy(link = it.link!!.copy(pendingBoth = PendingBoth(CommandType.SKIP_NEXT, sixAm, "c1"))) })
+    }
+
+    @Test fun linkedMovedEarlierToATimeTheOwnerSkippedJustForThemselvesStillRingsLate() = runTest {
+        // The owner's solo skip never applies to a linked row.
+        assertRangAt(movedEarlierWith { it.copy(soloSkippedOccurrenceAt = sixAm) })
+    }
+
+    @Test fun linkedOneShotMovedEarlierRingsLateAtTheOldTime() = runTest {
+        // The owner's copy is still on: its one-shot hadn't rung and turned itself off when the joiner read it.
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked()), preFire = LambdaPreFire { h.moveTo600(); true })
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+    }
+
+    /**
+     * The owner edits the one-shot at 6:15, moving 6:30 to 6:00: the owner's copy stays on, next at
+     * 6:00 tomorrow. The joiner learns of it at 6:30 and rings late.
+     */
+    private fun TestScope.lateOneShot(): Harness {
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked()), preFire = LambdaPreFire { h.moveTo600(); true })
+        h.fire(occ = occurrence)
+        return h
+    }
+
+    private val tomorrowSixAm = Instant.parse("2026-03-03T11:00:00Z")
+
+    @Test fun lateOneShotDismissedStaysArmedForTheOwnersNextOccurrence() = runTest {
+        val h = lateOneShot()
+        assertRangAt(h)
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        val row = h.repo.get("a")!!
+        assertTrue(row.link!!.joinerEnabled) // a late ring doesn't use up the one-shot
+        assertEquals(tomorrowSixAm, nextOccurrence(row, h.clock, TEST_ZONE))
+    }
+
+    @Test fun lateOneShotAutoSilencedStaysArmedForTheOwnersNextOccurrence() = runTest {
+        val h = lateOneShot()
+        assertRangAt(h)
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(1, h.finished)
+        assertNull(h.rawStore.state.first())
+        val row = h.repo.get("a")!!
+        assertTrue(row.link!!.joinerEnabled)
+        assertEquals(tomorrowSixAm, nextOccurrence(row, h.clock, TEST_ZONE))
+    }
+
+    @Test fun linkedOneShotAtItsOwnTimeIsStillUsedUpByItsDismiss() = runTest {
+        val h = harness(alarms = listOf(linked()))
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        assertFalse(h.repo.get("a")!!.link!!.joinerEnabled)
+    }
+
+    @Test fun linkedOneShotMovedEarlierAndTurnedOffIsSuppressed() = runTest {
+        // The owner's one-shot rang at 6:00 and turned off; the copied enabled = false suppresses first.
+        lateinit var h: Harness
+        h = harness(alarms = listOf(linked()), preFire = LambdaPreFire {
+            h.repo.upsertLinked(h.repo.get("a")!!.copy(hour = 6, minute = 0, enabled = false)); true
+        })
+        h.fire(occ = occurrence)
+        assertQuiet(h)
+    }
+
+    @Test fun linkedMovedEarlierOnADstDayRingsLate() = runTest {
+        // 8 March 2026: New York springs forward at 2:00. X is 6:30 EDT (10:30Z). The owner moved it to
+        // 2:30, which doesn't exist that day; the schedule puts it at 3:30 EDT, still before X.
+        val x = Instant.parse("2026-03-08T10:30:00Z")
+        val sunday = linked().copy(days = setOf(java.time.DayOfWeek.SUNDAY))
+        lateinit var h: Harness
+        h = harness(alarms = listOf(sunday), preFire = LambdaPreFire { h.repo.upsertLinked(sunday.copy(hour = 2, minute = 30)); true })
+        h.clock = x
+        h.fire(occ = x)
+        assertRangAt(h, x)
+    }
+
+    @Test fun linkedMovedEarlierBetweenReadAndClaimRingsLate() = runTest {
+        val h = harness(alarms = listOf(linked().copy(days = monday)))
+        val slot = h.controller.before { h.moveTo600() }
+        slotSession(h, slot).start("a", occurrence, false, null, TEST_ZONE)
+        assertRangAt(h)
+        // The read saw 6:30; the claim's re-check saw the move and marked it.
+        assertEquals(occurrence, h.fired.lateAt("a"))
+    }
+
+    @Test fun linkedMovedEarlierWithAFailedPreFireReadRingsAtX() = runTest {
+        // The joiner never learns of the move: its row still says 6:30, so X rings as usual (I1).
+        val h = harness(alarms = listOf(linked().copy(days = monday)), preFire = LambdaPreFire { throw RuntimeException("offline") })
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+    }
+
+    @Test fun ownAlarmMovedEarlierBeforeTheFireStillRings() = runTest {
+        lateinit var h: Harness
+        h = harness(preFire = LambdaPreFire { h.repo.upsert(h.repo.get("a")!!.copy(hour = 6, minute = 0)); true })
+        h.fire(occ = occurrence)
+        assertRangAt(h)
+    }
+
+    @Test fun ownAlarmWhoseTimeChangedBeforeTheFireStillRings() = runTest {
+        // Only a linked row is checked against its schedule: an own edit never suppresses (I1).
+        lateinit var h: Harness
+        h = harness(preFire = LambdaPreFire { h.repo.upsert(h.repo.get("a")!!.copy(hour = 7, minute = 15)); true })
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun soloSkippedLinkedRowAtItsOwnTimeStillRings() = runTest {
+        // The owner's solo skip is not the joiner's: X still falls on the row's schedule, so it rings.
+        val h = harness(alarms = listOf(linked().copy(soloSkippedOccurrenceAt = occurrence)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun linkedRowOnADstGapStillRingsAtTheShiftedTime() = runTest {
+        // 2:30 doesn't exist on 8 March 2026 in New York; the scheduler arms 3:30 EDT (07:30Z).
+        val gapX = Instant.parse("2026-03-08T07:30:00Z")
+        val h = harness(alarms = listOf(linked().copy(hour = 2, minute = 30)))
+        h.clock = gapX
+        assertEquals(gapX, nextOccurrence(h.repo.get("a")!!, gapX.minusSeconds(3600), TEST_ZONE))
+        h.fire(occ = gapX)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun linkedSnoozeResumesAfterTheOwnerMovedTheTime() = runTest {
+        // Design: a time change while the copy is snoozed lets that snooze run out on the old X.
+        val snoozed = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow, occurrenceAt = occurrence.minusSeconds(600))
+        val h = harness(alarms = listOf(linked().copy(hour = 7, minute = 15)), state = snoozed)
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun linkedSnoozeResumesAfterTheCopyTurnedOff() = runTest {
+        // A solo-skipped one-shot: at X + FIRE_GRACE the owner publishes enabled = false and LinkSync
+        // copies it while the joiner is snoozed. The snooze still runs out.
+        val snoozed = RingState("a", "ring-X", clockNow.minusSeconds(600), clockNow, occurrenceAt = occurrence.minusSeconds(600))
+        val h = harness(alarms = listOf(linked().copy(enabled = false)), state = snoozed)
+        h.session.start("a", clockNow, true, "ring-X")
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.finished)
     }
 
     @Test fun notArmedSuppressesEvenWhenEnabled() = runTest {
@@ -1079,6 +1387,8 @@ class RingingSessionTest {
             val inner = InMemoryFiredLedger()
             override fun lastRang(alarmId: String) = inner.lastRang(alarmId)
             override fun markRang(alarmId: String, occurrence: Instant) { events += "mark"; inner.markRang(alarmId, occurrence) }
+            override fun lateAt(alarmId: String) = inner.lateAt(alarmId)
+            override fun markLate(alarmId: String, occurrence: Instant) = inner.markLate(alarmId, occurrence)
         }
         val h = ledgerHarness(fired)
         h.sound.events = events
@@ -1886,7 +2196,7 @@ class RingingSessionTest {
     }
 
     @Test fun notifyFireMergingIntoANotifyRingKeepsItNotify() = runTest {
-        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b").copy(minute = 31)))
         h.fire(occ = occurrence)
         runCurrent()
         val b = join(h, "b", bOccurrence)
@@ -1998,7 +2308,7 @@ class RingingSessionTest {
     }
 
     @Test fun notifyFireMergingIntoARingRingChangesNothing() = runTest {
-        val h = harness(alarms = listOf(alarm("a"), linkedAs(LinkMode.NOTIFY, "b")))
+        val h = harness(alarms = listOf(alarm("a"), linkedAs(LinkMode.NOTIFY, "b").copy(minute = 31)))
         h.fire(occ = occurrence)
         runCurrent()
         val b = join(h, "b", bOccurrence)

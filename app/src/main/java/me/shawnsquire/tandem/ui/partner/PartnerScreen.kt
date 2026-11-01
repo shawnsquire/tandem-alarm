@@ -274,6 +274,17 @@ private fun RingingCard(banner: RingingBanner, is24Hour: Boolean, onStop: () -> 
                 stringResource(R.string.partner_ringing, banner.partnerName)
             }
             Text(title, style = MaterialTheme.typography.headlineSmall)
+            banner.joined.forEach { own ->
+                val time = formatClock(own.hour, own.minute, is24Hour) + (amPm(own.hour, is24Hour)?.let { " $it" } ?: "")
+                Text(
+                    if (own.label.isBlank()) {
+                        stringResource(R.string.partner_ringing_joined, time)
+                    } else {
+                        stringResource(R.string.partner_ringing_joined_label, time, own.label)
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
             Button(
                 onClick = onStop,
                 enabled = banner.stopStatus != CommandUiStatus.Pending,
@@ -492,7 +503,7 @@ private fun RingingAsleepPreview() {
             pairedPreview.copy(
                 lastSeenText = "2 h ago",
                 asleepWarning = true,
-                ringing = RingingBanner("Alex", "1", "r1", null, null, CommandUiStatus.Pending),
+                ringing = RingingBanner("Alex", "1", "r1", null, null, CommandUiStatus.Pending, listOf(JoinedOwnAlarm(6, 30, ""))),
             ),
             PartnerCallbacks(),
         )

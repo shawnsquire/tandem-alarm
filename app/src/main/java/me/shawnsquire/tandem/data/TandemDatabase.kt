@@ -7,14 +7,14 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [AlarmEntity::class], version = 2, exportSchema = true)
+@Database(entities = [AlarmEntity::class], version = 3, exportSchema = true)
 abstract class TandemDatabase : RoomDatabase() {
     abstract fun alarmDao(): AlarmDao
 
     companion object {
         /** Room opens the file lazily, so this does no I/O. */
         fun build(context: Context): TandemDatabase =
-            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2).build()
+            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
 
         private val LINK_COLUMNS = listOf(
             "linkOwnerUid" to "TEXT",
@@ -35,6 +35,20 @@ abstract class TandemDatabase : RoomDatabase() {
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 LINK_COLUMNS.forEach { (name, type) -> db.execSQL("ALTER TABLE alarms ADD COLUMN `$name` $type") }
+            }
+        }
+
+        /**
+         * Adds the pending "both" command's creation time. A command already pending is stamped with
+         * the migration time, so its 24 h window runs from the upgrade rather than from every restart.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkPendingBothCreatedAt` INTEGER")
+                db.execSQL(
+                    "UPDATE alarms SET linkPendingBothCreatedAt = ? WHERE linkPendingBothCommandId IS NOT NULL",
+                    arrayOf<Any>(System.currentTimeMillis()),
+                )
             }
         }
     }

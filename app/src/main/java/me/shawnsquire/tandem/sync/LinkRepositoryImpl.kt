@@ -2,11 +2,14 @@ package me.shawnsquire.tandem.sync
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.filterNotNull
@@ -16,6 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.alarm.AlarmScheduler
 import me.shawnsquire.tandem.data.AlarmRepository
@@ -37,7 +41,8 @@ import kotlin.time.Duration.Companion.seconds
  * Joiner and owner operations on linked alarms (see [LinkRepository]). Rows are created here and
  * changed by [LinkSync]; this class only writes through [AlarmRepository]'s linked-row methods.
  *
- * Open invites are kept in memory only, so a process death forgets them until the partner joins.
+ * Open invites are also kept in [InviteLedger] and re-watched by [start], so a process death
+ * doesn't forget one before the partner answers it or its command expires.
  */
 class LinkRepositoryImpl(
     private val alarms: AlarmRepository,
@@ -46,6 +51,7 @@ class LinkRepositoryImpl(
     private val sender: CommandSender,
     private val remote: CommandRemote,
     private val processed: ProcessedCommands,
+    private val inviteLedger: InviteLedger,
     private val removals: LinkRemovals,
     private val requestRemoval: suspend (String, RemovalReason) -> Unit,
     /** Cancels a pending removal under LinkSync's lock; false if the row is already gone. */
@@ -81,17 +87,24 @@ class LinkRepositoryImpl(
                 .sortedBy { it.ownerAlarmId }
         }.distinctUntilChanged()
 
-    /** Re-observes every both-of-us command still pending after a restart. Idempotent. */
+    /** Re-observes every both-of-us command and open invite still pending after a restart. Idempotent. */
     internal fun start() {
         synchronized(watchLock) {
             if (started) return
             started = true
         }
         scope.launch {
-            val upperBound = clock.instant().plus(COMMAND_TTL)
+            val startedAt = clock.instant()
             for (row in alarms.linkedAlarms.first()) {
                 val pending = row.link?.pendingBoth ?: continue
-                watch(row.id, pending, upperBound)
+                watch(row.id, pending, expiryOf(pending, startedAt))
+            }
+            try {
+                for (open in inviteLedger.open()) restoreInvite(open)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "restoring open invites failed", e)
             }
         }
     }
@@ -150,32 +163,124 @@ class LinkRepositoryImpl(
         val link = requireNotNull(alarms.get(alarmId)?.link) { "alarm $alarmId is not linked" }
         val hh = checkNotNull(knownHousehold()) { NOT_PAIRED }
         val now = clock.instant()
-        val id = remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now)
-        val pending = PendingBoth(type, occurrenceAt, id)
-        alarms.updateLink(alarmId) {
-            it.copy(
-                pendingBoth = pending,
-                joinerEnabled = if (type == CommandType.ENABLE) true else it.joinerEnabled,
-            )
+        // Stored before the command exists: if the process dies or the create throws in between, a
+        // "both off" must already be recognised as the joiner's own, and a rejection must be reported.
+        val id = remote.newId(hh.id)
+        val pending = PendingBoth(type, occurrenceAt, id, now)
+        var wasJoinerEnabled = link.joinerEnabled
+        // Not cancellable once the row is written: a stored pendingBoth with no command doc would leave a
+        // DISABLE's copy disarmed while the owner never hears. create() doesn't suspend, and the reschedule
+        // runs last so its failure can't skip the create or the watch.
+        withContext(NonCancellable) {
+            alarms.updateLink(alarmId) {
+                wasJoinerEnabled = it.joinerEnabled
+                it.copy(
+                    pendingBoth = pending,
+                    joinerEnabled = if (type == CommandType.ENABLE) true else it.joinerEnabled,
+                )
+            }
+            try {
+                remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now, commandId = id)
+            } catch (e: Throwable) {
+                // The create failure is what the caller sees; a cleanup failure rides along suppressed.
+                try {
+                    alarms.updateLink(alarmId) {
+                        if (it.pendingBoth?.commandId != id) it
+                        else it.copy(
+                            pendingBoth = null,
+                            joinerEnabled = if (type == CommandType.ENABLE) wasJoinerEnabled else it.joinerEnabled,
+                        )
+                    }
+                } catch (cleanup: Throwable) {
+                    e.addSuppressed(cleanup)
+                }
+                try {
+                    scheduler.rescheduleAll()
+                } catch (cleanup: Throwable) {
+                    e.addSuppressed(cleanup)
+                }
+                throw e
+            }
+            watch(alarmId, pending, expiryOf(pending, now))
+            // The command is out, so a failed reschedule is not a failed send: the caller would report it as one.
+            try {
+                scheduler.rescheduleAll()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "rescheduling after sending $id failed", e)
+            }
         }
-        scheduler.rescheduleAll()
-        watch(alarmId, pending, now.plus(COMMAND_TTL))
     }
 
     override fun invite(alarmId: String): Flow<Pair<CommandStatus, String?>> {
-        val status = sender.send(CommandType.INVITE_LINK, alarmId, null, null)
+        var commandId: String? = null
+        val status = sender.send(CommandType.INVITE_LINK, alarmId, null, null, onCreated = { commandId = it })
         invites.update { it + (alarmId to (it[alarmId] ?: 0) + 1) }
+        val id = commandId
+        val expiresAt = clock.instant().plus(COMMAND_TTL)
         scope.launch {
-            try {
-                withTimeoutOrNull(COMMAND_TTL.toMillis()) { status.firstOrNull { it.first != CommandStatus.PENDING } }
-            } finally {
-                invites.update { m ->
-                    val n = (m[alarmId] ?: 0) - 1
-                    if (n <= 0) m - alarmId else m + (alarmId to n)
-                }
-            }
+            // Persisted before waiting, so a process death from here on still counts it as open.
+            if (id != null) persistOpen { inviteLedger.addOpen(id, alarmId, expiresAt) }
+            settleInvite(alarmId, id, expiresAt, status)
         }
         return status
+    }
+
+    /** Counts a persisted open invite again and watches its command until it is answered or expires. */
+    private fun restoreInvite(open: InviteLedger.OpenInvite) {
+        synchronized(watchLock) { if (!watching.add(open.commandId)) return }
+        invites.update { it + (open.alarmId to (it[open.alarmId] ?: 0) + 1) }
+        scope.launch {
+            try {
+                val status = flow {
+                    val hh = household.filterNotNull().first()
+                    emitAll(remote.observe(hh.id, open.commandId))
+                }
+                settleInvite(open.alarmId, open.commandId, open.expiresAt, status)
+            } finally {
+                synchronized(watchLock) { watching.remove(open.commandId) }
+            }
+        }
+    }
+
+    /**
+     * Holds the invite open until [status] reports an answer or [expiresAt] passes, then drops it from the
+     * count and the ledger. A cancelled wait (the process going away) leaves the ledger entry for the next start.
+     * [status] ending without an answer (its listener failed) is no answer: it is collected again (see
+     * [awaitAnswer]) while the household is the one it failed under; a different household drops the invite as moot.
+     */
+    private suspend fun settleInvite(
+        alarmId: String, commandId: String?, expiresAt: Instant, status: Flow<Pair<CommandStatus, String?>>,
+    ) {
+        var settled = false
+        try {
+            val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
+            var sentIn: Household? = null
+            withTimeoutOrNull(remaining) {
+                awaitAnswer({ status }) {
+                    val hh = household.filterNotNull().first()
+                    hh == (sentIn ?: hh.also { sentIn = it })
+                }
+            }
+            settled = true
+        } finally {
+            invites.update { m ->
+                val n = (m[alarmId] ?: 0) - 1
+                if (n <= 0) m - alarmId else m + (alarmId to n)
+            }
+        }
+        if (settled && commandId != null) persistOpen { inviteLedger.removeOpen(commandId) }
+    }
+
+    private suspend fun persistOpen(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "saving open invites failed", e)
+        }
     }
 
     private suspend fun joinInternal(hh: Household, ownerAlarmId: String, acceptOpenInvites: Boolean): LinkResult =
@@ -254,15 +359,29 @@ class LinkRepositoryImpl(
         scope.launch {
             try {
                 val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
-                // Waiting for a household and re-subscribing after a completed observe both count against the deadline.
+                // Waiting for a household and re-subscribing after a completed observe (its listener failed)
+                // both count against the deadline.
+                var dropped = false
                 val done = withTimeoutOrNull(remaining) {
                     val hh = household.filterNotNull().first()
-                    var update: Pair<CommandStatus, String?>? = null
-                    while (update == null) {
-                        update = remote.observe(hh.id, pending.commandId).firstOrNull { it.first != CommandStatus.PENDING }
-                        if (update == null) delay(RESUBSCRIBE_DELAY)
+                    awaitAnswer({ remote.observe(hh.id, pending.commandId) }) {
+                        alarms.get(rowId)?.link?.pendingBoth?.commandId == pending.commandId &&
+                            household.filterNotNull().first() == hh
+                    }.also { dropped = it == null }
+                }
+                if (dropped) {
+                    // Replaced, or the household changed: no answer is coming. A new partner means LinkSync
+                    // removes the row, so nothing is reported. Re-paired with the same partner, the row stays
+                    // but the command is out of reach in the old household: clear it rather than leave a
+                    // "both off" disarmed, and say it didn't go through.
+                    Log.i(TAG, "stopped watching ${pending.commandId}")
+                    val now = knownHousehold()
+                    val sameOwner = now != null && alarms.get(rowId)?.link?.ownerUid == now.partnerUid
+                    if (sameOwner && clearPending(rowId, pending.commandId)) {
+                        scheduler.rescheduleAll()
+                        alarms.get(rowId)?.let { notifier.notifyRejected(it, pending.type, PAIRING_CHANGED, currentPartnerName()) }
                     }
-                    update
+                    return@launch
                 }
                 val applied = done?.first == CommandStatus.APPLIED
                 if (applied) {
@@ -279,16 +398,7 @@ class LinkRepositoryImpl(
                     }
                 }
                 val reason = done?.second ?: "expired"
-                var cleared = false
-                alarms.updateLink(rowId) {
-                    if (it.pendingBoth?.commandId == pending.commandId) {
-                        cleared = true
-                        it.copy(pendingBoth = null)
-                    } else {
-                        it
-                    }
-                }
-                if (!cleared) return@launch
+                if (!clearPending(rowId, pending.commandId)) return@launch
                 scheduler.rescheduleAll()
                 if (applied) return@launch
                 alarms.get(rowId)?.let { notifier.notifyRejected(it, pending.type, reason, currentPartnerName()) }
@@ -302,6 +412,43 @@ class LinkRepositoryImpl(
         }
     }
 
+    /** Clears [rowId]'s pendingBoth if it is still [commandId]; true if it was. */
+    private suspend fun clearPending(rowId: String, commandId: String): Boolean {
+        var cleared = false
+        alarms.updateLink(rowId) {
+            if (it.pendingBoth?.commandId == commandId) {
+                cleared = true
+                it.copy(pendingBoth = null)
+            } else {
+                it
+            }
+        }
+        return cleared
+    }
+
+    /**
+     * The first answer from [observe]. Its ending at PENDING is a listener failure, not an answer: it is
+     * collected again after a wait that doubles from [RESUBSCRIBE_DELAY] to [RESUBSCRIBE_MAX], while
+     * [stillWanted] (checked before each retry; it may suspend while the household is unknown). Null once it
+     * isn't, so a listen denied for good (unpaired) stops instead of retrying until the TTL.
+     */
+    private suspend fun awaitAnswer(
+        observe: () -> Flow<Pair<CommandStatus, String?>>,
+        stillWanted: suspend () -> Boolean,
+    ): Pair<CommandStatus, String?>? {
+        var wait = RESUBSCRIBE_DELAY
+        while (true) {
+            observe().firstOrNull { it.first != CommandStatus.PENDING }?.let { return it }
+            delay(wait)
+            wait = (wait * 2).coerceAtMost(RESUBSCRIBE_MAX)
+            if (!stillWanted()) return null
+        }
+    }
+
+    /** [PendingBoth.createdAt] plus the TTL; [fallback] starts the window for a command stored without one. */
+    private fun expiryOf(pending: PendingBoth, fallback: Instant): Instant =
+        (pending.createdAt ?: fallback).plus(COMMAND_TTL)
+
     /** The household, or null if none arrives within [HOUSEHOLD_WAIT]. */
     private suspend fun knownHousehold(): Household? = withTimeoutOrNull(HOUSEHOLD_WAIT) { household.first() }
 
@@ -314,11 +461,13 @@ class LinkRepositoryImpl(
         const val TAG = "LinkRepository"
         const val NOT_PAIRED = "not paired"
         const val DECLINED = "declined"
+        const val PAIRING_CHANGED = "the pairing changed"
         const val DELETED_SUFFIX = " deleted this alarm"
         const val FALLBACK_NAME = "Your partner"
         val PARTNER_WAIT = 2.seconds
         val HOUSEHOLD_WAIT = 2.seconds
         val RESUBSCRIBE_DELAY = 5.seconds
+        val RESUBSCRIBE_MAX = 60.seconds
         val COMMAND_TTL: Duration = Duration.ofHours(24)
     }
 }

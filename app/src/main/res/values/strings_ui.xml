@@ -51,6 +51,8 @@
     <string name="partner_asleep">%1$s\'s phone may be asleep — commands could be delayed. They\'ll still apply before the alarm rings.</string>
     <string name="partner_ringing">%1$s\'s alarm is ringing</string>
     <string name="partner_snoozed_until">Snoozed until %1$s</string>
+    <string name="partner_ringing_joined">Your %1$s, joined</string>
+    <string name="partner_ringing_joined_label">Your %1$s %2$s, joined</string>
     <string name="partner_stop">Stop</string>
     <string name="partner_no_alarms">%1$s has no alarms yet.</string>
     <string name="partner_chip_on">On</string>

@@ -86,6 +86,7 @@ class RingMirrorImplTest {
         val hangingSender = object : CommandSender {
             override fun send(
                 type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?,
+                onCreated: (String) -> Unit,
             ) = kotlinx.coroutines.flow.flow<Pair<me.shawnsquire.tandem.schedule.CommandStatus, String?>> {
                 try {
                     emit(me.shawnsquire.tandem.schedule.CommandStatus.PENDING to null)

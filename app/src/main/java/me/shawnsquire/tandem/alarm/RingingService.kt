@@ -15,6 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.time.ZoneId
 
 /** Thin Android glue: foreground promotion, wake lock, and one [RingingSession] per start. */
 open class RingingService : Service() {
@@ -61,6 +62,8 @@ open class RingingService : Service() {
         val occurrence = Instant.ofEpochMilli(intent.getLongExtra(AlarmIntents.EXTRA_OCCURRENCE, System.currentTimeMillis()))
         val isSnooze = intent.getBooleanExtra(AlarmIntents.EXTRA_IS_SNOOZE, false)
         val ringId = intent.getStringExtra(AlarmIntents.EXTRA_RING_ID)
+        // Unknown or unparseable: the session then never treats the fire as moved off its schedule.
+        val armedZone = intent.getStringExtra(AlarmIntents.EXTRA_ZONE)?.let { runCatching { ZoneId.of(it) }.getOrNull() }
 
         // A repeated snooze-fire for a ring that already has a live session must not stack a second sound.
         if (shouldIgnoreSnoozeStart(isSnooze, ringId, snoozeRingIds.values)) {
@@ -107,7 +110,7 @@ open class RingingService : Service() {
         // controller's Mutex is fair, so this clear still runs before the session's claim, which
         // is queued only after the pre-fire check.
         launchClearStale(scope, engine.ringSlot, LiveRings::isLive) { msg, t -> Log.w(TAG, msg, t) }
-        session.start(alarmId, occurrence, isSnooze, ringId)
+        session.start(alarmId, occurrence, isSnooze, ringId, armedZone)
         return START_NOT_STICKY
     }
 

@@ -25,9 +25,22 @@ class PartnerRepositoryTest {
         }
     }
 
-    @Test fun `source error emits null`() = runTest {
-        PartnerRepositoryImpl(flowOf(h)) { flow { throw IllegalStateException("denied") } }.partner.test {
-            assertEquals(null, awaitItem()); awaitComplete()
+    @Test fun `source error emits null, resubscribes after the backoff and recovers`() = runTest {
+        var listens = 0
+        val src = { _: Household ->
+            flow {
+                if (++listens == 1) throw IllegalStateException("denied")
+                emit(mapOf<String, Any?>("displayName" to "Sam")); awaitCancellation()
+            }
+        }
+        PartnerRepositoryImpl(flowOf(h), src).partner.test {
+            assertEquals(null, awaitItem())
+            expectNoEvents()
+            assertEquals(1, listens)
+            testScheduler.advanceTimeBy(2_001); runCurrent()
+            assertEquals("Sam", awaitItem()?.displayName)
+            assertEquals(2, listens)
+            cancelAndIgnoreRemainingEvents()
         }
     }
 

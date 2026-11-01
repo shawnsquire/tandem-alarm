@@ -118,6 +118,9 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
         }
     }
 
+    /** Runs after a successful [updateLink] write, before it returns; may suspend (a write that's slow to resume). */
+    var afterUpdateLink: (suspend () -> Unit)? = null
+
     override suspend fun updateLink(id: String, transform: (AlarmLink) -> AlarmLink): Boolean {
         // transform runs exactly once (MutableStateFlow.update may retry its lambda), so read-then-set under a lock.
         synchronized(state) {
@@ -126,8 +129,9 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
             val link = row?.link ?: return false
             val updated = row.copy(link = transform(link))
             state.value = list.map { if (it.id == id) updated else it }
-            return true
         }
+        afterUpdateLink?.invoke()
+        return true
     }
 }
 
@@ -152,7 +156,9 @@ class FakeSettingsRepository : SettingsRepository {
 class FakeAlarmScheduler : AlarmScheduler {
     var rescheduleCount = 0
         private set
-    override suspend fun rescheduleAll() { rescheduleCount++ }
+    /** Runs inside [rescheduleAll] after counting it; may suspend or throw. */
+    var rescheduleBlock: (suspend () -> Unit)? = null
+    override suspend fun rescheduleAll() { rescheduleCount++; rescheduleBlock?.invoke() }
 }
 
 class FakeRingingController : RingingController {
@@ -225,8 +231,10 @@ class FakeCommandSender : CommandSender {
         occurrenceAt: Instant?,
         ringId: String?,
         snoozedUntil: Instant?,
+        onCreated: (String) -> Unit,
     ): Flow<Pair<CommandStatus, String?>> {
         sent += Sent(type, alarmId, occurrenceAt, ringId, snoozedUntil)
+        onCreated("fake-cmd-${sent.size}")
         return flowOf(CommandStatus.PENDING to null, CommandStatus.APPLIED to null)
     }
 }

@@ -1,7 +1,5 @@
 package me.shawnsquire.tandem.sync
 
-import com.google.firebase.firestore.DocumentReference
-import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Source
 import kotlinx.coroutines.CancellationException
@@ -24,11 +22,14 @@ data class Household(val id: String, val myUid: String, val partnerUid: String)
  * Resolves the signed-in user's household. Emits null when signed out, unpaired, waiting for a
  * partner (one member), or when Firestore denies access (e.g. after unpair); never fails.
  */
-class HouseholdSource(
+class HouseholdSource internal constructor(
     uid: Flow<String?>,
-    private val db: FirebaseFirestore,
+    private val docs: (path: String) -> Flow<Map<String, Any?>?>,
     scope: CoroutineScope,
 ) {
+    constructor(uid: Flow<String?>, db: FirebaseFirestore, scope: CoroutineScope) :
+        this(uid, firestoreDocs(db), scope)
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val household: Flow<Household?> = uid
         .distinctUntilChanged()
@@ -36,14 +37,14 @@ class HouseholdSource(
             if (u == null) {
                 flowOf(null)
             } else {
-                snapshots(db.collection("users").document(u))
-                    .map { it?.getString("householdId")?.takeIf(String::isNotEmpty) }
+                docs("users/$u").resubscribeOnError(null)
+                    .map { (it?.get("householdId") as? String)?.takeIf(String::isNotEmpty) }
                     .distinctUntilChanged()
                     .flatMapLatest { hid ->
                         if (hid == null) {
                             flowOf(null)
                         } else {
-                            snapshots(db.collection("households").document(hid))
+                            docs("households/$hid").resubscribeOnError(null)
                                 .map { householdFrom(hid, u, it?.get("members")) }
                         }
                     }
@@ -51,16 +52,21 @@ class HouseholdSource(
         }
         .distinctUntilChanged()
         .shareIn(scope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+}
 
-    /** Snapshots of [ref]; a missing doc is a snapshot with exists() false. Errors emit null and end the flow. */
-    private fun snapshots(ref: DocumentReference): Flow<DocumentSnapshot?> = callbackFlow {
-        val reg = ref.addSnapshotListener { snap, err ->
-            if (err != null || snap == null || !snap.exists()) {
-                trySend(null)
+/**
+ * Snapshot data of the doc at [path]; a missing doc is null. A listener error ends the flow with that
+ * error, and [resubscribeOnError] emits null for the gap and listens again, so a dead listener
+ * never stays dead. The null stands for "unknown", not "unpaired": only [householdOnServer] confirms that.
+ */
+private fun firestoreDocs(db: FirebaseFirestore): (String) -> Flow<Map<String, Any?>?> = { path ->
+    callbackFlow<Map<String, Any?>?> {
+        val reg = db.document(path).addSnapshotListener { snap, err ->
+            if (err != null) {
+                close(err)
             } else {
-                trySend(snap)
+                trySend(if (snap == null || !snap.exists()) null else snap.data)
             }
-            if (err != null) close()
         }
         awaitClose { reg.remove() }
     }

@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
@@ -64,6 +65,7 @@ class StatePublisherImpl(
         val fcmToken: String?,
         val links: List<PublishedLink>,
         val media: PublishedMedia?,
+        val ringOwnerIds: Map<String, String>,
     )
 
     private class Publish(val household: Household, val data: Map<String, Any?>)
@@ -75,14 +77,18 @@ class StatePublisherImpl(
         if (started) return
         started = true
         scope.launch {
-            // Own alarms only: linked rows reach the partner through `links`, never as alarms[].
+            // Own alarms only: linked rows reach the partner through `links`, never as alarms[]. They
+            // are read only to publish a ringing row under its owner's alarm id.
             combine(
-                listOf(alarms.ownAlarms, ringState.state, household, displayName, fcmToken, links, media),
+                listOf(
+                    alarms.ownAlarms, ringState.state, household, displayName, fcmToken, links, media,
+                    alarms.linkedAlarms.map(::ringOwnerIds),
+                ),
             ) { v ->
                 @Suppress("UNCHECKED_CAST")
                 Inputs(
                     v[0] as List<Alarm>, v[1] as RingState?, v[2] as Household?, v[3] as String,
-                    v[4] as String?, v[5] as List<PublishedLink>, v[6] as PublishedMedia?,
+                    v[4] as String?, v[5] as List<PublishedLink>, v[6] as PublishedMedia?, v[7] as Map<String, String>,
                 )
             }
                 .transformLatest { i ->
@@ -95,7 +101,10 @@ class StatePublisherImpl(
                         emit(
                             Publish(
                                 h,
-                                deviceDocMap(i.displayName, i.fcmToken, current, i.ring, now, clock.zone, i.links, i.media),
+                                deviceDocMap(
+                                    i.displayName, i.fcmToken, current, i.ring, now, clock.zone, i.links, i.media,
+                                    i.ringOwnerIds,
+                                ),
                             ),
                         )
                         val boundary = nextPublishBoundary(current, now, clock.zone) ?: awaitCancellation()
@@ -151,6 +160,7 @@ class StatePublisherImpl(
                 displayName.first(), fcmToken.first(),
                 alarms.ownAlarms.first().map { it.withoutExpiredSkip(now) },
                 ringState.state.first(), now, clock.zone, publishedLinks, publishedMedia,
+                ringOwnerIds(alarms.linkedAlarms.first()),
             )
             writer.writeAndAwait(h, data)
             true
@@ -169,6 +179,10 @@ class StatePublisherImpl(
         const val MEDIA_SETTLE_MS = 1_000L
     }
 }
+
+/** Linked row id to `link.ownerAlarmId`, for publishing a ringing linked row under the owner's id. */
+private fun ringOwnerIds(rows: List<Alarm>): Map<String, String> =
+    rows.mapNotNull { r -> r.link?.let { r.id to it.ownerAlarmId } }.toMap()
 
 /**
  * Earliest moment the published state changes by itself: the soonest next occurrence over [alarms],

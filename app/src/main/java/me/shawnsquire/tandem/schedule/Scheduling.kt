@@ -72,6 +72,34 @@ fun nextOccurrence(alarm: Alarm, now: Instant, zone: ZoneId): Instant? {
 }
 
 /**
+ * Whether [occurrence] is one of [alarm]'s scheduled times by its hour, minute and days alone, built
+ * in [zone] the way [nextOccurrence] builds a candidate (so a DST-gap time shifted forward still
+ * matches). Arming, skips and the solo skip are not consulted, so a skipped X still falls on it.
+ * A one-shot matches any day. The day before is tried too, in case a gap pushes the time past midnight.
+ */
+fun fallsOnSchedule(alarm: Alarm, occurrence: Instant, zone: ZoneId): Boolean {
+    val time = LocalTime.of(alarm.hour, alarm.minute)
+    val date = occurrence.atZone(zone).toLocalDate()
+    return listOf(date, date.minusDays(1)).any {
+        (alarm.days.isEmpty() || it.dayOfWeek in alarm.days) &&
+            ZonedDateTime.of(it, time, zone).toInstant() == occurrence
+    }
+}
+
+/**
+ * [alarm]'s occurrence on [occurrence]'s own local date in [zone] when it comes before [occurrence],
+ * on a day the alarm rings: its time was moved earlier that day, to a time already passed. Null
+ * otherwise. Built in [zone] the way [nextOccurrence] builds a candidate, so a DST-gap time is
+ * shifted the same way. A one-shot counts on any day. Arming and skips are not consulted, as in
+ * [fallsOnSchedule].
+ */
+fun earlierOccurrenceThatDay(alarm: Alarm, occurrence: Instant, zone: ZoneId): Instant? {
+    val date = occurrence.atZone(zone).toLocalDate()
+    if (alarm.days.isNotEmpty() && date.dayOfWeek !in alarm.days) return null
+    return ZonedDateTime.of(date, LocalTime.of(alarm.hour, alarm.minute), zone).toInstant().takeIf { it < occurrence }
+}
+
+/**
  * Snooze-ledger view for validation; mirrors alarm.SnoozeEntry without depending on the alarm
  * package (schedule is java.time only).
  */
