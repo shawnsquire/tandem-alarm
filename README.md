@@ -87,7 +87,16 @@ With the Firebase emulators and an Android emulator running:
 ./gradlew connectedDebugAndroidTest
 ```
 
-This runs one test, `TwoDeviceSmokeTest`. It uses two named FirebaseApps in one process to act as two devices: pair, the partner sees the alarm, SKIP_NEXT through the pre-fire pull, a stale skip is rejected, STOP_RINGING by ring ID, unpair. It grants the local network permission itself. CI does not run it.
+This runs `TwoDeviceSmokeTest`. It uses two named FirebaseApps in one process to act as two devices, each with its own Room, DataStores and files, and needs all four emulators, Storage included. Its cases:
+
+- Pair, the partner sees the alarm, SKIP_NEXT through the pre-fire pull, a stale skip is rejected, STOP_RINGING by ring ID, unpair.
+- Join, then both phones ring. B snoozes and A snoozes to the same time. A dismisses, B's ring ends, and B sends nothing back.
+- Invite, then accept.
+- The owner skips "just me": B still rings, and B's stop is rejected on A as "skipped here".
+- The owner turns the alarm off: B's copy is off and B gets the turn-off notification.
+- The owner's photo and sound are uploaded, downloaded on B, and resolved for B's ring.
+
+Rings go through the real ringing controller and the ring mirror, without sound, notifications or the ringing service. It grants the local network permission itself. CI does not run it.
 
 ## Setup before first use
 
