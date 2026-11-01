@@ -24,7 +24,7 @@ class LinkedMediaCacheImpl(
     private val enqueueDownload: () -> Unit,
     private val systemAlarmSound: String? = Settings.System.DEFAULT_ALARM_ALERT_URI?.toString(),
 ) : LinkedMediaCache {
-    private val linkedDir = File(filesDir, "linked")
+    private val linkedDir = File(filesDir, LINKED_DIR)
     private val storeFile = File(filesDir, "linked-media.json")
     private val lock = Any()
     private var cached: Refs? = null
@@ -212,9 +212,11 @@ class LinkedMediaCacheImpl(
         }
     }
 
-    private companion object {
-        const val TAG = "LinkedMediaCache"
-        const val MAX_BYTES = 15_728_640L
-        val SHA = Regex("^[0-9a-f]{64}$")
+    internal companion object {
+        /** Directory under filesDir holding the owner's cached media; also swept by [MediaOrphanSweeper]. */
+        const val LINKED_DIR = "linked"
+        private const val TAG = "LinkedMediaCache"
+        private const val MAX_BYTES = 15_728_640L
+        private val SHA = Regex("^[0-9a-f]{64}$")
     }
 }

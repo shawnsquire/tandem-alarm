@@ -128,7 +128,7 @@ class TandemApp : Application() {
         // Background housekeeping, never on a fire path; its repository reads wait for the drain.
         container.syncScope.launch {
             try {
-                MediaOrphanSweeper(filesDir, container.alarmRepository, container.settingsRepository).sweep()
+                MediaOrphanSweeper(filesDir, container.alarmRepository, container.settingsRepository, container.linkedMediaCache).sweep()
             } catch (e: Throwable) {
                 if (e is CancellationException) throw e
                 Log.w(TAG, "media orphan sweep failed", e)
