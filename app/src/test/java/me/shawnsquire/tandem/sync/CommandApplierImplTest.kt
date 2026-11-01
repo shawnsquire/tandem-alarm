@@ -565,12 +565,33 @@ class CommandApplierImplTest {
         assertEquals(CommandStatus.REJECTED, e.remote.resolved.single().status)
     }
 
-    @Test fun `invite for a deleted owner alarm is rejected`() = runTest {
+    @Test fun `invite for an alarm not yet in the partner state stays pending`() = runTest {
         val e = env(partner = flowOf(partnerWith("other")))
         e.applier.apply(invite())
         assertTrue(e.notifier.invites.isEmpty())
-        rejection(e, "Sam deleted this alarm")
-        assertEquals(Outcome.Rejected("Sam deleted this alarm"), e.processed.outcome("c1"))
+        assertTrue(e.remote.resolved.isEmpty())
+        assertNull(e.processed.outcome("c1"))
+        assertEquals(0, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun `invite notifies once the alarm shows up on a later delivery`() = runTest {
+        val partner = MutableStateFlow<PartnerState?>(partnerWith("other"))
+        val e = env(partner = partner)
+        val c = invite()
+        e.applier.apply(c)
+        assertTrue(e.notifier.invites.isEmpty())
+        partner.value = partnerWith("other", ownerId)
+        e.applier.apply(c)
+        assertEquals(1, e.notifier.invites.size)
+        assertTrue(e.remote.resolved.isEmpty())
+        assertNull(e.processed.outcome("c1"))
+    }
+
+    @Test fun `invite for one alarm posts when a different alarm is already joined`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow), partner = flowOf(partnerWith(ownerId, "o10")))
+        e.applier.apply(fromOwner(CommandType.INVITE_LINK, alarmId = "o10", occurrenceAt = null))
+        assertEquals(1, e.notifier.invites.size)
+        assertTrue(e.remote.resolved.isEmpty())
     }
 
     @Test fun `invite for an already joined alarm is rejected`() = runTest {

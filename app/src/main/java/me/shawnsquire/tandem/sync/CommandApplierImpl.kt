@@ -139,11 +139,12 @@ class CommandApplierImpl(
 
             if (outcome == Outcome.Applied && cmd.type == CommandType.INVITE_LINK) {
                 // validate lets any invite through (there is no local row), so check it here.
-                val name = partnerName.value?.takeIf { it.isNotBlank() } ?: FALLBACK_NAME
                 val ownerAlarm = partnerState?.alarms?.firstOrNull { it.id == cmd.alarmId }
                 when {
-                    partnerState == null -> return // unknown: stay pending, re-delivered later
-                    ownerAlarm == null -> outcome = Outcome.Rejected("$name deleted this alarm")
+                    // Unknown state, or a cached state that predates the owner's new alarm: stay pending.
+                    // Re-delivery retries, validate expires it after 24 h, and acceptInvite rejects
+                    // "deleted this alarm" if the user taps Join on one that is really gone.
+                    partnerState == null || ownerAlarm == null -> return
                     alarms.linkedAlarms.first().any { it.link?.ownerAlarmId == cmd.alarmId } ->
                         outcome = Outcome.Rejected("already joined")
                     else -> {

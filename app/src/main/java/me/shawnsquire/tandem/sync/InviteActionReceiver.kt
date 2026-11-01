@@ -24,7 +24,8 @@ class InviteActionReceiver : BroadcastReceiver() {
                 if (e is CancellationException) throw e
                 Log.w(TAG, "invite action failed for $commandId", e)
             } finally {
-                // A failed join already rejected the command in acceptInvite, so the notification is stale either way.
+                // Only a "deleted this alarm" failure rejects the command; other failures leave it pending and
+                // it is re-posted on re-delivery, so the notification is dropped either way.
                 AndroidCommandNotifier.cancelInvite(context, commandId)
                 pending.finish()
             }

@@ -84,6 +84,9 @@ class AndroidCommandNotifierTest {
             assertEquals("o9", it.getStringExtra(InviteActionReceiver.EXTRA_OWNER_ALARM_ID))
         }
         assertEquals(2, n.actions.map { shadowOf(it.actionIntent).requestCode }.toSet().size)
+        n.actions.forEach {
+            assertTrue(shadowOf(it.actionIntent).flags and android.app.PendingIntent.FLAG_IMMUTABLE != 0)
+        }
     }
 
     @Test fun `invite id is stable per command and distinct across commands`() {
