@@ -297,6 +297,7 @@ class LinkSyncImpl(
 
         val copied = row.copy(
             label = doc.label, hour = doc.hour, minute = doc.minute, days = doc.days, enabled = doc.enabled,
+            lateRing = doc.lateRing,
             link = link.copy(ownerSkippedOccurrenceAt = doc.skippedOccurrenceAt),
         )
         var changed = false

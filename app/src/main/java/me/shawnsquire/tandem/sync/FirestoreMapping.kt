@@ -8,10 +8,13 @@ import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
+import kotlin.time.toJavaDuration
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.FIRE_GRACE
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
@@ -123,7 +126,9 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
  * content-addressed [MediaRef]s when [media] is passed).
  * `fcmToken` is omitted when unknown; `updatedAt` is a server timestamp. A skip that is not after
  * [now] is written as null: it is meaningless to the partner, who would send an UNSKIP that is always rejected.
- * A solo skip that is not after [now] is omitted likewise.
+ * A solo skip that is not after [now] is omitted likewise. `alarms[].lateRing` (`occurrenceAt` Timestamp,
+ * `ring` Boolean) is written only while its `occurrenceAt` is within [FIRE_GRACE] of [now] or later.
+ * A link's `hour`, `minute` and `days` are written only when its schedule is known.
  *
  * Top-level newer keys are emitted only when there is something to say: `links` when [links] is
  * non-null (even empty), `defaultWallpaper` when [media] is non-null, `alarms[].media` for alarms
@@ -165,6 +170,9 @@ fun deviceDocMap(
                 put("nextOccurrenceAt", nextOccurrence(a, now, zone)?.toTimestamp())
                 put("skippedOccurrenceAt", a.skippedOccurrenceAt?.takeIf { it > now }?.toTimestamp())
                 a.soloSkippedOccurrenceAt?.takeIf { it > now }?.let { put("soloSkippedOccurrenceAt", it.toTimestamp()) }
+                a.lateRing?.takeIf { it.occurrenceAt.plus(FIRE_GRACE.toJavaDuration()) > now }?.let {
+                    put("lateRing", mapOf("occurrenceAt" to it.occurrenceAt.toTimestamp(), "ring" to it.ring))
+                }
                 media?.alarms?.get(a.id)?.let { m ->
                     put("media", mapOf("wallpaper" to m.wallpaper?.toMap(), "ringtone" to m.ringtone?.toMap(withTitle = true)))
                 }
@@ -184,8 +192,18 @@ fun deviceDocMap(
             }
         },
     )
-    if (links != null) put("links", links.map { mapOf("ownerAlarmId" to it.ownerAlarmId, "mode" to it.mode.name) })
+    if (links != null) put("links", links.map { it.toMap() })
     if (media != null) put("defaultWallpaper", media.defaultWallpaper?.toMap())
+}
+
+private fun PublishedLink.toMap(): Map<String, Any?> = buildMap {
+    put("ownerAlarmId", ownerAlarmId)
+    put("mode", mode.name)
+    if (hour != null && minute != null && days != null) {
+        put("hour", hour)
+        put("minute", minute)
+        put("days", days.sorted().map { it.name })
+    }
 }
 
 private fun MediaRef.toMap(withTitle: Boolean = false): Map<String, Any?> {
@@ -213,7 +231,23 @@ private fun linkFrom(v: Any?): PublishedLink? {
     val m = v as? Map<*, *> ?: return null
     val id = m["ownerAlarmId"] as? String ?: return null
     val mode = LinkMode.entries.firstOrNull { it.name == m["mode"] } ?: return null
-    return PublishedLink(id, mode)
+    // All-or-nothing, and bad day names are not dropped as partnerAlarmFrom does: a dropped day would make
+    // the owner see a false "not confirmed". The schedule's presence is also the only sign that the joiner
+    // reads `lateRing`; an older joiner would ignore a Skip answer, so it must read as unknown and the
+    // owner won't prompt.
+    val hour = (m["hour"] as? Number)?.toInt()?.takeIf { it in 0..23 }
+    val minute = (m["minute"] as? Number)?.toInt()?.takeIf { it in 0..59 }
+    val days = (m["days"] as? List<*>)?.map { n -> DayOfWeek.entries.firstOrNull { it.name == n } }
+        ?.takeIf { d -> d.all { it != null } }?.filterNotNull()?.toSet()
+    if (hour == null || minute == null || days == null) return PublishedLink(id, mode)
+    return PublishedLink(id, mode, hour, minute, days)
+}
+
+private fun lateRingFrom(v: Any?): LateRing? {
+    val m = v as? Map<*, *> ?: return null
+    val at = (m["occurrenceAt"] as? Timestamp)?.toInstantCompat() ?: return null
+    val ring = m["ring"] as? Boolean ?: return null
+    return LateRing(at, ring)
 }
 
 /** Inverse of [deviceDocMap] for a partner's doc; malformed alarm entries are skipped. Null when unusable. */
@@ -250,6 +284,7 @@ private fun partnerAlarmFrom(m: Map<*, *>): PartnerAlarm? {
         skippedOccurrenceAt = (m["skippedOccurrenceAt"] as? Timestamp)?.toInstantCompat(),
         media = alarmMediaFrom(m["media"]),
         soloSkippedOccurrenceAt = (m["soloSkippedOccurrenceAt"] as? Timestamp)?.toInstantCompat(),
+        lateRing = lateRingFrom(m["lateRing"]),
     )
 }
 
