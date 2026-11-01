@@ -441,17 +441,32 @@ class AlarmEditViewModelTest {
         assertEquals(EditInvite.Joined, e.vm.state.value.invite)
     }
 
-    @Test fun anInviteThatExpiresUnansweredReturnsToInvite() = runTest {
+    @Test fun theInviteClosingBeforeAppliedLandsDoesNotReleaseTheHold() = runTest {
         val gate = kotlinx.coroutines.flow.MutableSharedFlow<Pair<CommandStatus, String?>>()
+        var started = 0
         val e = Env("a1", listOf(existing), linkOverride = { fake ->
-            object : LinkRepository by fake { override fun invite(alarmId: String) = gate }
+            object : LinkRepository by fake { override fun invite(alarmId: String) = gate.also { started++ } }
         })
         paired(e)
         e.vm.invite()
         gate.emit(CommandStatus.PENDING to null)
         e.links.openInvites.value = setOf("a1")
+        e.links.openInvites.value = emptySet() // accepted: the invite closes before APPLIED arrives
         assertEquals(EditInvite.Invited, e.vm.state.value.invite)
-        e.links.openInvites.value = emptySet()
+        gate.emit(CommandStatus.APPLIED to null)
+        assertEquals(EditInvite.Invited, e.vm.state.value.invite)
+        e.vm.invite()
+        assertEquals(1, started)
+        e.partner.set(PartnerState("Alex", emptyList(), null, null, links = listOf(PublishedLink("a1", LinkMode.RING))))
+        assertEquals(EditInvite.Joined, e.vm.state.value.invite)
+    }
+
+    @Test fun anInviteThatEndsWithoutAppliedReturnsToInvite() = runTest {
+        val e = Env("a1", listOf(existing), linkOverride = { fake ->
+            object : LinkRepository by fake { override fun invite(alarmId: String) = flowOf(CommandStatus.PENDING to null) }
+        })
+        paired(e)
+        e.vm.invite()
         assertEquals(EditInvite.Invite, e.vm.state.value.invite)
     }
 

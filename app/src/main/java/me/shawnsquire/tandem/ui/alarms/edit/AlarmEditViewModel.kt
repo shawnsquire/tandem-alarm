@@ -98,6 +98,9 @@ class AlarmEditViewModel(
      */
     private val invitePending = MutableStateFlow(false)
 
+    /** The invite flow is being collected; its own outcome (not `openInvites`) decides the hold meanwhile. */
+    private val inviteRunning = MutableStateFlow(false)
+
     /** The held invite's command reached APPLIED: only the partner's links release it from then on. */
     private val inviteApplied = MutableStateFlow(false)
 
@@ -110,13 +113,14 @@ class AlarmEditViewModel(
         viewModelScope.launch {
             combine(
                 invitable, pairing.status, partnerRepository.partner, links.openInvites,
-                combine(invitePending, inviteApplied) { pending, applied -> pending to applied },
-            ) { canInvite, status, partner, open, (pending, applied) ->
+                combine(invitePending, inviteApplied, inviteRunning) { pending, applied, running -> Triple(pending, applied, running) },
+            ) { canInvite, status, partner, open, (pending, applied, running) ->
                 val joined = partner?.links?.any { it.ownerAlarmId == alarmId } == true
                 val isOpen = alarmId in open
                 if (pending && isOpen) inviteSeenOpen = true
-                // Once applied, the invite closing and the links landing are not simultaneous: wait for the links.
-                val held = pending && !joined && (applied || !(inviteSeenOpen && !isOpen))
+                // While the invite runs, or once applied, the invite closing (which can come before APPLIED or
+                // before the links) is not an end: only the flow's outcome or the partner's links release it.
+                val held = pending && !joined && (running || applied || !(inviteSeenOpen && !isOpen))
                 val invite = when {
                     !canInvite || status !is PairingStatus.Paired -> EditInvite.Hidden
                     joined -> EditInvite.Joined
@@ -162,6 +166,7 @@ class AlarmEditViewModel(
             inviteSeenOpen = false
             inviteApplied.value = false
             invitePending.value = true
+            inviteRunning.value = true
             var applied = false
             try {
                 links.invite(id).collect { (status, reason) ->
@@ -184,6 +189,8 @@ class AlarmEditViewModel(
             } catch (_: Exception) {
                 invitePending.value = false
                 _state.update { it.copy(inviteStatus = CommandUiStatus.Rejected(inviteFailedReason)) }
+            } finally {
+                inviteRunning.value = false
             }
         }
     }
