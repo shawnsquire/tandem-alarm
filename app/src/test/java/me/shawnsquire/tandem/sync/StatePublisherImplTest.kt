@@ -406,4 +406,27 @@ class StatePublisherImplTest {
         advance(3600_000 + FIRE_GRACE.inWholeMilliseconds + 5_000)
         assertEquals(false, e.writer.writes.last().second.firstAlarm()["enabled"])
     }
+
+    @Test
+    fun `a heartbeat never writes the transient old household media`() = runTest {
+        val real = kotlinx.coroutines.flow.flow<PublishedMedia?> {
+            emit(media("old"))
+            kotlinx.coroutines.delay(300)
+            emit(PublishedMedia(null, emptyMap()))
+            kotlinx.coroutines.awaitCancellation()
+        }
+        val e = env(media = real)
+        assertTrue(e.publisher.publishNow())
+        val w = e.writer.awaited.single().second
+        assertNull(w["defaultWallpaper"])
+        assertFalse(w.toString().contains("old"))
+    }
+
+    @Test
+    fun `a heartbeat with steady media finishes within the settle window`() = runTest {
+        val e = env(media = MutableStateFlow(media("m1")))
+        assertTrue(e.publisher.publishNow())
+        assertTrue(testScheduler.currentTime <= 1_000)
+        assertEquals("m1", (e.writer.awaited.single().second["defaultWallpaper"] as Map<*, *>)["sha"])
+    }
 }

@@ -143,7 +143,10 @@ class StatePublisherImpl(
             // links/media must ride along: the merge write replaces `alarms` whole and would otherwise
             // drop alarms[].media. Bounded wait; on timeout null leaves the stored top-level field alone.
             val publishedLinks = withTimeoutOrNull(INPUT_WAIT_MS) { links.firstOrNull() }
-            val publishedMedia = withTimeoutOrNull(INPUT_WAIT_MS) { media.firstOrNull() }
+            // media's first value can be the previous household's refs; like the pipeline's 1 s debounce,
+            // let it settle and use the last value received (adds at most MEDIA_SETTLE_MS to a heartbeat).
+            var publishedMedia: PublishedMedia? = null
+            withTimeoutOrNull(MEDIA_SETTLE_MS) { media.collect { publishedMedia = it } }
             val data = deviceDocMap(
                 displayName.first(), fcmToken.first(),
                 alarms.ownAlarms.first().map { it.withoutExpiredSkip(now) },
@@ -163,6 +166,7 @@ class StatePublisherImpl(
         const val TAG = "StatePublisher"
         const val UPDATED_AT = "updatedAt"
         const val INPUT_WAIT_MS = 2_000L
+        const val MEDIA_SETTLE_MS = 1_000L
     }
 }
 
