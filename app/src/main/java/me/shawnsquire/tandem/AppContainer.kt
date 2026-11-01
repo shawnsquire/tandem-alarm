@@ -126,7 +126,9 @@ class AppContainer private constructor(
     // and the init block hands ringMirror and linkedMediaCache to the engine. The order is
     // linkedMediaCache, linkRemovals, linkRepositoryImpl, linkSyncImpl (takes linkedMediaCache, which
     // it feeds), ringMirror, then mediaPublisher (takes linkRepository, whose openInvites it reads);
-    // healthSignalsImpl comes last and is reached only through lambdas.
+    // healthSignalsImpl is declared further down, after those and after commandApplierImpl,
+    // preFireCheckImpl, statePublisherImpl and ringingCommandListener, so the earlier ones reach it only
+    // through lambdas.
     // L5: real (the engine gets it in init). healthSignalsImpl is declared below; the lambdas run later.
     val linkedMediaCache: LinkedMediaCache = LinkedMediaCacheImpl(
         context.filesDir,
