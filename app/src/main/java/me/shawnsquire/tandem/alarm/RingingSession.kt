@@ -186,11 +186,13 @@ class RingingSession(
      * 1. Sound and vibration stop at once: the dismiss waits on the ring-slot lock, and a stuck
      *    lock must never keep a ring going.
      * 2. The dismiss runs while the session (so the foreground service and its wake lock) is still
-     *    alive, bounded like a claim: the slot makes it NonCancellable, so only waiting on it from
-     *    outside can time out. It keeps running past the bound.
+     *    alive: the slot makes it NonCancellable, so only waiting on it from outside can time out.
+     *    Past [DISMISS_TIMEOUT] (a stuck lock) the session waits on, silent, up to [DISMISS_GIVE_UP]:
+     *    a member the dismiss merges once the lock frees must still be heard, and its fired-ledger
+     *    entry would block any replay. It keeps running past that bound too.
      * 3. It is compare-and-dismiss ([RingSlot.autoSilence]): a member that joined after this
      *    session last looked keeps the ring going ([unsilence]) instead of being resolved unheard.
-     * 4. Otherwise (dismissed, failed or timed out) the session finishes.
+     * 4. Otherwise (dismissed, failed or given up on) the session finishes.
      */
     private suspend fun silence(ringId: String?) {
         silencing = true
@@ -207,7 +209,12 @@ class RingingSession(
                 try { ringSlot.autoSilence(ringId, expected) } catch (e: Throwable) { log("auto-silence dismiss failed", e); true }
             }
             val ended = try {
-                withTimeoutOrNull(DISMISS_TIMEOUT) { d.await() } ?: true.also { log("auto-silence dismiss timed out", null) }
+                withTimeoutOrNull(DISMISS_TIMEOUT) { d.await() }
+                    ?: run {
+                        log("auto-silence dismiss is waiting on the ring slot; staying up silently", null)
+                        withTimeoutOrNull(DISMISS_GIVE_UP - DISMISS_TIMEOUT) { d.await() }
+                    }
+                    ?: true.also { log("auto-silence dismiss timed out", null) }
             } catch (e: Throwable) {
                 currentCoroutineContext().ensureActive()
                 log("auto-silence dismiss failed", e)
@@ -435,6 +442,9 @@ class RingingSession(
             suppressFire(alarmId, occurrence, suppressedAlarm) // finish() stops vibration and unregisters the ring
             return
         }
+        // No claim, so ring() rings in full: a Notify fire skipped the early vibration, start it now
+        // rather than after the default-ringtone read and the media resolve.
+        if (claim !is Claim.Done) startVibration("vibration")
         if (claim is Claim.Done && claim.value == SlotClaim.Merged) {
             // The sounding ring's session plays for both, and its auto-silence covers this one too.
             // Recorded so a replay stays quiet. Not markRang: the claim is done, so no late re-check can see it.
@@ -679,7 +689,10 @@ class RingingSession(
         val CLAIM_TIMEOUT = 2.seconds
         /** How long a ring sounds unanswered, counted from its start or its last member's join. */
         val AUTO_SILENCE = 10.minutes
+        /** How long auto-silence's dismiss may take before it counts as stuck behind the ring-slot lock. */
         val DISMISS_TIMEOUT = 5.seconds
+        /** How long a silenced session waits on a stuck dismiss in all before it finishes anyway. */
+        val DISMISS_GIVE_UP = 60.seconds
         /** All of a relabel's reads and resolves; past it the notification keeps its old label. */
         val RELABEL_TIMEOUT = 2.seconds
     }

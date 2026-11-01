@@ -1333,7 +1333,9 @@ class RingingSessionTest {
         assertTrue(h.vibration.stops >= 1)
         assertEquals(listOf("ring-1"), dismissed) // asked after the sound stopped
         assertEquals(0, h.finished) // the service stays up while the dismiss gets its chance
-        advanceTimeBy(5.seconds); runCurrent()
+        advanceTimeBy(58.seconds); runCurrent()
+        assertEquals(0, h.finished) // silent, still waiting: a member it merges must not go unheard
+        advanceTimeBy(1.seconds); runCurrent()
         assertEquals(1, h.finished) // bounded: a hung dismiss cannot keep the session forever
     }
 
@@ -1349,6 +1351,33 @@ class RingingSessionTest {
         gate.complete(Unit); runCurrent()
         assertNull(h.rawStore.state.first())
         assertFalse(h.repo.get("a")!!.enabled) // a real dismiss: one-shot disabled
+        assertEquals(1, h.finished)
+    }
+
+    @Test fun aMemberMergedBehindAStuckLockSoundsWhenTheDismissFinallyRefuses() = runTest {
+        // Past the old 5 s bound the session finished, and nobody sounded b (its fired-ledger entry
+        // blocked any replay). Now it waits silently and sounds on for b.
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")))
+        val bAt = occurrence.plusSeconds(600)
+        val gate = CompletableDeferred<Unit>()
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            gate.await()
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertTrue(h.sound.stops >= 1)
+        advanceTimeBy(30.seconds); runCurrent()
+        assertEquals(0, h.finished) // silent, but still waiting on the dismiss
+        assertEquals(1, h.sound.starts.size)
+        gate.complete(Unit); runCurrent()
+        assertEquals(2, h.sound.starts.size) // sounds again for b
+        assertEquals(0, h.finished)
+        assertTrue(h.repo.get("b")!!.enabled)
+        h.controller.dismiss("ring-1")
+        runCurrent()
         assertEquals(1, h.finished)
     }
 
@@ -1561,7 +1590,7 @@ class RingingSessionTest {
         slotSession(h, ctl).start("a", occurrence, false, null)
         advanceTimeBy(2_001); runCurrent()
         assertEquals(listOf("ring-1"), h.notifier.fallback) // claim timed out, ringing inertly
-        advanceTimeBy(10.minutes + 5.seconds); runCurrent()
+        advanceTimeBy(10.minutes + 60.seconds); runCurrent()
         assertEquals(1, h.finished) // auto-silence gave up waiting on the lock
         assertTrue(h.sound.stops >= 1)
 
@@ -1943,6 +1972,18 @@ class RingingSessionTest {
         assertEquals(1, h.vibration.starts)
         assertEquals(listOf("ring-1"), h.notifier.ringing)
         assertEquals(listOf(listOf("a", "b")), h.notifier.ringingLabels)
+    }
+
+    @Test fun notifyFireWhoseClaimTimesOutVibratesBeforeTheMediaResolves() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY)))
+        val events = mutableListOf<String>()
+        h.vibration.events = events
+        h.sound.events = events
+        slotSession(h, GatedSlot(h.controller), cache = StubMediaCache(hang = true)).start("a", occurrence, false, null) // gate never opens
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(listOf("vibration"), events) // ringing in full is decided; the media takes up to 500 ms more
+        advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds); runCurrent()
+        assertEquals(listOf("vibration", "sound"), events)
     }
 
     @Test fun aRingRelabelledToNoLabelNeverShowsTheDismissedPrimarysLabelAgain() = runTest {
