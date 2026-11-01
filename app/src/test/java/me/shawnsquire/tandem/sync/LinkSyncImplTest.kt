@@ -7,6 +7,8 @@ import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
@@ -99,6 +101,7 @@ class LinkSyncImplTest {
         ),
         household: Household? = test.hh,
         partner: PartnerState? = null,
+        partnerFlow: Flow<PartnerState?>? = null,
     ) {
         val fake = FakeAlarmRepository(initialRows)
         val alarms: AlarmRepository = repo?.invoke(fake) ?: fake
@@ -111,7 +114,7 @@ class LinkSyncImplTest {
         val notifier = me.shawnsquire.tandem.sync.FakeCommandNotifier()
         val clock: Clock = Clock.fixed(now, ZoneOffset.UTC)
         val sync = LinkSyncImpl(
-            this.partner, this.household, alarms, ringing, ring, scheduler, media, notifier, removals, clock,
+            partnerFlow ?: this.partner, this.household, alarms, ringing, ring, scheduler, media, notifier, removals, clock,
             scope.backgroundScope, unpairSettle = 30.seconds,
         )
 
@@ -125,7 +128,8 @@ class LinkSyncImplTest {
         partner: PartnerState? = null,
         household: Household? = hh,
         repo: ((FakeAlarmRepository) -> AlarmRepository)? = null,
-    ) = Env(this@LinkSyncImplTest, this, now, rows, repo, household = household, partner = partner)
+        partnerFlow: Flow<PartnerState?>? = null,
+    ) = Env(this@LinkSyncImplTest, this, now, rows, repo, household = household, partner = partner, partnerFlow = partnerFlow)
 
     private suspend fun TestScope.started(env: Env): Env {
         env.sync.start()
@@ -536,5 +540,151 @@ class LinkSyncImplTest {
         runCurrent()
         assertEquals(1, e.notifier.ownerTurnedOff.size)
         assertNotNull(e.row())
+    }
+
+    // --- hardening ---
+
+    @Test fun `a crash between the O9 reset and the copy converges on the next pass`() = runTest {
+        var failOnce = true
+        val e = started(env(rows = listOf(row(days = emptySet(), enabled = false, joinerEnabled = false)), repo = { fake ->
+            object : AlarmRepository by fake {
+                override suspend fun upsertLinked(alarm: Alarm) {
+                    if (failOnce) { failOnce = false; throw IllegalStateException("died") }
+                    fake.upsertLinked(alarm)
+                }
+            }
+        }))
+        e.partner.value = state(owner(days = emptySet(), enabled = true))
+        runCurrent()
+        // Reset already written, copy not yet: enabled is still the old value, so a retry re-derives O9.
+        assertFalse(e.row()!!.enabled)
+        assertTrue(e.row()!!.link!!.joinerEnabled)
+        e.partner.value = state(owner(days = emptySet(), enabled = true, label = "again"))
+        runCurrent()
+        assertTrue(e.row()!!.enabled)
+        assertTrue(e.row()!!.link!!.joinerEnabled)
+    }
+
+    @Test fun `a crash between the turn-off notification and the copy re-posts and keeps a pending both-off`() = runTest {
+        var failOnce = true
+        val e = started(env(rows = listOf(row(joinerEnabled = true)), repo = { fake ->
+            object : AlarmRepository by fake {
+                override suspend fun upsertLinked(alarm: Alarm) {
+                    if (failOnce) { failOnce = false; throw IllegalStateException("died") }
+                    fake.upsertLinked(alarm)
+                }
+            }
+        }))
+        e.partner.value = state(owner(enabled = false))
+        runCurrent()
+        assertEquals(1, e.notifier.ownerTurnedOff.size)
+        e.partner.value = state(owner(enabled = false, label = "again"))
+        runCurrent()
+        assertFalse(e.row()!!.enabled)
+        assertEquals(2, e.notifier.ownerTurnedOff.size)
+        e.partner.value = state(owner(enabled = false, label = "third"))
+        runCurrent()
+        assertEquals(2, e.notifier.ownerTurnedOff.size)
+    }
+
+    @Test fun `a pending both-off survives a crash before the copy so the retry stays silent`() = runTest {
+        var failOnce = true
+        val pb = PendingBoth(CommandType.DISABLE, null, "c1")
+        val e = started(env(rows = listOf(row(pendingBoth = pb)), repo = { fake ->
+            object : AlarmRepository by fake {
+                override suspend fun upsertLinked(alarm: Alarm) {
+                    if (failOnce) { failOnce = false; throw IllegalStateException("died") }
+                    fake.upsertLinked(alarm)
+                }
+            }
+        }))
+        e.partner.value = state(owner(enabled = false))
+        runCurrent()
+        e.partner.value = state(owner(enabled = false, label = "again"))
+        runCurrent()
+        assertFalse(e.row()!!.enabled)
+        assertNull(e.row()!!.link!!.pendingBoth)
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+    }
+
+    @Test fun `a stale doc is never paired with a new household`() = runTest {
+        val cold = MutableSharedFlow<PartnerState?>()
+        val e = env(rows = emptyList(), household = Household("h0", "me", "old"), partnerFlow = cold)
+        started(e)
+        cold.emit(state(owner("zzz"))) // the old partner's doc, lacking o1
+        runCurrent()
+        e.household.value = hh // re-paired to "them"
+        runCurrent()
+        e.fake.upsert(row())
+        runCurrent()
+        advanceTimeBy(60.seconds)
+        assertEquals(1, e.rows().size)
+        assertTrue(e.notifier.ownerDeleted.isEmpty())
+        // A doc received under this household is trusted.
+        cold.emit(state(owner("zzz")))
+        runCurrent()
+        assertTrue(e.rows().isEmpty())
+        assertEquals(1, e.notifier.ownerDeleted.size)
+    }
+
+    @Test fun `no media update when no linked row belongs to the partner`() = runTest {
+        val e = started(env(rows = emptyList()))
+        e.partner.value = state(owner(media = AlarmMedia(MediaRef("sha1", 10), null)))
+        runCurrent()
+        assertTrue(e.media.updates.isEmpty())
+    }
+
+    @Test fun `unpair overrides a pending owner-deleted so nothing is posted`() = runTest {
+        val e = started(env())
+        e.ringing.ringContextResult = RingContext(
+            RingState("row1", "r1", monday, null, x), emptyList(), emptyList(), null,
+        )
+        e.partner.value = state(owner("other"))
+        runCurrent()
+        e.sync.removeAll()
+        e.ringing.ringContextResult = RingContext(null, emptyList(), emptyList(), null)
+        e.ring.value = RingState("row1", "r1", monday, null, x)
+        runCurrent()
+        assertTrue(e.rows().isEmpty())
+        assertTrue(e.notifier.ownerDeleted.isEmpty())
+    }
+
+    @Test fun `a pending both with a newer command id is not cleared`() = runTest {
+        val pb = PendingBoth(CommandType.DISABLE, null, "c1")
+        val e = started(env(rows = listOf(row(pendingBoth = pb)), repo = { fake ->
+            object : AlarmRepository by fake {
+                override suspend fun updateLink(id: String, transform: (AlarmLink) -> AlarmLink): Boolean {
+                    // A newer "both" lands between evaluation and write.
+                    fake.updateLink(id) { it.copy(pendingBoth = PendingBoth(CommandType.ENABLE, null, "c2")) }
+                    return fake.updateLink(id, transform)
+                }
+            }
+        }))
+        e.partner.value = state(owner(enabled = false))
+        runCurrent()
+        assertEquals("c2", e.row()!!.link!!.pendingBoth?.commandId)
+    }
+
+    @Test fun `removal waits while the row is only a merged member`() = runTest {
+        val ring = RingState("other", "r1", monday, null, x, merged = listOf(RingMember("row1", x)))
+        val viaRing = started(env())
+        viaRing.ringing.ringContextResult = RingContext(ring, emptyList(), emptyList(), null)
+        viaRing.partner.value = state(owner("gone"))
+        runCurrent()
+        assertEquals(1, viaRing.rows().size)
+
+        val viaCtx = started(env())
+        viaCtx.ringing.ringContextResult = RingContext(
+            ring.copy(merged = emptyList()), listOf(RingMember("row1", x)), emptyList(), null,
+        )
+        viaCtx.partner.value = state(owner("gone"))
+        runCurrent()
+        assertEquals(1, viaCtx.rows().size)
+    }
+
+    @Test fun `one-shot pending skip for another occurrence still suppresses the turn-off notice`() = runTest {
+        val other = Instant.parse("2026-03-03T06:30:00Z")
+        val e = turnOff(row(days = emptySet(), pendingBoth = PendingBoth(CommandType.SKIP_NEXT, other, "c1")))
+        assertTrue(e.notifier.ownerTurnedOff.isEmpty())
     }
 }

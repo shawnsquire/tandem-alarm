@@ -38,11 +38,17 @@ class LinkRemovals(private val store: DataStore<Preferences>) {
 
     suspend fun all(): Map<String, RemovalReason> = pending.first()
 
-    /** Records the request. An existing request is kept, except that [RemovalReason.LEFT] replaces it. */
+    /**
+     * Records the request. An existing request is kept, except that [RemovalReason.LEFT] replaces any,
+     * and [RemovalReason.UNPAIRED] replaces [RemovalReason.OWNER_DELETED] (only that one notifies).
+     */
     suspend fun add(rowId: String, reason: RemovalReason) {
         store.edit { prefs ->
             val current = decodeAll(prefs[KEY])
-            if (current[rowId] == null || reason == RemovalReason.LEFT) {
+            val existing = current[rowId]
+            if (existing == null || reason == RemovalReason.LEFT ||
+                (existing == RemovalReason.OWNER_DELETED && reason == RemovalReason.UNPAIRED)
+            ) {
                 prefs[KEY] = (current + (rowId to reason)).map { (id, r) -> encode(id, r) }.toSet()
             }
         }

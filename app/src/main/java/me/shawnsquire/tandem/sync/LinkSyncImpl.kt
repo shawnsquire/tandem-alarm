@@ -10,6 +10,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -18,6 +19,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
@@ -78,6 +81,7 @@ class LinkSyncImpl(
     private data class MediaArgs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val wallpaper: MediaRef?)
     private data class Trigger(val partner: PartnerState?, val household: Household?)
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     override fun start() {
         if (started) return
         started = true
@@ -99,7 +103,11 @@ class LinkSyncImpl(
                 .map { rows -> rows.map { Triple(it.id, it.link?.ownerUid, it.link?.ownerAlarmId) }.toSet() }
                 .distinctUntilChanged()
             // linkedKeys re-runs a pass when a row is added (a Join), so its media is requested too.
-            combine(partner, household, linkedKeys) { p, h, _ -> Trigger(p, h) }
+            // Each partner state is paired only with the household it was received under, so a stale
+            // doc from the previous partner is never judged against a new household. The null first
+            // emission lets a household change run its own checks (re-pair removal) before any doc.
+            val pairs = household.flatMapLatest { h -> partner.onStart { emit(null) }.map { Trigger(it, h) } }
+            combine(pairs, linkedKeys) { t, _ -> t }
                 .resilient("partner")
                 .collect { runPass(it.partner, it.household) }
         }
@@ -208,28 +216,33 @@ class LinkSyncImpl(
             link = link.copy(ownerSkippedOccurrenceAt = doc.skippedOccurrenceAt),
         )
         var changed = false
-        if (copied != row) {
-            alarms.upsertLinked(copied)
-            changed = true
-        }
-        if (clear || resetJoiner) {
-            alarms.updateLink(row.id) { l ->
-                var n = l
-                // A newer "both" may have replaced the one evaluated.
-                if (clear && l.pendingBoth?.commandId == pb.commandId) n = n.copy(pendingBoth = null)
-                if (resetJoiner) n = n.copy(joinerEnabled = true)
-                n
-            }
+        // Ordered so a crash anywhere re-derives the same decisions on the next pass (the copied
+        // `enabled` is the marker): O9 reset first, then the notice (a crash re-posts rather than loses
+        // it), then the copy, then the clear (still derivable from the doc, and a pending both-off
+        // must outlive the copy so a retry stays silent).
+        if (resetJoiner) {
+            alarms.updateLink(row.id) { it.copy(joinerEnabled = true) }
             changed = true
         }
         if (notify) {
             try {
-                notifier.notifyOwnerTurnedOff(alarms.get(row.id) ?: copied, name)
+                notifier.notifyOwnerTurnedOff(copied, name)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "turn-off notification for ${row.id} failed", e)
             }
+        }
+        if (copied != row) {
+            alarms.upsertLinked(copied)
+            changed = true
+        }
+        if (clear) {
+            // A newer "both" may have replaced the one evaluated.
+            alarms.updateLink(row.id) { l ->
+                if (l.pendingBoth?.commandId == pb.commandId) l.copy(pendingBoth = null) else l
+            }
+            changed = true
         }
         return changed
     }
@@ -305,6 +318,7 @@ class LinkSyncImpl(
     }
 
     private fun updateMedia(owner: PartnerState, hh: Household, rows: List<Alarm>) {
+        if (rows.isEmpty()) return
         val byOwnerId = rows.mapNotNull { it.link?.ownerAlarmId }.toSet()
         val media = owner.alarms.filter { it.id in byOwnerId }
             .mapNotNull { a -> a.media?.let { a.id to it } }.toMap()
