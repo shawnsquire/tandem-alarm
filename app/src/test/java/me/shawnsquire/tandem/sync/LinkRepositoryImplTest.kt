@@ -283,6 +283,34 @@ class LinkRepositoryImplTest {
         assertEquals(1, e.scheduler.rescheduleCount)
     }
 
+    /** Suppressed failures along the cause chain: coroutine stack-trace recovery (on under tests) wraps a copy around the original. */
+    private fun Throwable.allSuppressed() = generateSequence(this) { it.cause }.flatMap { it.suppressed.asSequence() }.toList()
+
+    @Test
+    fun sendBothCreateFailureSurvivesAFailingCleanup() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.remote.createFailure = IllegalStateException("boom")
+        var updates = 0
+        e.fake.afterUpdateLink = { if (updates++ == 1) throw IllegalArgumentException("cleanup write failed") }
+        e.scheduler.rescheduleBlock = { throw IllegalStateException("alarms read failed") }
+        val thrown = try { e.repo.sendBoth("row1", CommandType.DISABLE, null); null } catch (t: Throwable) { t }
+        // The caller sees the create's failure, with both cleanup failures attached.
+        assertEquals("boom", thrown!!.message)
+        assertEquals(listOf("cleanup write failed", "alarms read failed"), thrown.allSuppressed().map { it.message })
+        assertEquals(1, e.scheduler.rescheduleCount)
+    }
+
+    @Test
+    fun sendBothCreateFailureClearsPendingWhenTheRescheduleFails() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.remote.createFailure = IllegalStateException("boom")
+        e.scheduler.rescheduleBlock = { throw IllegalStateException("alarms read failed") }
+        val thrown = try { e.repo.sendBoth("row1", CommandType.DISABLE, null); null } catch (t: Throwable) { t }
+        assertEquals("boom", thrown!!.message)
+        assertEquals("alarms read failed", thrown.allSuppressed().single().message)
+        assertNull(e.rows().single().link!!.pendingBoth)
+    }
+
     @Test
     fun sendBothThatFailsToCreateLeavesANewerPendingAlone() = runTest {
         val e = env(rows = listOf(linked(joinerEnabled = false)))
@@ -791,6 +819,22 @@ class LinkRepositoryImplTest {
         // Not answered: no rejection posted, and the row is LinkSync's to remove.
         assertTrue(e.notifier.rejected.isEmpty())
         assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+    }
+
+    @Test
+    fun aBothWatchClearsItsCommandWhenRePairedWithTheSamePartner() = runTest {
+        val times = mutableListOf<Long>()
+        val e = failingListens(times)
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        val before = e.scheduler.rescheduleCount
+        // Same partner, new household: the row survives, but the command is out of reach.
+        e.household.value = Household("h2", "me", "them")
+        advanceTimeBy(1.hours)
+        assertEquals(1, times.size)
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals(before + 1, e.scheduler.rescheduleCount)
+        assertEquals("the pairing changed", e.notifier.rejected.single().reason)
     }
 
     @Test

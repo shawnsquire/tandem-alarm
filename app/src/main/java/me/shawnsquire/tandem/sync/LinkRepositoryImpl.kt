@@ -182,14 +182,23 @@ class LinkRepositoryImpl(
             try {
                 remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now, commandId = id)
             } catch (e: Throwable) {
-                alarms.updateLink(alarmId) {
-                    if (it.pendingBoth?.commandId != id) it
-                    else it.copy(
-                        pendingBoth = null,
-                        joinerEnabled = if (type == CommandType.ENABLE) wasJoinerEnabled else it.joinerEnabled,
-                    )
+                // The create failure is what the caller sees; a cleanup failure rides along suppressed.
+                try {
+                    alarms.updateLink(alarmId) {
+                        if (it.pendingBoth?.commandId != id) it
+                        else it.copy(
+                            pendingBoth = null,
+                            joinerEnabled = if (type == CommandType.ENABLE) wasJoinerEnabled else it.joinerEnabled,
+                        )
+                    }
+                } catch (cleanup: Throwable) {
+                    e.addSuppressed(cleanup)
                 }
-                scheduler.rescheduleAll()
+                try {
+                    scheduler.rescheduleAll()
+                } catch (cleanup: Throwable) {
+                    e.addSuppressed(cleanup)
+                }
                 throw e
             }
             watch(alarmId, pending, expiryOf(pending, now))
@@ -361,8 +370,17 @@ class LinkRepositoryImpl(
                     }.also { dropped = it == null }
                 }
                 if (dropped) {
-                    // Replaced, or unpaired (LinkSync removes the row): no answer is coming, and none is reported.
+                    // Replaced, or the household changed: no answer is coming. A new partner means LinkSync
+                    // removes the row, so nothing is reported. Re-paired with the same partner, the row stays
+                    // but the command is out of reach in the old household: clear it rather than leave a
+                    // "both off" disarmed, and say it didn't go through.
                     Log.i(TAG, "stopped watching ${pending.commandId}")
+                    val now = knownHousehold()
+                    val sameOwner = now != null && alarms.get(rowId)?.link?.ownerUid == now.partnerUid
+                    if (sameOwner && clearPending(rowId, pending.commandId)) {
+                        scheduler.rescheduleAll()
+                        alarms.get(rowId)?.let { notifier.notifyRejected(it, pending.type, PAIRING_CHANGED, currentPartnerName()) }
+                    }
                     return@launch
                 }
                 val applied = done?.first == CommandStatus.APPLIED
@@ -380,16 +398,7 @@ class LinkRepositoryImpl(
                     }
                 }
                 val reason = done?.second ?: "expired"
-                var cleared = false
-                alarms.updateLink(rowId) {
-                    if (it.pendingBoth?.commandId == pending.commandId) {
-                        cleared = true
-                        it.copy(pendingBoth = null)
-                    } else {
-                        it
-                    }
-                }
-                if (!cleared) return@launch
+                if (!clearPending(rowId, pending.commandId)) return@launch
                 scheduler.rescheduleAll()
                 if (applied) return@launch
                 alarms.get(rowId)?.let { notifier.notifyRejected(it, pending.type, reason, currentPartnerName()) }
@@ -401,6 +410,20 @@ class LinkRepositoryImpl(
                 synchronized(watchLock) { watching.remove(pending.commandId) }
             }
         }
+    }
+
+    /** Clears [rowId]'s pendingBoth if it is still [commandId]; true if it was. */
+    private suspend fun clearPending(rowId: String, commandId: String): Boolean {
+        var cleared = false
+        alarms.updateLink(rowId) {
+            if (it.pendingBoth?.commandId == commandId) {
+                cleared = true
+                it.copy(pendingBoth = null)
+            } else {
+                it
+            }
+        }
+        return cleared
     }
 
     /**
@@ -438,6 +461,7 @@ class LinkRepositoryImpl(
         const val TAG = "LinkRepository"
         const val NOT_PAIRED = "not paired"
         const val DECLINED = "declined"
+        const val PAIRING_CHANGED = "the pairing changed"
         const val DELETED_SUFFIX = " deleted this alarm"
         const val FALLBACK_NAME = "Your partner"
         val PARTNER_WAIT = 2.seconds
