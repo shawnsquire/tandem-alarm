@@ -14,6 +14,8 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.RingMember
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -71,7 +73,15 @@ class RingingControllerImplTest {
         val ledger = InMemorySnoozeLedger()
     }
 
-    private fun H.controller() = RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger) { now }
+    private fun H.controller(mirror: RingMirrorPort = NoOpRingMirrorPort) =
+        RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror) { now }
+
+    private class RecordingMirror : RingMirrorPort {
+        val calls = mutableListOf<Triple<MirrorKind, List<RingMember>, Instant?>>()
+        override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) {
+            calls += Triple(kind, members, snoozedUntil)
+        }
+    }
 
     private val ringing = RingState("a", "ring-1", Instant.parse("2026-03-02T09:59:00Z"), null)
 
@@ -114,6 +124,27 @@ class RingingControllerImplTest {
         assertEquals(ringing.copy(snoozedUntil = until), h.store.state.first())
         assertEquals(1, h.scheduler.rescheduleCount)
         assertEquals(listOf("ring-1" to until), h.notifier.snoozed)
+    }
+
+    @Test fun remoteSnoozeBehavesLikeLocalAndMirrorIsNotCalled() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val mirror = RecordingMirror()
+        h.settings.setSnoozeMinutes(7)
+        h.controller(mirror).snooze(RingOrigin.REMOTE)
+        val until = Instant.parse("2026-03-02T10:07:00Z")
+        assertEquals(ringing.copy(snoozedUntil = until), h.store.state.first())
+        assertEquals(listOf("ring-1" to until), h.notifier.snoozed)
+        assertTrue(mirror.calls.isEmpty())
+    }
+
+    @Test fun remoteDismissBehavesLikeLocalAndMirrorIsNotCalled() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val mirror = RecordingMirror()
+        h.controller(mirror).dismiss("ring-1", RingOrigin.REMOTE)
+        assertNull(h.store.state.first())
+        assertFalse(h.repo.get("a")!!.enabled)
+        assertEquals(1, h.scheduler.rescheduleCount)
+        assertTrue(mirror.calls.isEmpty())
     }
 
     @Test fun snoozeWithNothingRingingIsNoOp() = runTest {

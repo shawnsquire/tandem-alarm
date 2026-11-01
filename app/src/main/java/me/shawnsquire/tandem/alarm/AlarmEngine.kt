@@ -50,8 +50,12 @@ class AlarmEngine(context: Context, unlocked: Boolean?, private val scope: Corou
         onScheduled = MirrorUpdater(mirror, { switchableAlarms.isAttached }, settings)::onScheduled,
     )
     private val notifier = AndroidRingingNotifier(context)
+    /** The real mirror is attached later (after unlock) by swapping [SwitchableRingMirrorPort.delegate]. */
+    val ringMirrorPort = SwitchableRingMirrorPort()
     private val controllerImpl =
-        RingingControllerImpl(alarmRepository, ringStateStore, settings, scheduler, scheduler, notifier, snoozeLedger)
+        RingingControllerImpl(
+            alarmRepository, ringStateStore, settings, scheduler, scheduler, notifier, snoozeLedger, ringMirrorPort,
+        )
     val controller: RingingController = controllerImpl
     val ringSlot: RingSlot = controllerImpl
 

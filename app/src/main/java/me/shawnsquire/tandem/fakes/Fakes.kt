@@ -15,6 +15,7 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.sync.CommandApplier
 import me.shawnsquire.tandem.sync.CommandSender
@@ -138,10 +139,24 @@ class FakeAlarmScheduler : AlarmScheduler {
 
 class FakeRingingController : RingingController {
     val dismissed = mutableListOf<String>()
+    val dismissOrigins = mutableListOf<RingOrigin>()
     var snoozeCount = 0
         private set
-    override suspend fun dismiss(ringId: String) { dismissed += ringId }
-    override suspend fun snooze() { snoozeCount++ }
+    val snoozeOrigins = mutableListOf<RingOrigin>()
+    val snoozeUntils = mutableListOf<Instant?>()
+    val dismissedOccurrences = mutableListOf<Triple<String, Instant, RingOrigin>>()
+    val snoozedOccurrences = mutableListOf<List<Any>>()
+    override suspend fun dismiss(ringId: String, origin: RingOrigin) { dismissed += ringId; dismissOrigins += origin }
+    override suspend fun snooze(origin: RingOrigin, until: Instant?) {
+        snoozeCount++; snoozeOrigins += origin; snoozeUntils += until
+    }
+    override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: Instant, origin: RingOrigin) {
+        dismissedOccurrences += Triple(alarmId, occurrenceAt, origin)
+    }
+    /** Each entry is [alarmId, occurrenceAt, until, origin]. */
+    override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: Instant, until: Instant, origin: RingOrigin) {
+        snoozedOccurrences += listOf(alarmId, occurrenceAt, until, origin)
+    }
 
     /** When set, [writeUnlessRinging] refuses (as if that ring had started) instead of writing. */
     var ringStartedAt: Instant? = null

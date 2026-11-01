@@ -1,7 +1,33 @@
 package me.shawnsquire.tandem.alarm
 
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.RingMember
 import java.time.Instant
+
+enum class MirrorKind { SNOOZE, DISMISS }
+
+/** Outbound side of a ring resolution: lets the sync layer mirror a LOCAL snooze or dismiss. */
+interface RingMirrorPort {
+    /**
+     * Called by the controller after a LOCAL snooze or dismiss resolves [members]; never for REMOTE (I4).
+     * [snoozedUntil] is the absolute T for SNOOZE, null for DISMISS. Must not block or call the controller.
+     */
+    fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?)
+}
+
+object NoOpRingMirrorPort : RingMirrorPort {
+    override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) = Unit
+}
+
+/**
+ * The engine is built before AppContainer (it must ring before first unlock), so the real mirror is
+ * swapped in later through this.
+ */
+class SwitchableRingMirrorPort : RingMirrorPort {
+    @Volatile var delegate: RingMirrorPort = NoOpRingMirrorPort
+    override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) =
+        delegate.onLocal(kind, members, snoozedUntil)
+}
 
 /** Loops the first candidate URI that opens; the adapter appends system-default fallbacks after [candidates]. */
 interface AlarmSound {

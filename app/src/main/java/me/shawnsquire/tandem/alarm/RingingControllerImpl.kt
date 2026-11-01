@@ -10,6 +10,7 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.DEFAULT_SNOOZE_MINUTES
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isOneShot
 import java.time.Duration
@@ -23,6 +24,8 @@ import java.time.temporal.ChronoUnit
  *
  * Every public entry point takes [mutex] exactly once; the `*Locked` helpers assume it is held
  * (the Mutex is not reentrant).
+ *
+ * [mirror] is not called yet: L2 calls it on LOCAL snooze and dismiss resolutions, never on REMOTE (I4).
  */
 class RingingControllerImpl(
     private val alarmRepository: AlarmRepository,
@@ -32,11 +35,13 @@ class RingingControllerImpl(
     private val snoozeArmer: SnoozeArmer,
     private val notifier: RingingNotifier,
     private val ledger: SnoozeLedger,
+    @Suppress("unused") private val mirror: RingMirrorPort = NoOpRingMirrorPort,
     private val now: () -> Instant = Instant::now,
 ) : RingingController, RingSlot {
     private val mutex = Mutex()
 
-    override suspend fun dismiss(ringId: String) = withContext(NonCancellable) { mutex.withLock {
+    /** [origin] is ignored until L2; see [RingingController.dismiss]. */
+    override suspend fun dismiss(ringId: String, origin: RingOrigin) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         when {
             state != null && state.ringId == ringId -> dismissCurrentLocked(state)
@@ -55,6 +60,12 @@ class RingingControllerImpl(
         Unit
     } }
 
+    /** Stub until L2; see [RingingController.dismissOccurrence]. */
+    override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: Instant, origin: RingOrigin) = Unit
+
+    /** Stub until L2; see [RingingController.snoozeOccurrence]. */
+    override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: Instant, until: Instant, origin: RingOrigin) = Unit
+
     override suspend fun writeUnlessRinging(alarmId: String, occurrenceAt: Instant?, write: suspend () -> Unit): Boolean =
         withContext(NonCancellable) { mutex.withLock {
             // A failed read throws before anything is written: the command is not applied.
@@ -64,7 +75,8 @@ class RingingControllerImpl(
             true
         } }
 
-    override suspend fun snooze() = withContext(NonCancellable) { mutex.withLock {
+    /** [origin] and [until] are ignored until L2; see [RingingController.snooze]. */
+    override suspend fun snooze(origin: RingOrigin, until: Instant?) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         if (state == null || state.snoozedUntil != null) return@withLock
         val minutes = try {

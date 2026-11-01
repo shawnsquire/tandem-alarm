@@ -447,4 +447,24 @@ class SwitchablePortsTest {
         assertTrue(check.pullAndApply(500.milliseconds))
         assertEquals(2, built)
     }
+
+    // --- SwitchableRingMirrorPort ---
+
+    @Test
+    fun ringMirrorPortDefaultsToNoOpAndForwardsToTheDelegate() {
+        val port = SwitchableRingMirrorPort()
+        val members = listOf(me.shawnsquire.tandem.schedule.RingMember("a", Instant.parse("2026-03-02T06:30:00Z")))
+        port.onLocal(MirrorKind.DISMISS, members, null) // no-op, must not throw
+        assertEquals(NoOpRingMirrorPort, port.delegate)
+
+        val calls = mutableListOf<Triple<MirrorKind, List<me.shawnsquire.tandem.schedule.RingMember>, Instant?>>()
+        port.delegate = object : RingMirrorPort {
+            override fun onLocal(kind: MirrorKind, members: List<me.shawnsquire.tandem.schedule.RingMember>, snoozedUntil: Instant?) {
+                calls += Triple(kind, members, snoozedUntil)
+            }
+        }
+        val until = Instant.parse("2026-03-02T06:40:00Z")
+        port.onLocal(MirrorKind.SNOOZE, members, until)
+        assertEquals(listOf(Triple(MirrorKind.SNOOZE, members, until as Instant?)), calls)
+    }
 }
