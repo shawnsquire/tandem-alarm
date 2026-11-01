@@ -94,10 +94,10 @@ class LinkRepositoryImpl(
             started = true
         }
         scope.launch {
-            val started = clock.instant()
+            val startedAt = clock.instant()
             for (row in alarms.linkedAlarms.first()) {
                 val pending = row.link?.pendingBoth ?: continue
-                watch(row.id, pending, expiryOf(pending, started))
+                watch(row.id, pending, expiryOf(pending, startedAt))
             }
             try {
                 for (open in inviteLedger.open()) restoreInvite(open)

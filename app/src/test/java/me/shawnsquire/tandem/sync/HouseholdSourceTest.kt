@@ -1,9 +1,7 @@
 package me.shawnsquire.tandem.sync
 
 import app.cash.turbine.test
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceTimeBy

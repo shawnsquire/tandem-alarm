@@ -2,11 +2,8 @@ package me.shawnsquire.tandem.sync
 
 import app.cash.turbine.test
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
