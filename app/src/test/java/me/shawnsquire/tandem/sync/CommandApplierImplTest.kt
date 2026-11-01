@@ -69,6 +69,7 @@ class CommandApplierImplTest {
         val processed: ProcessedCommands,
         val applier: CommandApplierImpl,
         val store: DataStore<Preferences>,
+        val removals: LinkRemovals,
     )
 
     private fun TestScope.env(
@@ -91,10 +92,11 @@ class CommandApplierImplTest {
             produceFile = { File(tmp.root, "t${n.hashCode()}.preferences_pb") },
         )
         val p = ProcessedCommands(ds, clock)
+        val removals = LinkRemovals(ds)
         val applier = CommandApplierImpl(
-            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), partner, p, InviteLedger(inviteStore ?: ds, clock), n, clock, backgroundScope,
+            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), partner, p, InviteLedger(inviteStore ?: ds, clock), removals, n, clock, backgroundScope,
         )
-        return Env(a, r, s, rc, remote, n, p, applier, ds)
+        return Env(a, r, s, rc, remote, n, p, applier, ds, removals)
     }
 
     private fun cmd(
@@ -432,6 +434,47 @@ class CommandApplierImplTest {
         assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
     }
 
+    @Test fun `ring commands onto a row pending LEFT removal are rejected`() = runTest {
+        for (type in listOf(CommandType.STOP_RINGING, CommandType.SNOOZE)) {
+            val e = env(alarms = listOf(weekly, linkedRow))
+            e.ringing.ringContextResult = liveContext()
+            e.removals.add("L1", RemovalReason.LEFT)
+            e.applier.apply(fromOwner(type, snoozedUntil = now.plusSeconds(600)))
+            assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+            assertTrue(e.ringing.snoozedOccurrences.isEmpty())
+            assertEquals(0, e.scheduler.rescheduleCount)
+            assertTrue(e.notifier.calls.isEmpty())
+            rejection(e, "left this alarm")
+        }
+    }
+
+    @Test fun `ring commands onto a row pending another removal still apply`() = runTest {
+        for (reason in listOf(RemovalReason.OWNER_DELETED, RemovalReason.UNPAIRED)) {
+            val e = env(alarms = listOf(weekly, linkedRow))
+            e.ringing.ringContextResult = liveContext()
+            e.removals.add("L1", reason)
+            e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+            assertEquals(1, e.ringing.dismissedOccurrences.size)
+            assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        }
+    }
+
+    @Test fun `a mirrored stop by occurrence posts no notification`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.ringing.ringContextResult = liveContext()
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        assertTrue(e.notifier.calls.isEmpty())
+    }
+
+    @Test fun `a stop by ringId still notifies once`() = runTest {
+        val e = env(ring = RingState("a1", "r1", now.minusSeconds(10), null))
+        val c = cmd(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1")
+        e.applier.apply(c)
+        assertEquals(1, e.notifier.calls.size)
+        assertEquals(c, e.notifier.calls[0].cmd)
+    }
+
     @Test fun `stop by ringId for a ring on another alarm is rejected`() = runTest {
         val e = env(alarms = listOf(weekly, linkedRow), ring = RingState("a1", "r1", now.minusSeconds(5), null))
         e.applier.apply(fromOwner(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1"))
@@ -494,7 +537,7 @@ class CommandApplierImplTest {
         e.applier.apply(cmd(CommandType.STOP_RINGING, occurrenceAt = ownX))
         assertEquals(listOf("a1"), e.ringing.ringContextAlarmIds)
         assertEquals(listOf(FakeRingingController.OccurrenceCall("a1", ownX, RingOrigin.REMOTE)), e.ringing.dismissedOccurrences)
-        assertEquals(1, e.notifier.calls.size)
+        assertTrue(e.notifier.calls.isEmpty()) // a mirrored dismiss shows on the ringing screen only
     }
 
     @Test fun `skip on a solo skipped occurrence upgrades it to a shared skip`() = runTest {

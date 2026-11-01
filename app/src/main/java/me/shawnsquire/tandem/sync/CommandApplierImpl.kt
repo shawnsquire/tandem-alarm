@@ -46,6 +46,7 @@ class CommandApplierImpl(
     private val partner: Flow<PartnerState?>,
     private val processed: ProcessedCommands,
     private val inviteLedger: InviteLedger,
+    private val linkRemovals: LinkRemovals,
     private val notifier: CommandNotifier,
     private val clock: Clock,
     private val scope: CoroutineScope,
@@ -115,18 +116,24 @@ class CommandApplierImpl(
             // flow joiner-to-owner only and are never mapped.
             var alarm = if (cmd.type == CommandType.INVITE_LINK) null else alarms.get(cmd.alarmId)
             var local = cmd
+            var leftRow = false
             if (alarm == null && isRing) {
                 val row = alarms.linkedAlarms.first()
                     .firstOrNull { it.link?.ownerAlarmId == cmd.alarmId && it.link.ownerUid == cmd.from }
                 if (row != null) {
                     alarm = row
                     local = cmd.copy(alarmId = row.id)
+                    // The joiner left; the owner hasn't seen the new links yet. Only LEFT: an
+                    // owner-deleted or unpaired row may still be ringing, and a stop from the owner is valid.
+                    leftRow = linkRemovals.all()[row.id] == RemovalReason.LEFT
                 }
             }
             val ownIdOfLinkedRow = local === cmd && alarm?.link != null
             // Outside writeUnlessRinging: ringContext takes the controller's lock.
-            val context = if (isRing && !ownIdOfLinkedRow) ringing.ringContext(local.alarmId) else null
-            val decision = if (ownIdOfLinkedRow) {
+            val context = if (isRing && !ownIdOfLinkedRow && !leftRow) ringing.ringContext(local.alarmId) else null
+            val decision = if (leftRow) {
+                CommandDecision.Reject("left this alarm")
+            } else if (ownIdOfLinkedRow) {
                 // validate accepts a linked row for ring commands (it expects the mapped id), so a
                 // partner command naming the row's own id is refused here.
                 CommandDecision.Reject("alarm not found")
@@ -203,8 +210,11 @@ class CommandApplierImpl(
                 }
             }
             resolve(hid, cmd.id, outcome)
-            // A snooze shows on the ringing screen; only the other commands get a notification.
-            if (outcome == Outcome.Applied && cmd.type != CommandType.SNOOZE) notify = Triple(cmd, alarm, turnedOff)
+            // A snooze, and a stop by occurrence (the partner's ringing screen mirrored), show as a
+            // label on the ringing screen; a Partner-tab stop by ringId and the rest get a notification.
+            val onRingingScreen = cmd.type == CommandType.SNOOZE ||
+                (cmd.type == CommandType.STOP_RINGING && cmd.occurrenceAt != null)
+            if (outcome == Outcome.Applied && !onRingingScreen) notify = Triple(cmd, alarm, turnedOff)
         }
         val name = partnerName.value?.takeIf { it.isNotBlank() } ?: FALLBACK_NAME
         invite?.let { (c, ownerAlarm) ->

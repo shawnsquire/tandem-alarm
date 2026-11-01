@@ -174,7 +174,7 @@ class AppContainer private constructor(
         partnerRepository.partner.map { it?.displayName }.stateIn(syncScope, SharingStarted.Eagerly, null),
         partnerRepository.partner,
         ProcessedCommands(context.syncDataStore, LiveZoneClock), InviteLedger(context.syncDataStore, LiveZoneClock),
-        commandNotifier, LiveZoneClock, syncScope,
+        linkRemovals, commandNotifier, LiveZoneClock, syncScope,
     )
     val commandApplier: CommandApplier = commandApplierImpl
     val preFireCheckImpl = PreFireCheckImpl(
