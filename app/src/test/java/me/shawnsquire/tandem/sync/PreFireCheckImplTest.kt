@@ -220,7 +220,8 @@ class PreFireCheckImplTest {
             partner, MutableStateFlow(hh), alarms, FakeRingingController(), MutableStateFlow(null),
             FakeAlarmScheduler(), FakeLinkedMediaCache(), FakeCommandNotifier(),
             LinkRemovals(createSyncDataStore(File(tmp.root, "s${storeCount++}.preferences_pb"), backgroundScope)),
-            Clock.fixed(now, ZoneOffset.UTC), backgroundScope, unpairSettle = 30.seconds,
+            Clock.fixed(now, ZoneOffset.UTC), backgroundScope, confirmHousehold = { HouseholdCheck.Unknown },
+            unpairSettle = 30.seconds,
         )
         val sync = RecordingLinkSync(real)
         val repo = ReadRepo(read)

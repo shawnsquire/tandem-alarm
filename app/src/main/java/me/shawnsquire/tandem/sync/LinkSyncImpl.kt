@@ -6,6 +6,7 @@ import java.time.Instant
 import java.time.LocalTime
 import java.time.ZonedDateTime
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 import kotlinx.coroutines.CancellationException
@@ -65,7 +66,10 @@ class LinkSyncImpl(
     private val removals: LinkRemovals,
     private val clock: Clock,
     private val scope: CoroutineScope,
+    /** Asks the server whether the household is really gone; see [householdOnServer]. */
+    private val confirmHousehold: suspend () -> HouseholdCheck,
     private val unpairSettle: Duration = 30.seconds,
+    private val confirmRetry: Duration = 5.minutes,
 ) : LinkSync {
     private val lock = Mutex()
     private var started = false
@@ -91,10 +95,10 @@ class LinkSyncImpl(
                 if (h != null) {
                     seenHousehold = true
                 } else if (seenHousehold) {
-                    // A null also means "listener error", so wait; a household within the window cancels this.
+                    // A null also means "listener error", so wait, then ask the server; a household
+                    // returning at any point cancels this.
                     delay(unpairSettle)
-                    Log.i(TAG, "household gone for $unpairSettle, removing linked rows")
-                    removeAll()
+                    confirmGone()
                 }
             }
         }
@@ -120,6 +124,32 @@ class LinkSyncImpl(
         }
     }
 
+    /** Settled null household: act only on what the server says, and keep asking while it can't say. */
+    private suspend fun confirmGone() {
+        while (true) {
+            val check = try {
+                confirmHousehold()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "household check failed", e)
+                HouseholdCheck.Unknown
+            }
+            when (check) {
+                HouseholdCheck.Unpaired -> {
+                    Log.i(TAG, "server confirms no household, removing linked rows")
+                    removeAll()
+                    return
+                }
+                is HouseholdCheck.Paired -> {
+                    removeRows { it.link?.ownerUid != check.household.partnerUid }
+                    return
+                }
+                HouseholdCheck.Unknown -> delay(confirmRetry)
+            }
+        }
+    }
+
     /** Runs in [scope] so a caller's timeout (the pre-fire path) never tears a half-applied pass. */
     override suspend fun apply(owner: PartnerState) {
         scope.async {
@@ -128,11 +158,15 @@ class LinkSyncImpl(
         }.await()
     }
 
-    override suspend fun removeAll() {
+    override suspend fun removeAll() = removeRows { true }
+
+    private suspend fun removeRows(which: (Alarm) -> Boolean) {
         scope.async {
-            guarded("remove all") {
+            guarded("remove rows") {
                 lock.withLock {
-                    for (row in alarms.linkedAlarms.first()) removals.add(row.id, RemovalReason.UNPAIRED)
+                    for (row in alarms.linkedAlarms.first()) {
+                        if (which(row)) removals.add(row.id, RemovalReason.UNPAIRED)
+                    }
                     if (flushRemovals()) reschedule()
                 }
             }
@@ -145,15 +179,38 @@ class LinkSyncImpl(
      * [LinkRemovals.pendingIds] to ignore the row meanwhile.
      */
     internal suspend fun requestRemoval(rowId: String, reason: RemovalReason) {
-        scope.async {
-            guarded("remove $rowId") {
+        // Unlike the internal passes, a failure reaches the caller (a failed Leave must show).
+        val result = scope.async {
+            try {
                 lock.withLock {
                     removals.add(rowId, reason)
                     if (flushRemovals()) reschedule()
                 }
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "link sync remove $rowId failed", e)
+                e
             }
         }.await()
+        if (result != null) throw result
     }
+
+    /**
+     * Cancels a pending removal of [rowId] under the sync lock (a re-Join of a row that was left while
+     * ringing). True when the row still exists, so it will not be removed; false when it is already gone.
+     */
+    internal suspend fun cancelRemoval(rowId: String): Boolean = scope.async {
+        lock.withLock {
+            if (alarms.get(rowId)?.link == null) {
+                false
+            } else {
+                removals.remove(rowId)
+                true
+            }
+        }
+    }.await()
 
     private suspend fun runPass(partnerState: PartnerState?, hh: Household?) {
         guarded("pass") {
@@ -170,6 +227,7 @@ class LinkSyncImpl(
                     }
                 }
                 if (flushRemovals()) changed = true
+                clearOrphanedMedia()
                 if (changed) reschedule()
             }
         }
@@ -194,7 +252,7 @@ class LinkSyncImpl(
                 Log.w(TAG, "syncing ${row.id} failed", e)
             }
         }
-        updateMedia(owner, hh, live.filter { it.id !in removals.all().keys })
+        updateMedia(owner, hh, live)
         return changed
     }
 
@@ -315,6 +373,25 @@ class LinkSyncImpl(
             }
         }
         return changed
+    }
+
+    /**
+     * Once no linked row is left for the partner whose refs were last passed, tells the cache to drop
+     * them so [LinkedMediaCache.inUse] stops holding their hashes. Empty refs only; never another
+     * partner's.
+     */
+    private suspend fun clearOrphanedMedia() {
+        val last = lastMedia ?: return
+        if (last.alarms.isEmpty() && last.wallpaper == null) return
+        if (alarms.linkedAlarms.first().any { it.link?.ownerUid == last.ownerUid }) return
+        try {
+            mediaCache.update(last.ownerUid, emptyMap(), null)
+            lastMedia = MediaArgs(last.ownerUid, emptyMap(), null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "media cache clear failed", e)
+        }
     }
 
     private fun updateMedia(owner: PartnerState, hh: Household, rows: List<Alarm>) {

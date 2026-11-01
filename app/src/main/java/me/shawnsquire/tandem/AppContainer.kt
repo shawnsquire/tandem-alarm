@@ -42,7 +42,11 @@ import me.shawnsquire.tandem.sync.SyncWorker
 import me.shawnsquire.tandem.sync.FirestoreCommandRemote
 import me.shawnsquire.tandem.sync.FirestoreDeviceDocWriter
 import me.shawnsquire.tandem.sync.Household
+import me.shawnsquire.tandem.sync.HouseholdCheck
 import me.shawnsquire.tandem.sync.HouseholdSource
+import me.shawnsquire.tandem.sync.householdOnServer
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.seconds
 import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.sync.PairingRepositoryImpl
 import me.shawnsquire.tandem.sync.PartnerRepositoryImpl
@@ -140,6 +144,11 @@ class AppContainer private constructor(
     val linkSyncImpl = LinkSyncImpl(
         partnerRepository.partner, householdFlow, alarmRepository, ringingController, ringStateStore.state,
         alarmScheduler, linkedMediaCache, commandNotifier, linkRemovals, LiveZoneClock, syncScope,
+        confirmHousehold = {
+            val uid = authManager.uid.value
+            if (uid == null) HouseholdCheck.Unknown
+            else withTimeoutOrNull(15.seconds) { householdOnServer(firestore, uid) } ?: HouseholdCheck.Unknown
+        },
     ) // L4
     val linkSync: LinkSync = linkSyncImpl
     val ringMirror: RingMirror = // L4 (the engine's port gets it in init)

@@ -5,6 +5,7 @@ import java.time.Clock
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneOffset
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -113,9 +114,14 @@ class LinkSyncImplTest {
         val media = FakeLinkedMediaCache()
         val notifier = me.shawnsquire.tandem.sync.FakeCommandNotifier()
         val clock: Clock = Clock.fixed(now, ZoneOffset.UTC)
+        var check: HouseholdCheck = HouseholdCheck.Unpaired
+        var checkFailure: Exception? = null
+        var checkCalls = 0
         val sync = LinkSyncImpl(
             partnerFlow ?: this.partner, this.household, alarms, ringing, ring, scheduler, media, notifier, removals, clock,
-            scope.backgroundScope, unpairSettle = 30.seconds,
+            scope.backgroundScope,
+            confirmHousehold = { checkCalls++; checkFailure?.let { throw it }; check },
+            unpairSettle = 30.seconds, confirmRetry = 5.minutes,
         )
 
         suspend fun rows(): List<Alarm> = fake.linkedAlarms.first()
@@ -686,5 +692,138 @@ class LinkSyncImplTest {
         val other = Instant.parse("2026-03-03T06:30:00Z")
         val e = turnOff(row(days = emptySet(), pendingBoth = PendingBoth(CommandType.SKIP_NEXT, other, "c1")))
         assertTrue(e.notifier.ownerTurnedOff.isEmpty())
+    }
+
+    // --- server-confirmed unpair ---
+
+    @Test fun `settled null household with an unknown server answer keeps rows and retries`() = runTest {
+        val e = started(env(rows = listOf(row(), row("row2", "o2"))))
+        e.check = HouseholdCheck.Unknown
+        e.household.value = null
+        runCurrent()
+        advanceTimeBy(31.seconds)
+        assertEquals(1, e.checkCalls)
+        assertEquals(2, e.rows().size)
+        advanceTimeBy(5.minutes)
+        assertEquals(2, e.checkCalls)
+        assertEquals(2, e.rows().size)
+        e.check = HouseholdCheck.Unpaired
+        advanceTimeBy(5.minutes)
+        runCurrent()
+        assertTrue(e.rows().isEmpty())
+    }
+
+    @Test fun `a failing check counts as unknown`() = runTest {
+        val e = started(env())
+        e.checkFailure = IllegalStateException("offline")
+        e.household.value = null
+        runCurrent()
+        advanceTimeBy(31.seconds)
+        assertEquals(1, e.rows().size)
+        assertEquals(1, e.checkCalls)
+    }
+
+    @Test fun `settled null with the server saying paired to someone else removes only the old partner's rows`() = runTest {
+        val e = started(env(rows = listOf(row())))
+        e.household.value = null
+        runCurrent()
+        e.fake.upsert(row("row2", "o2", ownerUid = "new"))
+        runCurrent()
+        e.check = HouseholdCheck.Paired(Household("h2", "me", "new"))
+        advanceTimeBy(31.seconds)
+        runCurrent()
+        assertEquals(listOf("row2"), e.rows().map { it.id })
+        // Checked once, not on a timer.
+        advanceTimeBy(20.minutes)
+        assertEquals(1, e.checkCalls)
+    }
+
+    @Test fun `server says paired to the same partner keeps every row`() = runTest {
+        val e = started(env())
+        e.check = HouseholdCheck.Paired(hh)
+        e.household.value = null
+        runCurrent()
+        advanceTimeBy(31.seconds)
+        assertEquals(1, e.rows().size)
+    }
+
+    @Test fun `household returning during the retry cancels it`() = runTest {
+        val e = started(env())
+        e.check = HouseholdCheck.Unknown
+        e.household.value = null
+        runCurrent()
+        advanceTimeBy(31.seconds)
+        e.household.value = hh
+        runCurrent()
+        e.check = HouseholdCheck.Unpaired
+        advanceTimeBy(20.minutes)
+        assertEquals(1, e.checkCalls)
+        assertEquals(1, e.rows().size)
+    }
+
+    // --- minors ---
+
+    @Test fun `media refs are cleared once the last linked row of the partner is gone`() = runTest {
+        val m = AlarmMedia(MediaRef("sha1", 10), null)
+        val e = started(env())
+        e.partner.value = state(owner(media = m), wallpaper = MediaRef("sha2", 20))
+        runCurrent()
+        assertEquals(1, e.media.updates.size)
+        e.partner.value = state(owner("other"))
+        runCurrent()
+        assertTrue(e.rows().isEmpty())
+        assertEquals(FakeLinkedMediaCache.Update("them", emptyMap(), null), e.media.updates.last())
+        val n = e.media.updates.size
+        e.partner.value = state(owner("other"), owner("another"))
+        runCurrent()
+        assertEquals(n, e.media.updates.size)
+    }
+
+    @Test fun `media refs are cleared after an unpair`() = runTest {
+        val e = started(env())
+        e.partner.value = state(owner(media = AlarmMedia(MediaRef("sha1", 10), null)))
+        runCurrent()
+        e.household.value = null
+        runCurrent()
+        advanceTimeBy(31.seconds)
+        runCurrent()
+        assertEquals(FakeLinkedMediaCache.Update("them", emptyMap(), null), e.media.updates.last())
+    }
+
+    @Test fun `cancelRemoval keeps a row whose leave was pending while ringing`() = runTest {
+        val e = started(env())
+        e.ringing.ringContextResult = RingContext(
+            RingState("row1", "r1", monday, null, x), emptyList(), emptyList(), null,
+        )
+        e.sync.requestRemoval("row1", RemovalReason.LEFT)
+        assertTrue(e.sync.cancelRemoval("row1"))
+        e.ringing.ringContextResult = RingContext(null, emptyList(), emptyList(), null)
+        e.ring.value = RingState("row1", "r1", monday, null, x)
+        runCurrent()
+        e.ring.value = null
+        runCurrent()
+        assertEquals(1, e.rows().size)
+        assertTrue(e.removals.all().isEmpty())
+        assertFalse(e.sync.cancelRemoval("missing"))
+    }
+
+    @Test fun `requestRemoval surfaces a failed durable write`() = runTest {
+        val broken = object : androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences> {
+            override val data = kotlinx.coroutines.flow.flow<androidx.datastore.preferences.core.Preferences> {
+                throw java.io.IOException("disk")
+            }
+            override suspend fun updateData(
+                transform: suspend (androidx.datastore.preferences.core.Preferences) -> androidx.datastore.preferences.core.Preferences,
+            ): androidx.datastore.preferences.core.Preferences = throw java.io.IOException("disk")
+        }
+        val e = Env(this@LinkSyncImplTest, this, monday, listOf(row()), removals = LinkRemovals(broken))
+        var thrown: Exception? = null
+        try {
+            e.sync.requestRemoval("row1", RemovalReason.LEFT)
+        } catch (x: java.io.IOException) {
+            thrown = x
+        }
+        assertNotNull(thrown)
+        assertEquals(1, e.rows().size)
     }
 }
