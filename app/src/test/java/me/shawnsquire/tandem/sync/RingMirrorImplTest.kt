@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.sync
 import java.io.File
 import java.time.DayOfWeek
 import java.time.Instant
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -78,6 +79,35 @@ class RingMirrorImplTest {
             repo?.invoke(fake) ?: fake, pf, hf, sender, removals, backgroundScope, householdWait, 10.seconds,
         )
         return Env(sender, hf, pf, removals, mirror)
+    }
+
+    @Test fun statusCollectorEndsAfterCommandTtl() = runTest {
+        var cancelled = false
+        val hangingSender = object : CommandSender {
+            override fun send(
+                type: CommandType, alarmId: String, occurrenceAt: Instant?, ringId: String?, snoozedUntil: Instant?,
+            ) = kotlinx.coroutines.flow.flow<Pair<me.shawnsquire.tandem.schedule.CommandStatus, String?>> {
+                try {
+                    emit(me.shawnsquire.tandem.schedule.CommandStatus.PENDING to null)
+                    kotlinx.coroutines.awaitCancellation()
+                } finally {
+                    cancelled = true
+                }
+            }
+        }
+        val removals = LinkRemovals(createSyncDataStore(File(tmp.root, "ttl.preferences_pb"), backgroundScope))
+        val mirror = RingMirrorImpl(
+            FakeAlarmRepository(listOf(linked("row1", "o1"))), MutableStateFlow<PartnerState?>(state()),
+            MutableStateFlow<Household?>(hh), hangingSender, removals, backgroundScope,
+        )
+        mirror.onLocal(MirrorKind.DISMISS, listOf(RingMember("row1", occ)), null)
+        runCurrent()
+        advanceTimeBy(23.hours)
+        runCurrent()
+        assertTrue(!cancelled)
+        advanceTimeBy(2.hours)
+        runCurrent()
+        assertTrue(cancelled)
     }
 
     @Test fun joinerSnoozeMapsToOwnerAlarmWithT() = runTest {

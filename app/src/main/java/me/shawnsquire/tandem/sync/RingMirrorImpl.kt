@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.sync
 import android.util.Log
 import java.time.Instant
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
@@ -119,8 +120,11 @@ class RingMirrorImpl(
         }
         scope.launch {
             try {
-                status.collect { (s, reason) ->
-                    if (s == CommandStatus.REJECTED) Log.i(TAG, "${call.kind} for $targetId rejected: $reason")
+                // A command the partner never processes must not keep this listener for the process lifetime.
+                withTimeoutOrNull(COMMAND_TTL) {
+                    status.collect { (s, reason) ->
+                        if (s == CommandStatus.REJECTED) Log.i(TAG, "${call.kind} for $targetId rejected: $reason")
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -132,5 +136,6 @@ class RingMirrorImpl(
 
     private companion object {
         const val TAG = "RingMirror"
+        val COMMAND_TTL = 24.hours
     }
 }
