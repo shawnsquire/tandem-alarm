@@ -29,6 +29,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -46,10 +47,14 @@ class LinkRepositoryImpl(
     private val processed: ProcessedCommands,
     private val removals: LinkRemovals,
     private val requestRemoval: suspend (String, RemovalReason) -> Unit,
+    /** Cancels a pending removal under LinkSync's lock; false if the row is already gone. */
+    private val cancelRemoval: suspend (String) -> Boolean,
     private val scheduler: AlarmScheduler,
     private val notifier: CommandNotifier,
     private val clock: Clock,
     private val scope: CoroutineScope,
+    /** How long to wait for a fresh partner doc after a both-of-us command is APPLIED before clearing it anyway. */
+    private val appliedWait: kotlin.time.Duration = 1.minutes,
 ) : LinkRepository {
     private val joinLock = Mutex()
     private val watchLock = Any()
@@ -174,8 +179,8 @@ class LinkRepositoryImpl(
             val existing = alarms.linkedAlarms.first().firstOrNull {
                 it.link?.ownerAlarmId == ownerAlarmId && it.link?.ownerUid == hh.partnerUid
             }
-            if (existing != null) {
-                if (removals.all()[existing.id] == RemovalReason.LEFT) removals.remove(existing.id)
+            // A pending LEFT removal is cancelled under LinkSync's lock; false means the row is already gone.
+            if (existing != null && (removals.all()[existing.id] != RemovalReason.LEFT || cancelRemoval(existing.id))) {
                 if (acceptOpenInvites) acceptOpenInvites(hh, ownerAlarmId)
                 return LinkResult.Joined(existing.id)
             }
@@ -252,7 +257,12 @@ class LinkRepositoryImpl(
                     }
                     update
                 }
-                if (done?.first == CommandStatus.APPLIED) return@launch
+                val applied = done?.first == CommandStatus.APPLIED
+                if (applied) {
+                    // APPLIED is terminal. LinkSync clears pendingBoth when the owner's doc matches; if the owner has
+                    // since reversed it, nothing would, so wait for one fresh doc (which postdates the application).
+                    withTimeoutOrNull(appliedWait) { partner.filterNotNull().first() }
+                }
                 val reason = done?.second ?: "expired"
                 var cleared = false
                 alarms.updateLink(rowId) {
@@ -265,6 +275,7 @@ class LinkRepositoryImpl(
                 }
                 if (!cleared) return@launch
                 scheduler.rescheduleAll()
+                if (applied) return@launch
                 alarms.get(rowId)?.let { notifier.notifyRejected(it, pending.type, reason, currentPartnerName()) }
             } catch (e: CancellationException) {
                 throw e

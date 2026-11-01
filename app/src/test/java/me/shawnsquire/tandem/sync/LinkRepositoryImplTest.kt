@@ -72,16 +72,20 @@ class LinkRepositoryImplTest {
         val scheduler = FakeAlarmScheduler()
         val notifier = FakeCommandNotifier()
         val removalCalls = mutableListOf<Pair<String, RemovalReason>>()
+        val cancelCalls = mutableListOf<String>()
+        var cancelResult = true
         private fun store() = createSyncDataStore(
             File(tmp.root, "s-${storeCount++}.preferences_pb"), scope.backgroundScope,
         )
         val removals = LinkRemovals(store())
         val processed = ProcessedCommands(store(), Clock.fixed(now, ZoneOffset.UTC))
-        val repo = LinkRepositoryImpl(
+        val repo by lazy { LinkRepositoryImpl(
             fake, this.partner, householdFlow ?: this.household, sender, wrap(remote), processed, removals,
-            { id, r -> removalCalls += id to r }, scheduler, notifier,
+            { id, r -> removalCalls += id to r },
+            { id -> cancelCalls += id; if (cancelResult) removals.remove(id); cancelResult },
+            scheduler, notifier,
             Clock.fixed(now, ZoneOffset.UTC), scope.backgroundScope,
-        )
+        ) }
         suspend fun rows() = fake.linkedAlarms.first()
     }
 
@@ -282,14 +286,62 @@ class LinkRepositoryImplTest {
     }
 
     @Test
-    fun appliedLeavesPending() = runTest {
+    fun appliedThenNonMatchingDocClearsPendingWithoutNotifying() = runTest {
         val e = env(rows = listOf(linked()))
         e.repo.sendBoth("row1", CommandType.DISABLE, null)
         runCurrent()
         e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
         runCurrent()
-        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals(2, e.scheduler.rescheduleCount)
         assertTrue(e.notifier.rejected.isEmpty())
+    }
+
+    @Test
+    fun appliedWithNoDocClearsAfterBound() = runTest {
+        val e = env(rows = listOf(linked()), partner = null)
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
+        advanceTimeBy(59.seconds)
+        runCurrent()
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        advanceTimeBy(2.seconds)
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertTrue(e.notifier.rejected.isEmpty())
+    }
+
+    @Test
+    fun appliedDoesNotClearNewerCommand() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        e.remote.createdId = "c2"
+        e.repo.sendBoth("row1", CommandType.ENABLE, null)
+        runCurrent()
+        e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
+        runCurrent()
+        assertEquals("c2", e.rows().single().link!!.pendingBoth?.commandId)
+    }
+
+    @Test
+    fun startWithAlreadyAppliedCommandClears() = runTest {
+        val e = env(rows = listOf(linked(pending = PendingBoth(CommandType.DISABLE, null, "c5"))))
+        e.remote.updatesFor("c5").emit(CommandStatus.APPLIED to null)
+        e.repo.start()
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+    }
+
+    @Test
+    fun rejoinWhenCancelRemovalFindsRowGoneCreatesNewRow() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.removals.add("row1", RemovalReason.LEFT)
+        e.cancelResult = false
+        val r = e.repo.join("o1") as LinkResult.Joined
+        assertEquals(listOf("row1"), e.cancelCalls)
+        assertTrue(r.alarmId != "row1")
     }
 
     @Test

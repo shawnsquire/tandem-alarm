@@ -138,6 +138,7 @@ class AppContainer private constructor(
         alarmRepository, partnerRepository.partner, householdFlow, commandSender, commandRemote,
         ProcessedCommands(context.syncDataStore, LiveZoneClock), linkRemovals,
         { id, reason -> linkSyncImpl.requestRemoval(id, reason) },
+        { id -> linkSyncImpl.cancelRemoval(id) },
         alarmScheduler, commandNotifier, LiveZoneClock, syncScope,
     )
     val linkRepository: LinkRepository = linkRepositoryImpl
