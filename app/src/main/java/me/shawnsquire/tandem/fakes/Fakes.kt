@@ -14,6 +14,8 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.sync.LateRingNotifier
+import me.shawnsquire.tandem.sync.LateRingPrompt
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.Command
@@ -280,6 +282,24 @@ class FakePartnerRepository(initial: PartnerState? = sampleState()) : PartnerRep
             )
         }
     }
+}
+
+class FakeLateRingNotifier : LateRingNotifier {
+    val posts = mutableListOf<LateRingPrompt>()
+    val cancels = mutableListOf<String>()
+    private val showing = LinkedHashMap<String, LateRingPrompt>()
+
+    override fun post(prompt: LateRingPrompt) {
+        posts += prompt
+        showing[prompt.alarmId] = prompt
+    }
+
+    override fun cancel(alarmId: String) {
+        cancels += alarmId
+        showing.remove(alarmId)
+    }
+
+    override fun posted(): Set<String> = showing.keys.toSet()
 }
 
 class FakePairingRepository : PairingRepository {
