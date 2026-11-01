@@ -44,6 +44,7 @@ class AlarmEngine(context: Context, unlocked: Boolean?, private val scope: Corou
 
     val ringStateStore: RingStateStore = RingStateStoreImpl(context.ringStateDataStore)
     private val snoozeLedger: SnoozeLedger = SharedPrefsSnoozeLedger(context)
+    private val snoozeGroups: SnoozeGroups = SharedPrefsSnoozeGroups(context)
     val firedLedger: FiredLedger = SharedPrefsFiredLedger(context)
 
     val scheduler = AlarmSchedulerImpl(
@@ -60,7 +61,7 @@ class AlarmEngine(context: Context, unlocked: Boolean?, private val scope: Corou
     private val controllerImpl =
         RingingControllerImpl(
             alarmRepository, ringStateStore, settings, scheduler, scheduler, notifier, snoozeLedger, ringMirrorPort, firedLedger,
-            remoteNotices = remoteRingNotices,
+            remoteNotices = remoteRingNotices, snoozeGroups = snoozeGroups,
         )
     val controller: RingingController = controllerImpl
     val ringSlot: RingSlot = controllerImpl

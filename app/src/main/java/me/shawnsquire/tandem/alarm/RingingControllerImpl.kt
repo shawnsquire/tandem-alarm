@@ -34,6 +34,11 @@ import java.util.UUID
  *
  * [remoteNotices] gets every REMOTE resolution that touches the slot ring, just before its state
  * write, so the ringing screen can tell the partner ended it.
+ *
+ * A snoozed merged ring is one snooze per member in the [ledger], grouped in [snoozeGroups] under
+ * one snoozed notification whose Dismiss ends them all; a REMOTE action, or a LOCAL one on a single
+ * occurrence, takes just its member out of the group. The group is never what keeps a snooze armed:
+ * read or written in vain, every member is its own snooze again (I1).
  */
 class RingingControllerImpl(
     private val alarmRepository: AlarmRepository,
@@ -47,6 +52,7 @@ class RingingControllerImpl(
     private val firedLedger: FiredLedger = InMemoryFiredLedger(),
     private val newRingId: () -> String = { UUID.randomUUID().toString() },
     private val remoteNotices: RemoteRingNotices = RemoteRingNotices(),
+    private val snoozeGroups: SnoozeGroups = InMemorySnoozeGroups(),
     private val now: () -> Instant = Instant::now,
 ) : RingingController, RingSlot {
     private val mutex = Mutex()
@@ -67,12 +73,20 @@ class RingingControllerImpl(
      * before the command landed was never part of that. Only the primary (the alarm `validate`
      * matched the command to) resolves, as a REMOTE stop of its occurrence does: the next member is
      * promoted under the same ringId, so a stale repeat of the stop no longer validates.
+     *
+     * A LOCAL dismiss of a snooze (the slot's, a parked one, or a group's notification by its id)
+     * ends its whole snooze group, the members it was merged with when snoozed. REMOTE ends only
+     * the snooze it names.
      */
     override suspend fun dismiss(ringId: String, origin: RingOrigin) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         val local = origin == RingOrigin.LOCAL
         when {
-            state == null || state.ringId != ringId -> dismissNotInSlotLocked(ringId, local)
+            state == null || state.ringId != ringId -> dismissNotInSlotLocked(ringId, local, state, withGroup = local)
+            local && state.snoozedUntil != null -> {
+                val group = groupLocked(ringId)?.takeIf { it.snoozedSlot(state) != null }
+                if (group != null) dismissGroupLocked(group, state) else dismissCurrentLocked(state, mirrored = true)
+            }
             !local && state.snoozedUntil == null && state.merged.isNotEmpty() -> {
                 // A legacy primary (no occurrence) promotes too; its notice just names no member.
                 val notice = RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = false)
@@ -92,7 +106,8 @@ class RingingControllerImpl(
             state == null || state.ringId != ringId -> {
                 // Snoozed, then parked behind a newer ring while auto-silence waited: the snooze stands.
                 val parked = ledger.get(ringId)
-                if (parked == null || !parked.until.isAfter(now())) dismissNotInSlotLocked(ringId, local = true)
+                // Only this snooze: auto-silence ends the ring it sounded, not the group it was snoozed with.
+                if (parked == null || !parked.until.isAfter(now())) dismissNotInSlotLocked(ringId, local = true, state, withGroup = false)
             }
             // Snoozed while auto-silence waited: the snooze stands. One already due is no snooze any
             // more (it fired, and its claim couldn't write): the ring ends like any other.
@@ -103,16 +118,24 @@ class RingingControllerImpl(
         true
     } }
 
-    /** [dismiss] of a [ringId] the slot doesn't hold. */
-    private suspend fun dismissNotInSlotLocked(ringId: String, local: Boolean) {
+    /**
+     * [dismiss] of a [ringId] the slot ([state]) doesn't hold sounding: a parked snooze, or a snooze
+     * group's notification. [withGroup] ends the whole group [ringId] names or belongs to.
+     */
+    private suspend fun dismissNotInSlotLocked(ringId: String, local: Boolean, state: RingState?, withGroup: Boolean) {
         // A snooze parked behind a newer ring (Dismiss on its snoozed notification).
         val parked = ledger.get(ringId)
-        if (parked != null) {
-            dropParkedLocked(parked, local)
-        } else {
-            // I3: a stop pinned to another (or no) ring is ignored. It stops no ring, but a
-            // snoozed notification whose ledger entry is gone would otherwise stay forever.
-            bestEffort("cancel stuck snoozed notification") { notifier.cancelSnoozed(ringId) }
+        val group = groupLocked(ringId)?.takeIf { it.isLive(state) }
+        when {
+            withGroup && group != null -> dismissGroupLocked(group, state)
+            parked != null -> dropParkedLocked(parked, local)
+            // A group's id names no snooze of its own: no command can (a REMOTE one is ignored).
+            group != null -> Unit
+            else -> {
+                // I3: a stop pinned to another (or no) ring is ignored. It stops no ring, but a
+                // snoozed notification whose ledger entry is gone would otherwise stay forever.
+                bestEffort("cancel stuck snoozed notification") { notifier.cancelSnoozed(ringId) }
+            }
         }
     }
 
@@ -236,8 +259,14 @@ class RingingControllerImpl(
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(state.ringId, end, plainLabel(state.alarmId)) }
-        for ((id, member) in split) runCatching { notifier.showSnoozed(id, end, plainLabel(member.alarmId)) }
+        if (split.isEmpty()) {
+            runCatching { notifier.showSnoozed(state.ringId, end, labelsOf(state.alarmId)) }
+        } else {
+            // One snooze group under the primary's ringId: one notification, one Dismiss for them all.
+            val entries = listOf(SnoozeEntry(state.ringId, state.alarmId, end, state.occurrenceAt)) +
+                split.map { (id, member) -> SnoozeEntry(id, member.alarmId, end, member.occurrenceAt) }
+            showGroupLocked(state.ringId, entries, replacing = null)
+        }
         if (origin == RingOrigin.LOCAL) mirrorLocal(MirrorKind.SNOOZE, state.members(), end)
     }
 
@@ -281,13 +310,14 @@ class RingingControllerImpl(
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(id, until, plainLabel(member.alarmId)) }
+        runCatching { notifier.showSnoozed(id, until, labelsOf(member.alarmId)) }
     }
 
     /**
      * Moves the pending snooze [entry] to [to] (same ringId) only if that is later; true when moved.
      * [slot] is the snoozed slot ring when [entry] is its snooze, written with the new end, [notice]
-     * (a REMOTE move) just before. Arms first: on a throw the snooze goes back to its old end.
+     * (a REMOTE move) just before. Arms first: on a throw the snooze goes back to its old end. Moved,
+     * it leaves its snooze group for a notification of its own: it no longer comes back with them.
      */
     private suspend fun moveSnoozeLocked(entry: SnoozeEntry, to: Instant, slot: RingState?, notice: RemoteRingEnd?): Boolean {
         if (!to.isAfter(entry.until)) return false
@@ -304,7 +334,8 @@ class RingingControllerImpl(
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(entry.ringId, to, plainLabel(entry.alarmId)) }
+        bestEffort("leave snooze group") { leaveGroupLocked(entry.ringId, movedOut = true) }
+        runCatching { notifier.showSnoozed(entry.ringId, to, labelsOf(entry.alarmId)) }
         return true
     }
 
@@ -323,7 +354,7 @@ class RingingControllerImpl(
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(id, until, plainLabel(x.alarmId)) }
+        runCatching { notifier.showSnoozed(id, until, labelsOf(x.alarmId)) }
     }
 
     override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim = withContext(NonCancellable) { mutex.withLock {
@@ -388,15 +419,26 @@ class RingingControllerImpl(
      * The snooze [ringId] has fired and its ring is written (or merged): drop its ledger entry,
      * PendingIntent and snoozed notification. Only after that write, so a throwing write leaves the
      * snooze in place. Ledger before the PendingIntent: the scheduler arms from the ledger.
+     *
+     * Its snooze group is over too: the group's notification goes with the first member back, and
+     * the members still to come back are their own snoozes (each re-merges as it fires). Kept, the
+     * group's id could be a ring that sounds by now, and a Dismiss posted under it would stop that.
      */
     private fun dropFiredSnoozeLocked(ringId: String) {
         bestEffort("ledger remove") { ledger.remove(ringId) }
         bestEffort("cancel fired snooze") { snoozeArmer.cancelSnooze(ringId) }
         bestEffort("cancel snoozed notification") { notifier.cancelSnoozed(ringId) }
+        bestEffort("end snooze group") {
+            groupLocked(ringId)?.let { group ->
+                notifier.cancelSnoozed(group.id)
+                snoozeGroups.remove(group.id)
+            }
+        }
     }
 
     override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = withContext(NonCancellable) {
         mutex.withLock {
+            bestEffort("prune snooze groups") { pruneGroupsLocked() }
             val state = try {
                 ringStateStore.state.first()
             } catch (e: Throwable) {
@@ -442,10 +484,10 @@ class RingingControllerImpl(
     }
 
     /**
-     * Ends [state], the ring in the slot: clear it, drop any snooze, disable every one-shot member,
-     * reschedule. When [mirrored], reports every member to [mirror] once the state is cleared, even
-     * if a later step failed: the ring has stopped either way. [notice] (a REMOTE dismiss) goes out
-     * with the clear ([writeNoticed]).
+     * Ends [state], the ring in the slot: clear it, drop any snooze (only its own: it leaves its
+     * snooze group), disable every one-shot member, reschedule. When [mirrored], reports every member
+     * to [mirror] once the state is cleared, even if a later step failed: the ring has stopped either
+     * way. [notice] (a REMOTE dismiss) goes out with the clear ([writeNoticed]).
      */
     private suspend fun dismissCurrentLocked(state: RingState, mirrored: Boolean, notice: RemoteRingEnd? = null) {
         writeNoticed(notice) { ringStateStore.set(null) }
@@ -457,7 +499,7 @@ class RingingControllerImpl(
         steps.run { disableIfOneShot(state.alarmId) }
         // Merged members have no snooze of their own: the claim that merged them dropped it.
         for (member in state.merged) steps.run { disableIfOneShot(member.alarmId) }
-        steps.run { notifier.cancelSnoozed(state.ringId) }
+        steps.run { leaveGroupLocked(state.ringId) }
         steps.run { alarmScheduler.rescheduleAll() }
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, state.members(), null)
         steps.rethrow()
@@ -503,17 +545,137 @@ class RingingControllerImpl(
     private fun parkedEntryLocked(x: RingMember, state: RingState?): SnoozeEntry? =
         ledger.all().firstOrNull { it.ringId != state?.ringId && it.alarmId == x.alarmId && it.occurrenceAt == x.occurrenceAt }
 
-    /** Dismisses a snooze parked behind another ring. RingState is not touched. */
+    /** Dismisses a snooze parked behind another ring, only that one (it leaves its snooze group). RingState is not touched. */
     private suspend fun dropParkedLocked(entry: SnoozeEntry, mirrored: Boolean) {
         val steps = Steps()
         steps.run { ledger.remove(entry.ringId) }
         steps.run { snoozeArmer.cancelSnooze(entry.ringId) }
-        steps.run { notifier.cancelSnoozed(entry.ringId) }
+        steps.run { leaveGroupLocked(entry.ringId) }
         steps.run { disableIfOneShot(entry.alarmId) }
         steps.run { alarmScheduler.rescheduleAll() }
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, listOfNotNull(entry.occurrenceAt?.let { RingMember(entry.alarmId, it) }), null)
         steps.rethrow()
     }
+
+    /**
+     * A snooze group as stored: [id] tags its notification, [ids] are its members (primary first) and
+     * [entries] the ones still in the ledger, in that order.
+     */
+    private class SnoozeGroup(val id: String, val ids: List<String>, val entries: List<SnoozeEntry>) {
+        /** Whether any member is still snoozed: in the ledger, or the snoozed slot ring. */
+        fun isLive(state: RingState?): Boolean = entries.isNotEmpty() || snoozedSlot(state) != null
+
+        /** [state] when it is a member's snooze. */
+        fun snoozedSlot(state: RingState?): RingState? = state?.takeIf { it.snoozedUntil != null && it.ringId in ids }
+    }
+
+    /**
+     * The group [ringId] names or belongs to; null when there is none, or none readable: then every
+     * snooze is its own (I1). Members gone from the ledger (resolved, or dropped by the scheduler)
+     * are left out of [SnoozeGroup.entries].
+     */
+    private fun groupLocked(ringId: String): SnoozeGroup? {
+        val all = try {
+            snoozeGroups.all()
+        } catch (e: Throwable) {
+            log("snooze groups read failed; one snooze per entry", e)
+            return null
+        }
+        val (id, ids) = all[ringId]?.let { ringId to it } ?: all.entries.firstOrNull { ringId in it.value }?.toPair() ?: return null
+        return SnoozeGroup(id, ids, ids.mapNotNull { ledger.get(it) })
+    }
+
+    /**
+     * A LOCAL Dismiss of [group]: ends every member still snoozed, the slot ring ([state]) among them
+     * when it is one, as one dismiss. Like [dismissCurrentLocked], once the slot is cleared every
+     * step runs, then one reschedule and one mirror call with every member, and the group's
+     * notification and record go.
+     */
+    private suspend fun dismissGroupLocked(group: SnoozeGroup, state: RingState?) {
+        val slot = group.snoozedSlot(state)
+        val parked = group.entries.filter { it.ringId != slot?.ringId }
+        if (slot != null) ringStateStore.set(null)
+        val steps = Steps()
+        // Ledger before the PendingIntent and the reschedule: the scheduler arms from the ledger.
+        for (id in listOfNotNull(slot?.ringId) + parked.map { it.ringId }) {
+            steps.run { ledger.remove(id) }
+            steps.run { snoozeArmer.cancelSnooze(id) }
+        }
+        slot?.let { steps.run { disableIfOneShot(it.alarmId) } }
+        for (entry in parked) steps.run { disableIfOneShot(entry.alarmId) }
+        steps.run { notifier.cancelSnoozed(group.id) }
+        bestEffort("snooze group remove") { snoozeGroups.remove(group.id) }
+        steps.run { alarmScheduler.rescheduleAll() }
+        val members = group.ids.flatMap { id ->
+            if (slot != null && id == slot.ringId) slot.members() else listOfNotNull(parked.firstOrNull { it.ringId == id }?.member())
+        }
+        mirrorLocal(MirrorKind.DISMISS, members, null)
+        steps.rethrow()
+    }
+
+    /**
+     * [ringId]'s snooze is resolved, or [movedOut] to a later end with a notification of its own: it
+     * leaves its group, whose notification names the members left or goes with the last of them.
+     * Without a group (or an unreadable one) [ringId]'s own notification goes, unless [movedOut]. A
+     * group under [ringId]'s own id that it moves out of goes under its next member's: [ringId]'s
+     * notification is its own from now on.
+     */
+    private suspend fun leaveGroupLocked(ringId: String, movedOut: Boolean = false) {
+        val group = groupLocked(ringId)
+        if (group == null) {
+            if (!movedOut) notifier.cancelSnoozed(ringId)
+            return
+        }
+        val rest = group.entries.filter { it.ringId != ringId }
+        val renamed = movedOut && group.id == ringId
+        if (rest.isEmpty()) {
+            bestEffort("snooze group remove") { snoozeGroups.remove(group.id) }
+            if (!renamed) notifier.cancelSnoozed(group.id)
+            return
+        }
+        showGroupLocked(if (renamed) rest.first().ringId else group.id, rest, replacing = group.id)
+    }
+
+    /**
+     * Stores [entries] as the group [groupId] (in place of [replacing]) and posts its one notification.
+     * When the store can't be written each entry gets its own notification instead, as before groups:
+     * each Dismiss then ends just its own snooze (I1).
+     */
+    private suspend fun showGroupLocked(groupId: String, entries: List<SnoozeEntry>, replacing: String?) {
+        val stored = try {
+            snoozeGroups.put(groupId, entries.map { it.ringId })
+            if (replacing != null && replacing != groupId) snoozeGroups.remove(replacing)
+            true
+        } catch (e: Throwable) {
+            log("snooze group write failed; one snooze per entry", e)
+            runCatching { snoozeGroups.remove(groupId) }
+            replacing?.let { runCatching { snoozeGroups.remove(it) } }
+            false
+        }
+        if (stored) {
+            runCatching { notifier.showSnoozed(groupId, entries.first().until, entries.flatMap { labelsOf(it.alarmId) }) }
+            return
+        }
+        replacing?.takeIf { old -> entries.none { it.ringId == old } }?.let { runCatching { notifier.cancelSnoozed(it) } }
+        for (entry in entries) runCatching { notifier.showSnoozed(entry.ringId, entry.until, labelsOf(entry.alarmId)) }
+    }
+
+    /** Drops every group with no member still snoozed, and its notification. */
+    private suspend fun pruneGroupsLocked() {
+        val groups = snoozeGroups.all()
+        if (groups.isEmpty()) return
+        val state = ringStateStore.state.first()
+        for ((id, ids) in groups) {
+            if (SnoozeGroup(id, ids, ids.mapNotNull { ledger.get(it) }).isLive(state)) continue
+            snoozeGroups.remove(id)
+            notifier.cancelSnoozed(id)
+        }
+    }
+
+    private fun SnoozeEntry.member(): RingMember? = occurrenceAt?.let { RingMember(alarmId, it) }
+
+    /** [alarmId]'s label for a snoozed notification, none when unreadable; see [plainLabel]. */
+    private suspend fun labelsOf(alarmId: String): List<String> = listOfNotNull(plainLabel(alarmId))
 
     /**
      * [alarmId]'s label for its snoozed notification, as the repository has it (a linked row's

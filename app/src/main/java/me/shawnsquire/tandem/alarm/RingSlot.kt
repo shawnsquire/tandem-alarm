@@ -41,7 +41,8 @@ interface RingSlot {
     /**
      * Snooze-fire path. Returns [SlotClaim.NotDue] when the snooze is no longer live (dismissed
      * while snoozed). Otherwise drops the ledger entry and snoozed notification once the merge or
-     * state write has succeeded (a throw leaves the snooze in place). A different
+     * state write has succeeded (a throw leaves the snooze in place), and ends its snooze group with
+     * the group's notification. A different
      * sounding ring takes the snooze into its `merged` ([SlotClaim.Merged]); an entry without an
      * occurrence (written before occurrences were stored) joins under its `until` as a placeholder
      * occurrence, never written as the ring's own. A snoozed ring is parked. Unless merged, writes [ringId] as sounding (same ringId, I3) and returns [SlotClaim.Claimed].
@@ -66,9 +67,9 @@ interface RingSlot {
      * once) and returns true. A member not in [expected] joined after the session decided to
      * silence: nothing is dismissed and this returns false, so the session sounds on for it (I1).
      * A [ringId] snoozed meanwhile keeps its snooze (true). When the slot holds another ring or
-     * none, does what a LOCAL dismiss of [ringId] does there (drops a snooze of that id parked behind
-     * another ring) and returns true: nothing of this ring is left sounding. A throw comes from the
-     * read or a step of the dismiss.
+     * none, drops a snooze of that id parked behind another ring, as a LOCAL dismiss does, but only
+     * that one: not the rest of its snooze group. Returns true: nothing of this ring is left
+     * sounding. A throw comes from the read or a step of the dismiss.
      */
     suspend fun autoSilence(ringId: String, expected: List<RingMember>): Boolean
 }

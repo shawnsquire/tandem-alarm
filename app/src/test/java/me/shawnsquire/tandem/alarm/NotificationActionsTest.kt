@@ -105,10 +105,21 @@ class NotificationActionsTest {
     @Test
     fun snoozedNotificationShowsItsLabel() {
         val notifier = AndroidRingingNotifier(context)
-        notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"), "Gym")
-        notifier.showSnoozed("r2", Instant.parse("2026-01-01T07:30:00Z"), null)
+        notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"), listOf("Gym"))
+        notifier.showSnoozed("r2", Instant.parse("2026-01-01T07:30:00Z"), emptyList())
+        notifier.showSnoozed("r3", Instant.parse("2026-01-01T07:30:00Z"), listOf(" "))
         assertEquals("Gym", snoozed("r1")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
         assertEquals("Alarm", snoozed("r2")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertEquals("Alarm", snoozed("r3")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+    }
+
+    @Test
+    fun aSnoozedGroupsNotificationNamesEveryMemberAsTheRingingOneDoes() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"), listOf("Gym", "", "Meds"))
+        val posted = snoozed("r1")!!
+        assertEquals("Gym, Meds", posted.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertEquals(1, posted.actions.size) // one Dismiss for the group
     }
 
     private fun snoozed(ringId: String): Notification? = manager.activeNotifications

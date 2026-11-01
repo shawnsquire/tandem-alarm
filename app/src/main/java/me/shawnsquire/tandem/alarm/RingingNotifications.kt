@@ -234,13 +234,15 @@ class AndroidRingingNotifier(
     private fun snoozeAction() =
         Notification.Action.Builder(null, context.getString(R.string.alarm_action_snooze), AlarmIntents.snoozeActionPendingIntent(context)).build()
 
-    override fun showSnoozed(ringId: String, until: Instant, label: String?) {
+    /** Several labels (a snoozed merged ring) are joined on the title line, as the ringing notification joins them. */
+    override fun showSnoozed(ringId: String, until: Instant, labels: List<String>) {
         ensureChannels()
         val time = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(until.atZone(ZoneId.systemDefault()))
         val dismiss = Notification.Action.Builder(null, context.getString(R.string.alarm_action_dismiss), AlarmIntents.dismissPendingIntent(context, ringId)).build()
+        val shown = labels.filter { it.isNotBlank() }
         val notification = Notification.Builder(context, SNOOZE_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle(label?.takeIf { it.isNotBlank() } ?: context.getString(R.string.alarm_notification_title))
+            .setContentTitle(shown.takeIf { it.isNotEmpty() }?.joinToString(context.getString(R.string.alarm_label_separator)) ?: context.getString(R.string.alarm_notification_title))
             .setContentText(context.getString(R.string.alarm_snoozed_until, time))
             .setCategory(Notification.CATEGORY_ALARM)
             .setVisibility(Notification.VISIBILITY_PUBLIC)

@@ -145,10 +145,12 @@ interface RingingNotifier {
     fun cancelRinging(ringId: String) {}
 
     /**
-     * Non-foreground notification with a Dismiss action, one per ring so parked snoozes coexist.
-     * [label] names the alarm (a merged ring's members each get their own); null or blank shows none.
+     * Non-foreground notification with a Dismiss action (its intent carries [ringId]), one per ring
+     * so parked snoozes coexist. A snoozed merged ring posts one, under its group's id, whose
+     * [labels] name every member still in it, primary first; blank ones are left out, and none shows
+     * no label. Posting again under the same [ringId] updates it in place.
      */
-    fun showSnoozed(ringId: String, until: Instant, label: String? = null)
+    fun showSnoozed(ringId: String, until: Instant, labels: List<String> = emptyList())
     fun cancelSnoozed(ringId: String)
 }
 
