@@ -67,4 +67,23 @@ class LinkedBothStatusTest {
         val other = PendingBoth(CommandType.DISABLE, x, "c2")
         assertEquals(CommandUiStatus.Rejected(reason), status(SentBoth(CommandType.SKIP_NEXT, x, returned = true), row(pending = other)))
     }
+
+    @Test fun oneShotSkipIsAppliedOnceTheOwnerTurnedTheAlarmOff() {
+        val sent = SentBoth(CommandType.SKIP_NEXT, x, returned = true)
+        assertEquals(CommandUiStatus.Applied, status(sent, row(enabled = false)))
+        assertEquals(CommandUiStatus.Rejected(reason), status(sent, row(enabled = true)))
+    }
+
+    @Test fun repeatingSkipIsNotAppliedByTheAlarmBeingOff() {
+        val repeating = row(enabled = false).let { it.copy(days = setOf(java.time.DayOfWeek.MONDAY)) }
+        assertEquals(
+            CommandUiStatus.Rejected(reason),
+            status(SentBoth(CommandType.SKIP_NEXT, x, returned = true), repeating),
+        )
+    }
+
+    @Test fun aLatchedOutcomeIsReturnedUnchanged() {
+        val sent = SentBoth(CommandType.SKIP_NEXT, x, returned = true, outcome = CommandUiStatus.Applied)
+        assertEquals(CommandUiStatus.Applied, status(sent, row()))
+    }
 }
