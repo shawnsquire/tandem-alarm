@@ -1,5 +1,7 @@
 package me.shawnsquire.tandem.sync
 
+import me.shawnsquire.tandem.media.AlarmMedia
+import me.shawnsquire.tandem.media.MediaRef
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FieldValue
 import java.time.DayOfWeek
@@ -218,7 +220,25 @@ class FirestoreMappingTest {
         val m = deviceDocMap("P", null, listOf(alarm), ring, now, zone)
         assertFalse(m.containsKey("links"))
         assertFalse(m.containsKey("defaultWallpaper"))
-        assertEquals(setOf("alarmId", "ringId", "startedAt", "snoozedUntil"), (m["ringing"] as Map<*, *>).keys)
+        assertEquals(
+            setOf("alarmId", "ringId", "startedAt", "snoozedUntil", "occurrenceAt", "merged"),
+            (m["ringing"] as Map<*, *>).keys,
+        )
+    }
+
+    @Test
+    fun ringingMapAlwaysCarriesOccurrenceAndMerged() {
+        // SetOptions.merge merges nested maps deeply, so omitted keys would keep the previous ring's values.
+        val bare = deviceDocMap("P", null, listOf(alarm), RingState("a1", "r1", now, null), now, zone)["ringing"] as Map<*, *>
+        assertTrue(bare.containsKey("occurrenceAt") && bare["occurrenceAt"] == null)
+        assertEquals(emptyList<Any>(), bare["merged"])
+        val occ = now.plusSeconds(60)
+        val full = deviceDocMap(
+            "P", null, listOf(alarm),
+            RingState("a1", "r1", now, null, occurrenceAt = occ, merged = listOf(RingMember("a2", occ))), now, zone,
+        )["ringing"] as Map<*, *>
+        assertEquals(occ.toTimestamp(), full["occurrenceAt"])
+        assertEquals(listOf(mapOf("alarmId" to "a2", "occurrenceAt" to occ.toTimestamp())), full["merged"])
     }
 
     @Test

@@ -1,5 +1,7 @@
 package me.shawnsquire.tandem.sync
 
+import me.shawnsquire.tandem.media.AlarmMedia
+import me.shawnsquire.tandem.media.MediaRef
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FieldValue
 import java.time.DayOfWeek
@@ -38,8 +40,9 @@ internal fun Instant.toTimestamp(): Timestamp = Timestamp(epochSecond, nano)
 internal fun Timestamp.toInstantCompat(): Instant = Instant.ofEpochSecond(seconds, nanoseconds.toLong())
 
 /**
- * Fields for a new command doc. Keys match the create rule's `hasOnly(...)` exactly; the command
- * id is the doc id, so there is no `id` field, and `reason` is only written by the owner's resolve.
+ * Fields for a new command doc. Keys are a subset of the create rule's `hasOnly(...)` (`snoozedUntil` is
+ * added only when non-null, pending L3); the command id is the doc id, so there is no `id` field,
+ * and `reason` is only written by the owner's resolve.
  */
 fun commandCreateMap(
     from: String,
@@ -52,15 +55,15 @@ fun commandCreateMap(
     snoozedUntil: Instant? = null,
 ): Map<String, Any?> = buildMap {
     putAll(mapOf(
-    "from" to from,
-    "to" to to,
-    "type" to type.name,
-    "alarmId" to alarmId,
-    "createdAt" to now.toTimestamp(),
-    "expiresAt" to now.plus(COMMAND_TTL).toTimestamp(),
-    "status" to commandStatusToString(CommandStatus.PENDING),
-    "occurrenceAt" to occurrenceAt?.toTimestamp(),
-    "ringId" to ringId,
+        "from" to from,
+        "to" to to,
+        "type" to type.name,
+        "alarmId" to alarmId,
+        "createdAt" to now.toTimestamp(),
+        "expiresAt" to now.plus(COMMAND_TTL).toTimestamp(),
+        "status" to commandStatusToString(CommandStatus.PENDING),
+        "occurrenceAt" to occurrenceAt?.toTimestamp(),
+        "ringId" to ringId,
     ))
     // Only when set: the create rule's hasOnly(...) denies unknown keys until the rules allow it.
     if (snoozedUntil != null) put("snoozedUntil", snoozedUntil.toTimestamp())
@@ -122,13 +125,15 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
  * [now] is written as null: it is meaningless to the partner, who would send an UNSKIP that is always rejected.
  * A solo skip that is not after [now] is omitted likewise.
  *
- * Every newer key is emitted only when there is something to say: `links` when [links] is non-null
- * (even empty), `defaultWallpaper` when [media] is non-null, `alarms[].media` for alarms with an entry
- * in [PublishedMedia.alarms], `ringing.occurrenceAt` when set, `ringing.merged` when non-empty.
+ * Top-level newer keys are emitted only when there is something to say: `links` when [links] is
+ * non-null (even empty), `defaultWallpaper` when [media] is non-null, `alarms[].media` for alarms
+ * with an entry in [PublishedMedia.alarms]. Inside a non-null `ringing` map every key is always
+ * written: `snoozedUntil`, `occurrenceAt` (Timestamp or null) and `merged` (possibly empty).
  *
- * The writer merges (SetOptions.merge), so an omitted top-level key (`links`, `defaultWallpaper`)
- * keeps its stored value, but `alarms` is an array and is replaced whole, so `alarms[].media`
- * survives only if [media] is passed every time.
+ * The writer merges (SetOptions.merge), which merges nested maps deeply: an omitted key inside
+ * `ringing` would keep the previous ring's value, hence the always-written keys above. An omitted
+ * top-level key (`links`, `defaultWallpaper`) keeps its stored value, but `alarms` is an array and
+ * is replaced whole, so `alarms[].media` survives only if [media] is passed every time.
  */
 fun deviceDocMap(
     displayName: String,
@@ -170,10 +175,8 @@ fun deviceDocMap(
                 put("ringId", it.ringId)
                 put("startedAt", it.startedAt.toTimestamp())
                 put("snoozedUntil", it.snoozedUntil?.toTimestamp())
-                it.occurrenceAt?.let { o -> put("occurrenceAt", o.toTimestamp()) }
-                if (it.merged.isNotEmpty()) {
-                    put("merged", it.merged.map { m -> mapOf("alarmId" to m.alarmId, "occurrenceAt" to m.occurrenceAt.toTimestamp()) })
-                }
+                put("occurrenceAt", it.occurrenceAt?.toTimestamp())
+                put("merged", it.merged.map { m -> mapOf("alarmId" to m.alarmId, "occurrenceAt" to m.occurrenceAt.toTimestamp()) })
             }
         },
     )
