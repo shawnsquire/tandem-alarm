@@ -6,6 +6,10 @@ import me.shawnsquire.tandem.data.AlarmEntity
 import me.shawnsquire.tandem.data.toAlarm
 import me.shawnsquire.tandem.data.toEntity
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.PendingBoth
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -26,7 +30,7 @@ data class MirrorSnapshot(
 
 /**
  * Device-protected copy of the alarm data. Wallpapers are never mirrored: they are CE files, so
- * reads always report `wallpaperPath = null`.
+ * reads always report `wallpaperPath = null` and `link.overrideWallpaperPath = null`.
  */
 interface AlarmMirror {
     /**
@@ -90,8 +94,28 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
             put("enabled", e.enabled)
             e.skippedOccurrenceAt?.let { put("skippedOccurrenceAt", it) }
             e.ringtoneUri?.let { put("ringtoneUri", it) }
+            mirrored.alarm.soloSkippedOccurrenceAt?.let { put("soloSkippedOccurrenceAt", it.toEpochMilli()) }
+            mirrored.alarm.link?.let { put("link", encode(it)) }
             mirrored.nextTriggerAt?.let { put("nextTriggerAt", it.toEpochMilli()) }
         }
+    }
+
+    // overrideWallpaperPath is left out like wallpaperPath: a CE file.
+    private fun encode(link: AlarmLink): JSONObject = JSONObject().apply {
+        put("ownerUid", link.ownerUid)
+        put("ownerAlarmId", link.ownerAlarmId)
+        put("mode", link.mode.name)
+        link.ownerSkippedOccurrenceAt?.let { put("ownerSkippedOccurrenceAt", it.toEpochMilli()) }
+        put("joinerEnabled", link.joinerEnabled)
+        link.pendingBoth?.let { p ->
+            put("pendingBoth", JSONObject().apply {
+                put("type", p.type.name)
+                p.occurrenceAt?.let { put("occurrenceAt", it.toEpochMilli()) }
+                put("commandId", p.commandId)
+            })
+        }
+        link.overrideLabel?.let { put("overrideLabel", it) }
+        link.overrideRingtoneUri?.let { put("overrideRingtoneUri", it) }
     }
 
     private fun decode(json: String, strict: Boolean): MirrorSnapshot? {
@@ -124,9 +148,29 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
             skippedOccurrenceAt = if (o.isNull("skippedOccurrenceAt")) null else o.getLong("skippedOccurrenceAt"),
             ringtoneUri = o.stringOrNull("ringtoneUri"),
             wallpaperPath = null,
-        ).toAlarm(),
+        ).toAlarm().copy(
+            // Absent in mirrors written before linked alarms.
+            soloSkippedOccurrenceAt = o.instantOrNull("soloSkippedOccurrenceAt"),
+            link = if (o.isNull("link")) null else decodeLink(o.getJSONObject("link")),
+        ),
         nextTriggerAt = if (o.isNull("nextTriggerAt")) null else Instant.ofEpochMilli(o.getLong("nextTriggerAt")),
     )
+
+    private fun decodeLink(o: JSONObject): AlarmLink = AlarmLink(
+        ownerUid = o.getString("ownerUid"),
+        ownerAlarmId = o.getString("ownerAlarmId"),
+        mode = LinkMode.valueOf(o.getString("mode")),
+        ownerSkippedOccurrenceAt = o.instantOrNull("ownerSkippedOccurrenceAt"),
+        joinerEnabled = o.getBoolean("joinerEnabled"),
+        pendingBoth = if (o.isNull("pendingBoth")) null else o.getJSONObject("pendingBoth").let { p ->
+            PendingBoth(CommandType.valueOf(p.getString("type")), p.instantOrNull("occurrenceAt"), p.getString("commandId"))
+        },
+        overrideLabel = o.stringOrNull("overrideLabel"),
+        overrideRingtoneUri = o.stringOrNull("overrideRingtoneUri"),
+        overrideWallpaperPath = null,
+    )
+
+    private fun JSONObject.instantOrNull(key: String): Instant? = if (isNull(key)) null else Instant.ofEpochMilli(getLong(key))
 
     // optString() turns a JSON null into the string "null".
     private fun JSONObject.stringOrNull(key: String): String? = if (isNull(key)) null else getString(key)
@@ -154,5 +198,8 @@ class InMemoryAlarmMirror(initial: MirrorSnapshot? = MirrorSnapshot.EMPTY) : Ala
         write(transform(snapshot ?: throw unreadable()))
 
     private fun MirrorSnapshot.withoutWallpapers() =
-        copy(alarms = alarms.map { it.copy(alarm = it.alarm.copy(wallpaperPath = null)) })
+        copy(alarms = alarms.map { m ->
+            val a = m.alarm
+            m.copy(alarm = a.copy(wallpaperPath = null, link = a.link?.copy(overrideWallpaperPath = null)))
+        })
 }

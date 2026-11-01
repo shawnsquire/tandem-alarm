@@ -8,7 +8,8 @@ import java.time.Instant
 interface RingingController {
     /**
      * Dismisses the ring [ringId]. LOCAL (button, notification action, auto-silence) calls
-     * RingMirrorPort.onLocal for every member; REMOTE never does (I4).
+     * RingMirrorPort.onLocal for every member; REMOTE never does (I4). REMOTE on a sounding merged
+     * ring resolves only its primary (members that merged after the partner's Stop sound on).
      */
     suspend fun dismiss(ringId: String, origin: RingOrigin = RingOrigin.LOCAL)
 

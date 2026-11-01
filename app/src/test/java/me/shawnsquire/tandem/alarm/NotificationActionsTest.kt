@@ -1,6 +1,8 @@
 package me.shawnsquire.tandem.alarm
 
+import android.Manifest
 import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -28,7 +30,17 @@ class NotificationActionsTest {
 
     @org.junit.Before
     fun resetFireLock() = FireWakeLock.resetForTest()
+
+    /** Granted as on a set-up phone; Robolectric denies runtime permissions by default. */
+    @org.junit.Before
+    fun grantNotifications() = shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
     private val manager = context.getSystemService(NotificationManager::class.java)
+
+    /** The phone's default notification sound is set; Robolectric has none, which would make the Notify channel unable to alert. */
+    @org.junit.Before
+    fun setDefaultNotificationSound() {
+        android.provider.Settings.System.putString(context.contentResolver, android.provider.Settings.System.NOTIFICATION_SOUND, "content://media/internal/audio/media/1")
+    }
 
     @Test
     fun controlAsyncRunsDismissAndSnooze() = runTest {
@@ -90,6 +102,26 @@ class NotificationActionsTest {
         assertNull(snoozed("r1"))
     }
 
+    @Test
+    fun snoozedNotificationShowsItsLabel() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"), listOf("Gym"))
+        notifier.showSnoozed("r2", Instant.parse("2026-01-01T07:30:00Z"), emptyList())
+        notifier.showSnoozed("r3", Instant.parse("2026-01-01T07:30:00Z"), listOf(" "))
+        assertEquals("Gym", snoozed("r1")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertEquals("Alarm", snoozed("r2")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertEquals("Alarm", snoozed("r3")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+    }
+
+    @Test
+    fun aSnoozedGroupsNotificationNamesEveryMemberAsTheRingingOneDoes() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"), listOf("Gym", "", "Meds"))
+        val posted = snoozed("r1")!!
+        assertEquals("Gym, Meds", posted.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertEquals(1, posted.actions.size) // one Dismiss for the group
+    }
+
     private fun snoozed(ringId: String): Notification? = manager.activeNotifications
         .firstOrNull { it.tag == ringId && it.id == AndroidRingingNotifier.SNOOZED_NOTIFICATION_ID }
         ?.notification
@@ -119,7 +151,7 @@ class NotificationActionsTest {
     @Test
     fun showRingingPostsFullScreenNotificationUnderItsOwnIdAndReportsIt() {
         val reported = mutableListOf<Triple<String, Int, Notification>>()
-        AndroidRingingNotifier(context) { r, id, n -> reported += Triple(r, id, n) }.showRinging(null, "r1")
+        AndroidRingingNotifier(context) { r, id, n -> reported += Triple(r, id, n) }.showRinging(null, "r1", emptyList())
 
         val id = AndroidRingingNotifier.ringingNotificationId("r1")
         val posted = shadowOf(manager).getNotification(id)
@@ -131,6 +163,206 @@ class NotificationActionsTest {
         assertEquals(1, reported.size)
         assertEquals("r1", reported[0].first)
         assertEquals(id, reported[0].second)
+    }
+
+    @Test
+    fun notifyRingingIsAHeadsUpAlarmWithActionsAndNoFullScreenIntent() {
+        val reported = mutableListOf<Triple<String, Int, Notification>>()
+        AndroidRingingNotifier(context) { r, id, n -> reported += Triple(r, id, n) }.showNotifyRinging(null, "r1", emptyList())
+
+        val id = AndroidRingingNotifier.notifyNotificationId("r1")
+        val posted = shadowOf(manager).getNotification(id)
+        assertEquals(AndroidRingingNotifier.NOTIFY_CHANNEL, posted.channelId)
+        assertEquals(Notification.CATEGORY_ALARM, posted.category)
+        assertNull(posted.fullScreenIntent)
+        assertNotNull(posted.contentIntent)
+        assertEquals(listOf("Stop", "Snooze"), posted.actions.map { it.title.toString() })
+        assertEquals(listOf("r1" to id), reported.map { it.first to it.second }) // promoted like a ring
+        assertTrue(id != AndroidRingingNotifier.ringingNotificationId("r1"))
+
+        val channel = manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
+        assertEquals(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI, channel.sound)
+        assertEquals(android.media.AudioAttributes.USAGE_ALARM, channel.audioAttributes.usage)
+    }
+
+    @Test
+    fun showRingingAfterNotifyPostsAFreshFullScreenNotificationThenRemovesTheNotifyOne() {
+        val events = mutableListOf<String>()
+        val notifyId = AndroidRingingNotifier.notifyNotificationId("r1")
+        val ringingId = AndroidRingingNotifier.ringingNotificationId("r1")
+        val notifier = AndroidRingingNotifier(context) { _, id, _ ->
+            // The service promotes here; the Notify one must still be posted (it is still the foreground one).
+            events += "foreground:$id:notifyPosted=${shadowOf(manager).getNotification(notifyId) != null}"
+        }
+        notifier.showNotifyRinging(null, "r1", emptyList())
+        notifier.showRinging(null, "r1", emptyList())
+
+        assertEquals(listOf("foreground:$notifyId:notifyPosted=true", "foreground:$ringingId:notifyPosted=true"), events)
+        assertNull(shadowOf(manager).getNotification(notifyId))
+        assertNotNull(shadowOf(manager).getNotification(ringingId).fullScreenIntent)
+    }
+
+    // ---- whether the Notify surface can alert ----
+
+    @Test
+    fun notifyRingingReportsItCanAlertWhenPosted() {
+        assertTrue(AndroidRingingNotifier(context).showNotifyRinging(null, "r1", emptyList()))
+        assertNotNull(shadowOf(manager).getNotification(AndroidRingingNotifier.notifyNotificationId("r1")))
+    }
+
+    /** [setUp] makes the Notify surface unable to alert; then nothing may be posted or promoted. */
+    private fun assertNotifyCantAlert(setUp: () -> Unit) {
+        setUp()
+        val reported = mutableListOf<Int>()
+        val notifier = AndroidRingingNotifier(context) { _, id, _ -> reported += id }
+        assertFalse(notifier.showNotifyRinging(null, "r1", listOf("Gym")))
+        assertFalse(notifier.updateRingingLabel(null, "r1", listOf("Gym"), notifySurface = true))
+        assertTrue(shadowOf(manager).allNotifications.isEmpty())
+        assertTrue(reported.isEmpty())
+    }
+
+    @Test
+    fun notifyRingingCantAlertWithNotificationsOff() = assertNotifyCantAlert {
+        shadowOf(manager).setNotificationsEnabled(false)
+    }
+
+    @Test
+    fun notifyRingingCantAlertWithoutThePermission() = assertNotifyCantAlert {
+        shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    @Test
+    fun notifyRingingCantAlertOnABlockedChannel() = assertNotifyCantAlert {
+        // The user's setting outlives ensureChannels(): re-creating a channel never raises its importance.
+        manager.createNotificationChannel(NotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL, "n", NotificationManager.IMPORTANCE_NONE))
+        AndroidRingingNotifier(context).ensureChannels()
+        assertEquals(NotificationManager.IMPORTANCE_NONE, manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).importance)
+    }
+
+    @Test
+    fun notifyRingingCantAlertOnASilentChannel() = assertNotifyCantAlert {
+        manager.createNotificationChannel(NotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL, "n", NotificationManager.IMPORTANCE_LOW))
+        AndroidRingingNotifier(context).ensureChannels()
+        assertEquals(NotificationManager.IMPORTANCE_LOW, manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).importance)
+    }
+
+    @Test
+    fun notifyRingingCantAlertOnAChannelWithoutSound() = assertNotifyCantAlert {
+        manager.createNotificationChannel(
+            NotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL, "n", NotificationManager.IMPORTANCE_HIGH).apply { setSound(null, null) },
+        )
+        AndroidRingingNotifier(context).ensureChannels()
+        assertNull(manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).sound)
+    }
+
+    @Test
+    fun notifyRingingCantAlertOnAChannelWithAnEmptySound() = assertNotifyCantAlert {
+        manager.createNotificationChannel(
+            NotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL, "n", NotificationManager.IMPORTANCE_HIGH).apply { setSound(android.net.Uri.EMPTY, null) },
+        )
+        AndroidRingingNotifier(context).ensureChannels()
+        assertEquals(android.net.Uri.EMPTY, manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).sound)
+    }
+
+    @Test
+    fun notifyRingingCantAlertWhenTheDefaultNotificationSoundIsNone() = assertNotifyCantAlert {
+        // The channel keeps the symbolic default Uri; the user's own default (Settings > Sound) is None.
+        android.provider.Settings.System.putString(context.contentResolver, android.provider.Settings.System.NOTIFICATION_SOUND, null)
+        AndroidRingingNotifier(context).ensureChannels()
+        assertEquals(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI, manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).sound)
+    }
+
+    // ---- relabels and re-alerts ----
+
+    @Test
+    fun aRelabelOfTheFullNotificationKeepsItsActionsButCarriesNoFullScreenIntent() {
+        val notifier = AndroidRingingNotifier(context)
+        val id = AndroidRingingNotifier.ringingNotificationId("r1")
+        notifier.showRinging(null, "r1", listOf("Wake"))
+        assertNotNull(shadowOf(manager).getNotification(id).fullScreenIntent) // the first post launches the screen
+
+        assertTrue(notifier.updateRingingLabel(null, "r1", listOf("Wake", "Gym"), notifySurface = false))
+        val relabelled = shadowOf(manager).getNotification(id)
+        assertNull(relabelled.fullScreenIntent)
+        assertNotNull(relabelled.contentIntent)
+        assertEquals(listOf("Stop", "Snooze"), relabelled.actions.map { it.title.toString() })
+    }
+
+    @Test
+    fun severalLabelsAreJoinedAndListedOnePerLineWhenExpanded() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showRinging(null, "r1", listOf("Wake", "Gym"))
+        val n = shadowOf(manager).getNotification(AndroidRingingNotifier.ringingNotificationId("r1"))
+        assertEquals("Wake, Gym", n.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+        assertEquals("Wake\nGym", n.extras.getCharSequence(Notification.EXTRA_BIG_TEXT).toString())
+
+        notifier.showNotifyRinging(null, "r2", listOf("Wake"))
+        val single = shadowOf(manager).getNotification(AndroidRingingNotifier.notifyNotificationId("r2"))
+        assertEquals("Wake", single.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+        assertNull(single.extras.getCharSequence(Notification.EXTRA_BIG_TEXT)) // one label: no expanded style
+    }
+
+    @Test
+    fun aNotifyRealertIsAFreshPostThatTakesOverTheForegroundBeforeTheOldOneGoes() {
+        val events = mutableListOf<String>()
+        val first = AndroidRingingNotifier.notifyNotificationId("r1")
+        val notifier = AndroidRingingNotifier(context) { _, id, _ ->
+            events += "foreground:$id:firstPosted=${shadowOf(manager).getNotification(first) != null}"
+        }
+        assertTrue(notifier.showNotifyRinging(null, "r1", listOf("Wake")))
+        assertTrue(notifier.showNotifyRinging(null, "r1", listOf("Wake", "Gym"), alertAgain = true))
+
+        val again = manager.activeNotifications.single()
+        assertTrue(again.id != first) // a new notification alerts; an update with only-alert-once wouldn't
+        assertTrue(again.id != AndroidRingingNotifier.ringingNotificationId("r1"))
+        assertEquals("Wake, Gym", again.notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+        assertEquals(listOf("foreground:$first:firstPosted=true", "foreground:${again.id}:firstPosted=true"), events)
+
+        // A relabel updates the one that's up; the next re-alert moves back.
+        assertTrue(notifier.updateRingingLabel(null, "r1", listOf("Gym"), notifySurface = true))
+        assertEquals(listOf(again.id), manager.activeNotifications.map { it.id })
+        assertTrue(notifier.showNotifyRinging(null, "r1", listOf("Gym"), alertAgain = true))
+        assertEquals(listOf(first), manager.activeNotifications.map { it.id })
+
+        notifier.showNotifyRinging(null, "r1", listOf("Gym"), alertAgain = true)
+        notifier.cancelRinging("r1") // whichever is up
+        assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test
+    fun anUpgradeAfterARealertRemovesTheNotifyNotification() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showNotifyRinging(null, "r1", emptyList())
+        notifier.showNotifyRinging(null, "r1", emptyList(), alertAgain = true)
+        notifier.showRinging(null, "r1", emptyList())
+        assertEquals(listOf(AndroidRingingNotifier.ringingNotificationId("r1")), manager.activeNotifications.map { it.id })
+    }
+
+    @Test
+    fun cancelRingingRemovesTheNotifyNotification() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showNotifyRinging(null, "r1", emptyList())
+        notifier.cancelRinging("r1")
+        assertNull(shadowOf(manager).getNotification(AndroidRingingNotifier.notifyNotificationId("r1")))
+    }
+
+    @Test
+    fun serviceForegroundFollowsANotifyRingUpgradedToTheFullSurface() {
+        val controller = Robolectric.buildService(RingingService::class.java, fireIntent()).create()
+        controller.startCommand(0, 1)
+        val service = controller.get()
+        val notifier = AndroidRingingNotifier(context, service::onRingingPosted)
+        notifier.showNotifyRinging(null, "ring-A", emptyList())
+        assertEquals(AndroidRingingNotifier.notifyNotificationId("ring-A"), shadowOf(service).lastForegroundNotificationId)
+
+        notifier.showRinging(null, "ring-A", emptyList())
+        val ringingId = AndroidRingingNotifier.ringingNotificationId("ring-A")
+        assertEquals(ringingId, shadowOf(service).lastForegroundNotificationId)
+        assertNull(shadowOf(manager).getNotification(AndroidRingingNotifier.notifyNotificationId("ring-A")))
+
+        controller.startCommand(0, 2) // re-entry keeps the upgraded notification as the foreground one
+        assertEquals(ringingId, shadowOf(service).lastForegroundNotificationId)
     }
 
     @Test
@@ -149,7 +381,7 @@ class NotificationActionsTest {
         val n = AndroidRingingNotifier(context)
         val ringId = "ring-A"
         val id = AndroidRingingNotifier.ringingNotificationId(ringId)
-        n.showRinging(null, ringId)
+        n.showRinging(null, ringId, emptyList())
         controller.get().onRingingPosted(ringId, id, shadowOf(manager).getNotification(id))
         assertEquals(id, shadowOf(controller.get()).lastForegroundNotificationId)
 
@@ -167,7 +399,7 @@ class NotificationActionsTest {
     @Test
     fun cancelRingingRemovesIt() {
         val notifier = AndroidRingingNotifier(context)
-        notifier.showRinging(null, "r1")
+        notifier.showRinging(null, "r1", emptyList())
         notifier.cancelRinging("r1")
         assertNull(shadowOf(manager).getNotification(AndroidRingingNotifier.ringingNotificationId("r1")))
     }

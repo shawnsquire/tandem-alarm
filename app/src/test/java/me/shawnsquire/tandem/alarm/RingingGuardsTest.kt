@@ -42,8 +42,9 @@ class RingingGuardsTest {
 class RingingServiceHelpersTest {
     private class RecordingSlot(private val hang: Boolean) : RingSlot {
         val clearStaleCalls = mutableListOf<Boolean>()
-        override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean) = true
-        override suspend fun claimSnoozeResume(ringId: String, alarmId: String) = true
+        override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean) = SlotClaim.Claimed
+        override suspend fun claimSnoozeResume(ringId: String, alarmId: String, onMerged: (me.shawnsquire.tandem.schedule.RingMember) -> Unit) = SlotClaim.Claimed
+        override suspend fun autoSilence(ringId: String, expected: List<me.shawnsquire.tandem.schedule.RingMember>) = true
         override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) {
             clearStaleCalls += reschedule
             if (hang) kotlinx.coroutines.awaitCancellation() else error("boom")

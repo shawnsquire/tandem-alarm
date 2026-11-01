@@ -2,9 +2,13 @@
 <resources>
     <string name="alarm_channel_name">Alarms</string>
     <string name="alarm_channel_description">Ringing alarms</string>
+    <string name="alarm_notify_channel_name">Linked alarm notifications</string>
+    <string name="alarm_notify_channel_description">Heads-up for a linked alarm set to Notify</string>
     <string name="snooze_channel_name">Snoozed alarms</string>
     <string name="snooze_channel_description">Shown while an alarm is snoozed</string>
     <string name="alarm_notification_title">Alarm</string>
+    <!-- Between the labels of alarms ringing together, on one line of the notification. Quoted to keep the space. -->
+    <string name="alarm_label_separator">", "</string>
     <string name="alarm_action_stop">Stop</string>
     <string name="alarm_action_snooze">Snooze</string>
     <string name="alarm_action_dismiss">Dismiss</string>
@@ -12,4 +16,13 @@
     <string name="alarm_prep_channel_name">Alarm checks</string>
     <string name="alarm_prep_channel_description">Shown briefly while an alarm is being checked</string>
     <string name="alarm_prep_title">Checking alarm\u2026</string>
+    <string name="ringing_with_partner">With %1$s</string>
+    <string name="ringing_remote_dismissed">%1$s dismissed</string>
+    <string name="ringing_remote_snoozed">%1$s snoozed to %2$s</string>
+    <string name="ringing_remote_dismissed_unnamed">Dismissed on your partner\'s phone</string>
+    <string name="ringing_remote_snoozed_unnamed">Snoozed to %1$s on your partner\'s phone</string>
+    <string name="ringing_remote_dismissed_member">%1$s dismissed the %2$s alarm</string>
+    <string name="ringing_remote_snoozed_member">%1$s snoozed the %2$s alarm to %3$s</string>
+    <string name="ringing_remote_dismissed_member_unnamed">The %1$s alarm was dismissed on your partner\'s phone</string>
+    <string name="ringing_remote_snoozed_member_unnamed">The %1$s alarm was snoozed to %2$s on your partner\'s phone</string>
 </resources>
