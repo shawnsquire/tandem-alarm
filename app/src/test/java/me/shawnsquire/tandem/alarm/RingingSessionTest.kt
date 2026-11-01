@@ -1969,4 +1969,46 @@ class RingingSessionTest {
         assertEquals(1, h.vibration.starts)
         assertEquals(listOf("ring-1"), h.notifier.ringing)
     }
+
+    // ---- the notification names every member ----
+
+    @Test fun aMergeRelabelsTheRingingNotificationWithoutANewPost() = runTest {
+        val h = mergedRing()
+        assertEquals(listOf(Triple("ring-1", "a, b" as String?, false)), h.notifier.relabels)
+        assertEquals(listOf("ring-1"), h.notifier.ringing) // the one full-screen post
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun aPromotionRelabelsTheRingingNotificationWithTheNewPrimary() = runTest {
+        val h = mergedRing()
+        h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(Triple("ring-1", "b" as String?, false), h.notifier.relabels.last())
+        assertEquals(2, h.notifier.relabels.size)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+    }
+
+    @Test fun aSoloRingIsNeverRelabelled() = runTest {
+        val h = harness()
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.notifier.relabels.isEmpty())
+    }
+
+    @Test fun aNotifyRingJoinedByANotifyMemberRelabelsTheNotifyNotification() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(listOf(Triple("ring-1", "a, b" as String?, true)), h.notifier.relabels)
+        assertTrue(h.notifier.ringing.isEmpty()) // still Notify: no full-screen post
+    }
+
+    @Test fun aMemberLeavingRelabelsTheNotification() = runTest {
+        val h = mergedRing()
+        h.controller.dismissOccurrence("b", bOccurrence, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(Triple("ring-1", "a" as String?, false), h.notifier.relabels.last())
+    }
 }

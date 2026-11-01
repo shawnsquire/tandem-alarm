@@ -41,6 +41,11 @@ class RecordingNotifier : RingingNotifier {
     val notify = mutableListOf<String>()
     val notifyLabels = mutableListOf<String?>()
     override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) { notify += ringId; notifyLabels += label }
+    /** [updateRingingLabel] calls: (ringId, label, notifySurface). */
+    val relabels = mutableListOf<Triple<String, String?, Boolean>>()
+    override fun updateRingingLabel(alarm: Alarm?, ringId: String, label: String?, notifySurface: Boolean) {
+        relabels += Triple(ringId, label, notifySurface)
+    }
     val cancelledRinging = mutableListOf<String>()
     override fun cancelRinging(ringId: String) { cancelledRinging += ringId }
     val snoozedLabels = mutableListOf<String?>()

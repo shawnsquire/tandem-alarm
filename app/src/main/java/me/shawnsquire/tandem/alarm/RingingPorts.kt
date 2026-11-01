@@ -120,6 +120,13 @@ interface RingingNotifier {
      */
     fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) {}
 
+    /**
+     * Shows [label] on [ringId]'s posted notification, the Notify one when [notifySurface]: a merge
+     * or a promotion changed who rings. The same notification updated in place, never a new one: it
+     * must not alert again or launch the full-screen intent again.
+     */
+    fun updateRingingLabel(alarm: Alarm?, ringId: String, label: String?, notifySurface: Boolean) {}
+
     /** Removes [ringId]'s ringing notification (a stale ring cleared without a session to do it). */
     fun cancelRinging(ringId: String) {}
 

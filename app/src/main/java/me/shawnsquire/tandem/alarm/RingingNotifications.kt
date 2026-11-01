@@ -92,6 +92,16 @@ class AndroidRingingNotifier(
     override fun showFallbackRinging(ringId: String) = post(null, ringId, withActions = false)
 
     /**
+     * Re-posts under the id already up, so it is an update of that notification: only-alert-once
+     * keeps it from alerting again, and only a fresh post launches the full-screen intent (see
+     * [post]; the activity is singleInstance besides). [onRinging] gets the new one, so the service
+     * re-promotes the current label. The other surface's notification is left alone.
+     */
+    override fun updateRingingLabel(alarm: Alarm?, ringId: String, label: String?, notifySurface: Boolean) {
+        if (notifySurface) showNotifyRinging(alarm, ringId, label) else post(label, ringId, withActions = true)
+    }
+
+    /**
      * Heads-up only, so the ringing activity never launches by itself: no full-screen intent. A tap
      * opens the app rather than the ringing screen; Stop and Snooze are on the notification. CATEGORY_ALARM
      * ("alarm or timer"): an alarms-only Do Not Disturb suppresses "all notifications except those of
