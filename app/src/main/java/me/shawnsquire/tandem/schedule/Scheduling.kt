@@ -124,16 +124,19 @@ fun isArmed(alarm: Alarm): Boolean {
  * `ringId`. A SNOOZE missing X or T is rejected "incomplete snooze". Merged members come from
  * [RingContext.merged] and the slot ring's own `merged`:
  * 1. Expired or duplicate: reject (I3).
- * 2. Not ringing here ("skipped here"): this phone's own state says X wouldn't ring: its
- *    `skippedOccurrenceAt` or `soloSkippedOccurrenceAt`, `link.ownerSkippedOccurrenceAt`, a
- *    pending "both" skip or off, copied `enabled = false`, or `joinerEnabled = false`.
- * 3. Already resolved ("already rang or changed"): X was dismissed, auto-silenced or dismissed in
- *    advance on this phone. Checked against FiredLedger (`lastRang`) plus the live ring state, so
- *    it holds inside [FIRE_GRACE] too and a late SNOOZE can't re-arm a dismissed ring.
- * 4. Live: X is sounding, snoozed (current or parked), or a member of a merged ring: apply. A
+ * 2. Already resolved ("already rang or changed"): X was dismissed, auto-silenced or dismissed in
+ *    advance on this phone and is not live. Checked against FiredLedger (`lastRang`) plus the live
+ *    ring state, so it holds inside [FIRE_GRACE] too and a late SNOOZE can't re-arm a dismissed ring.
+ * 3. Live: X is sounding, snoozed (current or parked), or a member of a merged ring: apply. A
  *    SNOOZE whose T is not later than X's current snooze end is rejected ("already snoozed
  *    later"), so two crossing snoozes settle on the later T. For a merged member the slot ring's
  *    `snoozedUntil` is that end.
+ * 4. Not ringing here ("skipped here"), reached only when X isn't live: this phone's own state says
+ *    X wouldn't ring: its `skippedOccurrenceAt` or `soloSkippedOccurrenceAt`,
+ *    `link.ownerSkippedOccurrenceAt`, a pending "both" skip or off, copied `enabled = false`, or
+ *    `joinerEnabled = false`. Live comes first because a ring that is sounding must be stoppable
+ *    even when the row has since changed: the owner's one-shot disables itself on dismiss, and a
+ *    joiner's linked copy can pick up `enabled = false` before the owner's STOP_RINGING{X} arrives.
  * 5. Early: X is the next occurrence and at most [FIRE_GRACE] away. STOP_RINGING dismisses it in
  *    advance; SNOOZE arms the snooze with no ring first.
  * 6. Otherwise reject ("already rang or changed").
@@ -245,14 +248,13 @@ private fun validateRingOccurrence(
     if (x == null || (cmd.type == CommandType.SNOOZE && until == null)) {
         return CommandDecision.Reject("incomplete snooze")
     }
-    if (!isArmed(alarm) || x in alarm.skippedOccurrences()) return CommandDecision.Reject("skipped here")
-
     val ring = context.ring?.takeIf { it.alarmId == alarm.id && it.occurrenceAt == x }
     val merged = (context.merged + context.ring?.merged.orEmpty())
         .any { it.alarmId == alarm.id && it.occurrenceAt == x }
     val parked = context.snoozes.filter { it.alarmId == alarm.id && it.occurrenceAt == x }
     if (ring == null && !merged && parked.isEmpty()) {
         if (context.lastRang == x) return CommandDecision.Reject("already rang or changed")
+        if (!isArmed(alarm) || x in alarm.skippedOccurrences()) return CommandDecision.Reject("skipped here")
         val early = x == nextOccurrence(alarm, now, zone) &&
             java.time.Duration.between(now, x) <= FIRE_GRACE.toJavaDuration()
         return if (early) CommandDecision.Apply else CommandDecision.Reject("already rang or changed")

@@ -499,11 +499,29 @@ class ValidateTest {
     }
 
     @Test
-    fun skippedOccurrenceBeatsLive() {
+    fun liveOccurrenceBeatsSkippedHere() {
         val a = alarm(skippedOccurrenceAt = x)
         val live = ctx(ring = ringState(occurrenceAt = x))
-        assertEquals(skippedHere, run(stop(), a, live))
-        assertEquals(skippedHere, run(snooze(), a, live))
+        assertEquals(apply, run(stop(), a, live))
+        assertEquals(apply, run(snooze(), a, live))
+    }
+
+    @Test
+    fun linkedOneShotWithCopiedDisabledStillAppliesWhileLive() {
+        // The owner's one-shot disables itself on dismiss; the joiner's linked copy picks up
+        // enabled = false before the owner's STOP_RINGING{X} arrives, and the ring must still stop.
+        val a = linked(enabled = false).copy(days = emptySet())
+        val live = ctx(ring = ringState(alarmId = "L1", occurrenceAt = x))
+        assertEquals(apply, run(stop(), a, live))
+        assertEquals(apply, run(snooze(), a, live))
+    }
+
+    @Test
+    fun dismissedOwnOneShotRejectsAsAlreadyRang() {
+        val a = oneShot(enabled = false)
+        val at = x.plusSeconds(60)
+        assertEquals(resolved, run(stop(), a, ctx(lastRang = x), at))
+        assertEquals(resolved, run(snooze(), a, ctx(lastRang = x), at))
     }
 
     @Test
@@ -516,7 +534,7 @@ class ValidateTest {
 
     @Test
     fun lastRangDismissedInAdvanceRejectsBeforeEarlyRule() {
-        // Only rule 3 can reject this: X is the next occurrence within FIRE_GRACE (rule 5 would apply).
+        // Only the resolved rule can reject this: X is the next occurrence within FIRE_GRACE (early would apply).
         val at = x.minusSeconds(60)
         val c = ctx(lastRang = x)
         assertEquals(resolved, run(stop(), alarm(), c, at))
