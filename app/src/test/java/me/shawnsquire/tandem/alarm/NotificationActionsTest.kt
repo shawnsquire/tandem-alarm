@@ -90,6 +90,15 @@ class NotificationActionsTest {
         assertNull(snoozed("r1"))
     }
 
+    @Test
+    fun snoozedNotificationShowsItsLabel() {
+        val notifier = AndroidRingingNotifier(context)
+        notifier.showSnoozed("r1", Instant.parse("2026-01-01T07:30:00Z"), "Gym")
+        notifier.showSnoozed("r2", Instant.parse("2026-01-01T07:30:00Z"), null)
+        assertEquals("Gym", snoozed("r1")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertEquals("Alarm", snoozed("r2")!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+    }
+
     private fun snoozed(ringId: String): Notification? = manager.activeNotifications
         .firstOrNull { it.tag == ringId && it.id == AndroidRingingNotifier.SNOOZED_NOTIFICATION_ID }
         ?.notification

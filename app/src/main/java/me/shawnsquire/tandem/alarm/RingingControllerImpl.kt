@@ -31,6 +31,9 @@ import java.util.UUID
  *
  * [mirror] is called once per LOCAL snooze or dismiss with every member it resolved, never for
  * REMOTE (I4). Which members actually go out (linked, joined) is the port's call.
+ *
+ * [remoteNotices] gets every REMOTE resolution that touches the slot ring, just before its state
+ * write, so the ringing screen can tell the partner ended it.
  */
 class RingingControllerImpl(
     private val alarmRepository: AlarmRepository,
@@ -43,6 +46,7 @@ class RingingControllerImpl(
     private val mirror: RingMirrorPort = NoOpRingMirrorPort,
     private val firedLedger: FiredLedger = InMemoryFiredLedger(),
     private val newRingId: () -> String = { UUID.randomUUID().toString() },
+    private val remoteNotices: RemoteRingNotices = RemoteRingNotices(),
     private val now: () -> Instant = Instant::now,
 ) : RingingController, RingSlot {
     private val mutex = Mutex()
@@ -61,7 +65,12 @@ class RingingControllerImpl(
     override suspend fun dismiss(ringId: String, origin: RingOrigin) = withContext(NonCancellable) { mutex.withLock {
         val state = ringStateStore.state.first()
         val local = origin == RingOrigin.LOCAL
-        if (state != null && state.ringId == ringId) dismissCurrentLocked(state, local) else dismissNotInSlotLocked(ringId, local)
+        if (state != null && state.ringId == ringId) {
+            if (!local) notifyRemote(state, state.primaryMember(), MirrorKind.DISMISS, null, endsRing = true)
+            dismissCurrentLocked(state, local)
+        } else {
+            dismissNotInSlotLocked(ringId, local)
+        }
     } }
 
     /** Compare-and-dismiss; see [RingSlot.autoSilence]. */
@@ -98,12 +107,21 @@ class RingingControllerImpl(
         val x = RingMember(alarmId, occurrenceAt)
         val local = origin == RingOrigin.LOCAL
         val state = ringStateStore.state.first()
+        fun remote(endsRing: Boolean) { if (!local && state != null) notifyRemote(state, x, MirrorKind.DISMISS, null, endsRing) }
         when {
             // Snoozed or solo, the slot ring is X alone: its members() is just X.
-            state != null && state.isPrimary(x) && (state.snoozedUntil != null || state.merged.isEmpty()) ->
+            state != null && state.isPrimary(x) && (state.snoozedUntil != null || state.merged.isEmpty()) -> {
+                remote(endsRing = true)
                 dismissCurrentLocked(state, local)
-            state != null && state.isPrimary(x) -> dismissMemberLocked(x, state.promoteFirstMember(), local)
-            state != null && x in state.merged -> dismissMemberLocked(x, state.copy(merged = state.merged - x), local)
+            }
+            state != null && state.isPrimary(x) -> {
+                remote(endsRing = false)
+                dismissMemberLocked(x, state.promoteFirstMember(), local)
+            }
+            state != null && x in state.merged -> {
+                remote(endsRing = false)
+                dismissMemberLocked(x, state.copy(merged = state.merged - x), local)
+            }
             else -> {
                 val parked = parkedEntryLocked(x, state)
                 when {
@@ -125,19 +143,24 @@ class RingingControllerImpl(
         withContext(NonCancellable) { mutex.withLock {
             val x = RingMember(alarmId, occurrenceAt)
             val state = ringStateStore.state.first()
+            val remote = origin == RingOrigin.REMOTE
+            // A split-out member: the ring sounds on without X.
+            fun splitNotice() = if (remote && state != null) RemoteRingEnd(state.ringId, x, MirrorKind.SNOOZE, until, endsRing = false) else null
             val resolved = when {
-                state != null && state.isPrimary(x) && state.snoozedUntil != null ->
-                    moveSnoozeLocked(SnoozeEntry(state.ringId, alarmId, state.snoozedUntil, occurrenceAt), until, state)
+                state != null && state.isPrimary(x) && state.snoozedUntil != null -> {
+                    val notice = if (remote) RemoteRingEnd(state.ringId, x, MirrorKind.SNOOZE, until, endsRing = true) else null
+                    moveSnoozeLocked(SnoozeEntry(state.ringId, alarmId, state.snoozedUntil, occurrenceAt), until, state, notice)
+                }
                 state != null && state.isPrimary(x) && state.merged.isEmpty() -> {
                     snoozeSlotLocked(state, until, origin) // mirrors X itself
                     false
                 }
-                state != null && state.isPrimary(x) -> { splitOutLocked(x, state.promoteFirstMember(), until); true }
-                state != null && x in state.merged -> { splitOutLocked(x, state.copy(merged = state.merged - x), until); true }
+                state != null && state.isPrimary(x) -> { splitOutLocked(x, state.promoteFirstMember(), until, splitNotice()); true }
+                state != null && x in state.merged -> { splitOutLocked(x, state.copy(merged = state.merged - x), until, splitNotice()); true }
                 else -> {
                     val parked = parkedEntryLocked(x, state)
                     when {
-                        parked != null -> moveSnoozeLocked(parked, until, slot = null)
+                        parked != null -> moveSnoozeLocked(parked, until, slot = null, notice = null)
                         firedLedger.lastRang(alarmId) == occurrenceAt -> false
                         else -> { snoozeInAdvanceLocked(x, until); true }
                     }
@@ -195,6 +218,7 @@ class RingingControllerImpl(
         try {
             armSnoozeLocked(state.ringId, state.alarmId, end, state.occurrenceAt, armed)
             for ((id, member) in split) armSnoozeLocked(id, member.alarmId, end, member.occurrenceAt, armed)
+            if (origin == RingOrigin.REMOTE) notifyRemote(state, state.primaryMember(), MirrorKind.SNOOZE, end, endsRing = true)
             ringStateStore.set(state.copy(snoozedUntil = end, merged = emptyList()))
         } catch (e: Throwable) {
             // Not snoozed after all: the ring keeps sounding, so take every snooze back.
@@ -202,8 +226,8 @@ class RingingControllerImpl(
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(state.ringId, end) }
-        for ((id, _) in split) runCatching { notifier.showSnoozed(id, end) }
+        runCatching { notifier.showSnoozed(state.ringId, end, plainLabel(state.alarmId)) }
+        for ((id, member) in split) runCatching { notifier.showSnoozed(id, end, plainLabel(member.alarmId)) }
         if (origin == RingOrigin.LOCAL) mirrorLocal(MirrorKind.SNOOZE, state.members(), end)
     }
 
@@ -234,40 +258,45 @@ class RingingControllerImpl(
     /**
      * Parks [member] of the sounding ring as its own snooze until [until] (fresh ringId) and writes
      * [rest], the ring left sounding. Arms first: on a throw the ring keeps sounding with every member.
+     * [notice] (a REMOTE split) is emitted just before the write.
      */
-    private suspend fun splitOutLocked(member: RingMember, rest: RingState, until: Instant) {
+    private suspend fun splitOutLocked(member: RingMember, rest: RingState, until: Instant, notice: RemoteRingEnd?) {
         val id = newRingId()
         val armed = mutableListOf<String>()
         try {
             armSnoozeLocked(id, member.alarmId, until, member.occurrenceAt, armed)
+            notice?.let(::emitRemote)
             ringStateStore.set(rest)
         } catch (e: Throwable) {
             takeBackLocked(armed)
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(id, until) }
+        runCatching { notifier.showSnoozed(id, until, plainLabel(member.alarmId)) }
     }
 
     /**
      * Moves the pending snooze [entry] to [to] (same ringId) only if that is later; true when moved.
-     * [slot] is the snoozed slot ring when [entry] is its snooze, written with the new end. Arms
-     * first: on a throw the snooze goes back to its old end.
+     * [slot] is the snoozed slot ring when [entry] is its snooze, written with the new end, [notice]
+     * (a REMOTE move) just before. Arms first: on a throw the snooze goes back to its old end.
      */
-    private suspend fun moveSnoozeLocked(entry: SnoozeEntry, to: Instant, slot: RingState?): Boolean {
+    private suspend fun moveSnoozeLocked(entry: SnoozeEntry, to: Instant, slot: RingState?, notice: RemoteRingEnd?): Boolean {
         if (!to.isAfter(entry.until)) return false
         val before = ledger.get(entry.ringId)
         snoozeArmer.armSnooze(entry.alarmId, entry.ringId, to)
         try {
             ledger.put(entry.ringId, entry.alarmId, to, entry.occurrenceAt)
-            if (slot != null) ringStateStore.set(slot.copy(snoozedUntil = to))
+            if (slot != null) {
+                notice?.let(::emitRemote)
+                ringStateStore.set(slot.copy(snoozedUntil = to))
+            }
         } catch (e: Throwable) {
             runCatching { if (before != null) ledger.put(before.ringId, before.alarmId, before.until, before.occurrenceAt) else ledger.remove(entry.ringId) }
             runCatching { snoozeArmer.armSnooze(entry.alarmId, entry.ringId, entry.until) }
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(entry.ringId, to) }
+        runCatching { notifier.showSnoozed(entry.ringId, to, plainLabel(entry.alarmId)) }
         return true
     }
 
@@ -286,7 +315,7 @@ class RingingControllerImpl(
             throw e
         }
         rescheduleAfterArming()
-        runCatching { notifier.showSnoozed(id, until) }
+        runCatching { notifier.showSnoozed(id, until, plainLabel(x.alarmId)) }
     }
 
     override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim = withContext(NonCancellable) { mutex.withLock {
@@ -463,6 +492,28 @@ class RingingControllerImpl(
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, listOfNotNull(entry.occurrenceAt?.let { RingMember(entry.alarmId, it) }), null)
         steps.rethrow()
     }
+
+    /**
+     * [alarmId]'s label for its snoozed notification, as the repository has it (a linked row's
+     * override first); null when unreadable. Not the resolved media: that may wait on the cache, and
+     * this runs under the lock.
+     */
+    private suspend fun plainLabel(alarmId: String): String? = try {
+        alarmRepository.get(alarmId)?.let { it.link?.overrideLabel ?: it.label }
+    } catch (e: Throwable) {
+        log("label read for the snoozed notification failed", e)
+        null
+    }
+
+    /** The primary as a member, null without a known occurrence (never guessed). */
+    private fun RingState.primaryMember(): RingMember? = occurrenceAt?.let { RingMember(alarmId, it) }
+
+    /** Tells the ringing screen a REMOTE resolution touched [state]; call just before its state write. */
+    private fun notifyRemote(state: RingState, member: RingMember?, kind: MirrorKind, snoozedUntil: Instant?, endsRing: Boolean) =
+        emitRemote(RemoteRingEnd(state.ringId, member, kind, snoozedUntil, endsRing))
+
+    /** Never throws: a resolution must not fail over the screen's notice. */
+    private fun emitRemote(notice: RemoteRingEnd) = bestEffort("remote notice") { remoteNotices.emit(notice) }
 
     private fun RingState.isPrimary(member: RingMember): Boolean =
         alarmId == member.alarmId && occurrenceAt == member.occurrenceAt

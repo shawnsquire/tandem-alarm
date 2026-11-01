@@ -55,9 +55,12 @@ class AlarmEngine(context: Context, unlocked: Boolean?, private val scope: Corou
     val ringMirrorPort = SwitchableRingMirrorPort(SharedPrefsMirrorOutbox(context))
     /** RingingSession resolves a linked ring's sound and label through it; AppContainer swaps in the real cache later. */
     val linkedMediaCache = SwitchableLinkedMediaCache()
+    /** The controller's REMOTE resolutions, for the ringing screen's "partner dismissed" notice. Above the controller: it takes it. */
+    val remoteRingNotices = RemoteRingNotices()
     private val controllerImpl =
         RingingControllerImpl(
             alarmRepository, ringStateStore, settings, scheduler, scheduler, notifier, snoozeLedger, ringMirrorPort, firedLedger,
+            remoteNotices = remoteRingNotices,
         )
     val controller: RingingController = controllerImpl
     val ringSlot: RingSlot = controllerImpl

@@ -123,8 +123,11 @@ interface RingingNotifier {
     /** Removes [ringId]'s ringing notification (a stale ring cleared without a session to do it). */
     fun cancelRinging(ringId: String) {}
 
-    /** Non-foreground notification with a Dismiss action, one per ring so parked snoozes coexist. */
-    fun showSnoozed(ringId: String, until: Instant)
+    /**
+     * Non-foreground notification with a Dismiss action, one per ring so parked snoozes coexist.
+     * [label] names the alarm (a merged ring's members each get their own); null or blank shows none.
+     */
+    fun showSnoozed(ringId: String, until: Instant, label: String? = null)
     fun cancelSnoozed(ringId: String)
 }
 

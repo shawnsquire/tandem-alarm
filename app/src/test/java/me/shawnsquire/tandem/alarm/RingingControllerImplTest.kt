@@ -43,7 +43,8 @@ class RecordingNotifier : RingingNotifier {
     override fun showNotifyRinging(alarm: Alarm?, ringId: String, label: String?) { notify += ringId; notifyLabels += label }
     val cancelledRinging = mutableListOf<String>()
     override fun cancelRinging(ringId: String) { cancelledRinging += ringId }
-    override fun showSnoozed(ringId: String, until: Instant) { snoozed += ringId to until }
+    val snoozedLabels = mutableListOf<String?>()
+    override fun showSnoozed(ringId: String, until: Instant, label: String?) { snoozed += ringId to until; snoozedLabels += label }
     override fun cancelSnoozed(ringId: String) { cancelledSnoozed += ringId }
 }
 
@@ -80,6 +81,7 @@ class RingingControllerImplTest {
             set(v) { armer.armFailure = v }
         val ledger = InMemorySnoozeLedger()
         val fired = InMemoryFiredLedger()
+        val notices = RemoteRingNotices()
     }
 
     private fun H.controller(
@@ -90,7 +92,7 @@ class RingingControllerImplTest {
         fired: FiredLedger = this.fired,
     ): RingingControllerImpl {
         var splits = 0
-        return RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror, fired, newRingId = { "split-${++splits}" }) { now }
+        return RingingControllerImpl(repo, store, settings, scheduler, armer, notifier, ledger, mirror, fired, newRingId = { "split-${++splits}" }, remoteNotices = notices) { now }
     }
 
     private class RecordingMirror : RingMirrorPort {
@@ -1453,6 +1455,8 @@ class RingingControllerImplTest {
         val kind: MirrorKind,
         val member: RingMember,
         val until: Instant?,
+        /** REMOTE's notice: whether it ends the ring, or null for none (parked, early, or nothing done). */
+        val endsRing: Boolean?,
         val act: suspend (RingingControllerImpl, RingOrigin) -> Unit,
     )
 
@@ -1463,23 +1467,23 @@ class RingingControllerImplTest {
         val parked = { H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB).also { it.ledger.put("ring-A", "a", sevenTen, occurrenceX) } }
         val solo = { H(listOf(alarm("a", emptySet())), soundingX) }
         val early = { H(listOf(alarm("a", setOf(DayOfWeek.MONDAY))), null) }
-        fun stop(name: String, h: () -> H, m: RingMember) =
-            OccurrenceCase(name, h, MirrorKind.DISMISS, m, null) { c, o -> c.dismissOccurrence(m.alarmId, m.occurrenceAt, o) }
-        fun snooze(name: String, h: () -> H, m: RingMember, t: Instant) =
-            OccurrenceCase(name, h, MirrorKind.SNOOZE, m, t) { c, o -> c.snoozeOccurrence(m.alarmId, m.occurrenceAt, t, o) }
+        fun stop(name: String, h: () -> H, m: RingMember, endsRing: Boolean?) =
+            OccurrenceCase(name, h, MirrorKind.DISMISS, m, null, endsRing) { c, o -> c.dismissOccurrence(m.alarmId, m.occurrenceAt, o) }
+        fun snooze(name: String, h: () -> H, m: RingMember, t: Instant, endsRing: Boolean?) =
+            OccurrenceCase(name, h, MirrorKind.SNOOZE, m, t, endsRing) { c, o -> c.snoozeOccurrence(m.alarmId, m.occurrenceAt, t, o) }
         return listOf(
-            stop("stop primary of merged", ::mergedH, a),
-            stop("stop merged member", ::mergedH, RingMember("b", occurrenceY)),
-            stop("stop solo slot", solo, a),
-            stop("stop snoozed slot", snoozedSlot, a),
-            stop("stop parked", parked, a),
-            stop("stop early", early, a),
-            snooze("snooze primary of merged", ::mergedH, a, tenOhFive),
-            snooze("snooze merged member", ::mergedH, RingMember("c", occurrenceZ), tenOhFive),
-            snooze("snooze solo slot", solo, a, tenOhFive),
-            snooze("snooze snoozed slot later", snoozedSlot, a, later),
-            snooze("snooze parked later", parked, a, later),
-            snooze("snooze early", early, a, tenOhFive),
+            stop("stop primary of merged", ::mergedH, a, endsRing = false),
+            stop("stop merged member", ::mergedH, RingMember("b", occurrenceY), endsRing = false),
+            stop("stop solo slot", solo, a, endsRing = true),
+            stop("stop snoozed slot", snoozedSlot, a, endsRing = true),
+            stop("stop parked", parked, a, endsRing = null),
+            stop("stop early", early, a, endsRing = null),
+            snooze("snooze primary of merged", ::mergedH, a, tenOhFive, endsRing = false),
+            snooze("snooze merged member", ::mergedH, RingMember("c", occurrenceZ), tenOhFive, endsRing = false),
+            snooze("snooze solo slot", solo, a, tenOhFive, endsRing = true),
+            snooze("snooze snoozed slot later", snoozedSlot, a, later, endsRing = true),
+            snooze("snooze parked later", parked, a, later, endsRing = null),
+            snooze("snooze early", early, a, tenOhFive, endsRing = null),
         )
     }
 
@@ -1505,5 +1509,103 @@ class RingingControllerImplTest {
         val mirror = RecordingMirror()
         h.controller(mirror).snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.LOCAL)
         assertTrue(mirror.calls.isEmpty())
+    }
+
+    // ---- REMOTE notices for the ringing screen ----
+
+    /** The store [h] writes through, recording the latest notice each write sees. */
+    private fun H.noticeRecordingStore(seen: MutableList<RemoteRingEnd?>) = object : RingStateStore by store {
+        override suspend fun set(state: RingState?) { seen += notices.latest.value; store.set(state) }
+    }
+
+    @Test fun remoteOccurrenceResolutionEmitsOneNoticeBeforeTheStateWrite() = runTest {
+        for (case in occurrenceCases) {
+            val h = case.h()
+            val seen = mutableListOf<RemoteRingEnd?>()
+            case.act(h.controller(store = h.noticeRecordingStore(seen)), RingOrigin.REMOTE)
+            val notice = h.notices.latest.value
+            if (case.endsRing == null) {
+                assertNull(case.name, notice)
+                continue
+            }
+            val expected = RemoteRingEnd("ring-1", case.member, case.kind, case.until, case.endsRing, seq = 1)
+            assertEquals(case.name, expected, notice)
+            assertEquals(case.name, expected, seen.first()) // the first write already saw it
+        }
+    }
+
+    @Test fun localResolutionNeverEmitsANotice() = runTest {
+        for (case in occurrenceCases) {
+            val h = case.h()
+            case.act(h.controller(), RingOrigin.LOCAL)
+            assertNull(case.name, h.notices.latest.value)
+        }
+        val h = mergedH()
+        h.controller().dismiss("ring-1", RingOrigin.LOCAL)
+        val s = mergedH()
+        s.controller().snooze(RingOrigin.LOCAL)
+        assertNull(h.notices.latest.value)
+        assertNull(s.notices.latest.value)
+    }
+
+    @Test fun remoteDismissOfTheSlotRingEmitsAnEndingNoticeBeforeClearingIt() = runTest {
+        val h = mergedH()
+        val seen = mutableListOf<RemoteRingEnd?>()
+        h.controller(store = h.noticeRecordingStore(seen)).dismiss("ring-1", RingOrigin.REMOTE)
+        val expected = RemoteRingEnd("ring-1", RingMember("a", occurrenceX), MirrorKind.DISMISS, null, endsRing = true, seq = 1)
+        assertEquals(expected, h.notices.latest.value)
+        assertEquals(listOf<RemoteRingEnd?>(expected), seen)
+    }
+
+    @Test fun remoteDismissOfAnotherRingEmitsNothing() = runTest {
+        val h = mergedH()
+        h.controller().dismiss("other", RingOrigin.REMOTE)
+        assertNull(h.notices.latest.value)
+    }
+
+    @Test fun remoteSnoozeOfTheSlotRingEmitsAnEndingNoticeBeforeTheWrite() = runTest {
+        val h = mergedH()
+        val seen = mutableListOf<RemoteRingEnd?>()
+        h.controller(store = h.noticeRecordingStore(seen)).snooze(RingOrigin.REMOTE, until = tenOhFive)
+        val expected = RemoteRingEnd("ring-1", RingMember("a", occurrenceX), MirrorKind.SNOOZE, tenOhFive, endsRing = true, seq = 1)
+        assertEquals(expected, h.notices.latest.value)
+        assertEquals(listOf<RemoteRingEnd?>(expected), seen)
+    }
+
+    @Test fun remoteNoticeForALegacyPrimaryHasNoMember() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        h.controller().dismiss("ring-1", RingOrigin.REMOTE)
+        assertEquals(RemoteRingEnd("ring-1", null, MirrorKind.DISMISS, null, endsRing = true, seq = 1), h.notices.latest.value)
+    }
+
+    // ---- snoozed notifications name their alarm ----
+
+    @Test fun mergedSnoozeLabelsEachSnoozedNotificationWithItsOwnAlarm() = runTest {
+        val h = mergedH()
+        h.repo.updateLink("b") { it.copy(overrideLabel = "Gym") }
+        h.controller().snooze(RingOrigin.LOCAL, until = tenOhFive)
+        assertEquals(listOf("ring-1", "split-1", "split-2"), h.notifier.snoozed.map { it.first })
+        assertEquals(listOf<String?>("a", "Gym", "c"), h.notifier.snoozedLabels)
+    }
+
+    @Test fun splitOutMoveAndEarlySnoozeLabelTheirNotification() = runTest {
+        val h = mergedH()
+        val c = h.controller()
+        c.snoozeOccurrence("c", occurrenceZ, tenOhFive, RingOrigin.REMOTE) // split out
+        c.snoozeOccurrence("c", occurrenceZ, tenOhFive.plusSeconds(60), RingOrigin.REMOTE) // moved
+        val early = H(listOf(alarm("e", setOf(DayOfWeek.MONDAY))), null)
+        early.controller().snoozeOccurrence("e", occurrenceX, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(listOf<String?>("c", "c"), h.notifier.snoozedLabels)
+        assertEquals(listOf<String?>("e"), early.notifier.snoozedLabels)
+    }
+
+    @Test fun anUnreadableAlarmSnoozesWithoutALabel() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), soundingX)
+        val failingRepo = object : AlarmRepository by h.repo {
+            override suspend fun get(id: String): Alarm? = throw IllegalStateException("db")
+        }
+        RingingControllerImpl(failingRepo, h.store, h.settings, h.scheduler, h.armer, h.notifier, h.ledger) { now }.snooze(until = tenOhFive)
+        assertEquals(listOf("ring-1" to tenOhFive), h.notifier.snoozed)
+        assertEquals(listOf<String?>(null), h.notifier.snoozedLabels)
     }
 }

@@ -146,13 +146,13 @@ class AndroidRingingNotifier(
     private fun snoozeAction() =
         Notification.Action.Builder(null, context.getString(R.string.alarm_action_snooze), AlarmIntents.snoozeActionPendingIntent(context)).build()
 
-    override fun showSnoozed(ringId: String, until: Instant) {
+    override fun showSnoozed(ringId: String, until: Instant, label: String?) {
         ensureChannels()
         val time = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(until.atZone(ZoneId.systemDefault()))
         val dismiss = Notification.Action.Builder(null, context.getString(R.string.alarm_action_dismiss), AlarmIntents.dismissPendingIntent(context, ringId)).build()
         val notification = Notification.Builder(context, SNOOZE_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle(context.getString(R.string.alarm_notification_title))
+            .setContentTitle(label?.takeIf { it.isNotBlank() } ?: context.getString(R.string.alarm_notification_title))
             .setContentText(context.getString(R.string.alarm_snoozed_until, time))
             .setCategory(Notification.CATEGORY_ALARM)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
