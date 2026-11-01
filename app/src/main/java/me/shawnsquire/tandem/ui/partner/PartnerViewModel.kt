@@ -193,6 +193,9 @@ class PartnerViewModel(
     private val stopStatuses = MutableStateFlow<Map<String, CommandUiStatus>>(emptyMap())
     private val jobs = HashMap<String, Job>()
 
+    /** Rings stopped through [RingingController.dismissOccurrence]; they never get a STOP_RINGING command. */
+    private val dismissedLocally = HashSet<String>()
+
     /** Which action each alarm's latest command carried; written before the Pending status is published. */
     private val sentActions = MutableStateFlow<Map<String, PartnerAction>>(emptyMap())
 
@@ -225,6 +228,9 @@ class PartnerViewModel(
             pairing.status.collect { s ->
                 if (s is PairingStatus.Paired) local.update { UnpairedLocal() }
             }
+        }
+        viewModelScope.launch {
+            linkedRows.collect { rows -> joins.update { j -> j.filterNot { (id, ui) -> ui == JoinUi.Joining && id in rows } } }
         }
     }
 
@@ -338,7 +344,12 @@ class PartnerViewModel(
             sendStop(ring)
             return
         }
-        viewModelScope.launch {
+        // One decision per ring: a repeat tap while it runs, or after the local dismiss (the mirror
+        // already sent the one STOP_RINGING), must not read the context again and fall through to a send.
+        val jobKey = "stoplocal:${ring.ringId}"
+        if (ring.ringId in dismissedLocally || jobs[jobKey]?.isActive == true) return
+        stopStatuses.update { it + (ring.ringId to CommandUiStatus.Pending) }
+        jobs[jobKey] = viewModelScope.launch {
             try {
                 if (isLocalCopyLive(ringingController.ringContext(rowId), rowId, x)) {
                     // The mirror sends the one STOP_RINGING; sending it here too would double it.
@@ -359,8 +370,8 @@ class PartnerViewModel(
 
     private suspend fun dismissLocally(ringId: String, rowId: String, x: Instant) {
         jobs.remove("stop:$ringId")?.cancel()
-        stopStatuses.update { it + (ringId to CommandUiStatus.Pending) }
         ringingController.dismissOccurrence(rowId, x, RingOrigin.LOCAL)
+        dismissedLocally += ringId
         stopStatuses.update { it + (ringId to CommandUiStatus.Applied) }
     }
 
@@ -370,7 +381,8 @@ class PartnerViewModel(
         viewModelScope.launch {
             val ui = try {
                 when (val r = linkRepository.join(ownerAlarmId)) {
-                    is LinkResult.Joined -> null
+                    // Stay Joining until the linked row shows up, so the row never flashes back to Join.
+                    is LinkResult.Joined -> return@launch joins.update { if (ownerAlarmId in linkedRows.value) it - ownerAlarmId else it }
                     is LinkResult.Failed -> JoinUi.Failed(r.reason)
                 }
             } catch (e: CancellationException) {

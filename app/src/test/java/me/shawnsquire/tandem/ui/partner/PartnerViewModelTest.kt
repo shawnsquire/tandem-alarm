@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.ui.partner
 
 import app.cash.turbine.test
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.alarm.RingingController
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeLinkRepository
 import me.shawnsquire.tandem.fakes.FakeRingingController
@@ -100,6 +102,7 @@ class PartnerViewModelTest {
         paired: Boolean = true,
         sender: RecordingSender = RecordingSender(),
         localAlarms: List<Alarm> = emptyList(),
+        controller: ((FakeRingingController) -> RingingController)? = null,
     ): Env {
         val pairing = FakePairing()
         if (paired) pairing.statusFlow.value = PairingStatus.Paired("h", "Alex")
@@ -107,7 +110,7 @@ class PartnerViewModelTest {
         val alarms = FakeAlarmRepository(localAlarms)
         val links = FakeLinkRepository()
         val ringing = FakeRingingController()
-        val vm = PartnerViewModel(pairing, repo, sender, alarms, links, ringing, clock, MutableStateFlow(Unit))
+        val vm = PartnerViewModel(pairing, repo, sender, alarms, links, controller?.invoke(ringing) ?: ringing, clock, MutableStateFlow(Unit))
         return Env(pairing, repo, sender, vm, alarms, links, ringing)
     }
 
@@ -362,6 +365,7 @@ class PartnerViewModelTest {
         assertTrue(vm.state.value.alarms.single().joining)
         vm.joinAlarm("a")
         gate.complete(Unit)
+        e.alarms.upsert(linkedRow("L1", "a"))
         assertFalse(vm.state.value.alarms.single().joining)
         assertEquals(listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.Join("a")), e.links.calls)
     }
@@ -450,5 +454,129 @@ class PartnerViewModelTest {
         assertTrue(e.ringing.ringContextAlarmIds.isEmpty())
         assertTrue(e.ringing.dismissedOccurrences.isEmpty())
         assertEquals(listOf(Sent(CommandType.STOP_RINGING, "a", null, "ring-1")), e.sender.sent)
+    }
+
+    // Repeat taps and failures.
+
+    private fun joinedEnvWith(
+        context: RingContext = ctx(ring = RingState("L1", "local", now, null, occurrenceAt = ringAt)),
+        controller: (FakeRingingController) -> RingingController,
+    ): Env {
+        val e = env(
+            partner(alarm("a"), ringing = partnerRing), localAlarms = listOf(linkedRow("L1", "a")),
+            controller = controller,
+        )
+        e.ringing.ringContextResult = context
+        return e
+    }
+
+    @Test fun doubleTapWhileContextIsReadDismissesOnceAndSendsNothing() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val e = joinedEnvWith { fake ->
+            object : RingingController by fake {
+                override suspend fun ringContext(alarmId: String): RingContext { gate.await(); return fake.ringContext(alarmId) }
+            }
+        }
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(CommandUiStatus.Pending, state().ringing!!.stopStatus)
+        e.vm.stopRinging()
+        gate.complete(Unit)
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+    }
+
+    @Test fun tapAfterLocalDismissSendsNothing() = runTest {
+        val e = joinedEnvWith { it }
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        // The copy is gone now; a repeat tap must not fall through to a command.
+        e.ringing.ringContextResult = ctx()
+        e.vm.stopRinging()
+        assertEquals(1, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+    }
+
+    @Test fun newRingIdStillStopsLocallyAfterAnEarlierDismiss() = runTest {
+        val e = joinedEnvWith { it }
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        val nextX = ringAt.plusSeconds(86_400)
+        e.repo.flow.value = partner(alarm("a"), ringing = RingState("a", "ring-2", now, null, occurrenceAt = nextX))
+        e.ringing.ringContextResult = ctx(ring = RingState("L1", "local2", now, null, occurrenceAt = nextX))
+        e.vm.stopRinging()
+        assertEquals(2, e.ringing.dismissedOccurrences.size)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun ringContextThrowingShowsUnknown() = runTest {
+        val e = joinedEnvWith { fake ->
+            object : RingingController by fake {
+                override suspend fun ringContext(alarmId: String): RingContext = throw IllegalStateException("boom")
+            }
+        }
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(CommandUiStatus.Unknown, state().ringing!!.stopStatus)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun dismissThrowingShowsUnknown() = runTest {
+        val e = joinedEnvWith { fake ->
+            object : RingingController by fake {
+                override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: Instant, origin: RingOrigin) =
+                    throw IllegalStateException("boom")
+            }
+        }
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(CommandUiStatus.Unknown, state().ringing!!.stopStatus)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun localDismissIsPendingThenApplied() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val e = joinedEnvWith { fake ->
+            object : RingingController by fake {
+                override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: Instant, origin: RingOrigin) {
+                    gate.await()
+                    fake.dismissOccurrence(alarmId, occurrenceAt, origin)
+                }
+            }
+        }
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(CommandUiStatus.Pending, state().ringing!!.stopStatus)
+        gate.complete(Unit)
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+    }
+
+    @Test fun cancellationIsNotReportedAsUnknown() = runTest {
+        val e = joinedEnvWith { fake ->
+            object : RingingController by fake {
+                override suspend fun ringContext(alarmId: String): RingContext = throw CancellationException("cancelled")
+            }
+        }
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(CommandUiStatus.Pending, state().ringing!!.stopStatus)
+        assertTrue(e.sender.sent.isEmpty())
+    }
+
+    @Test fun joinStaysJoiningUntilLinkedRowAppears() = runTest {
+        val e = env(partner(alarm("a")))
+        val state = e.collect(backgroundScope)
+        e.vm.joinAlarm("a")
+        // join() returned Joined but the linked row has not been emitted yet.
+        assertTrue(state().alarms.single().joining)
+        assertNull(state().alarms.single().linkedAlarmId)
+        e.vm.joinAlarm("a")
+        assertEquals(1, e.links.calls.size)
+        e.alarms.upsert(linkedRow("L1", "a"))
+        val row = state().alarms.single()
+        assertFalse(row.joining)
+        assertEquals("L1", row.linkedAlarmId)
     }
 }
