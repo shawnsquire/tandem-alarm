@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import android.util.Log
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.RingMember
 import java.time.Instant
@@ -21,12 +22,74 @@ object NoOpRingMirrorPort : RingMirrorPort {
 
 /**
  * The engine is built before AppContainer (it must ring before first unlock), so the real mirror is
- * swapped in later through this.
+ * swapped in later by assigning [delegate].
+ *
+ * While no delegate is attached every call is appended raw to [outbox] (device-protected, so it
+ * survives a locked-boot process death) and the real mirror sees it later. The owner-side "is it
+ * joined" check needs PartnerRepository, which isn't readable while locked, so it is not made here.
+ * Assigning [delegate] drains the outbox in order into the new delegate, then forwards directly. A
+ * queued call the delegate throws on is retried once, then logged and dropped (as
+ * [SwitchableAlarmRepository] does), so it can't replay over later calls; each call leaves the outbox
+ * as soon as it is handled. Under [lock] every call is either queued before the drain reads the
+ * outbox or forwarded after it. [onLocal] costs one prefs commit while detached and never throws.
  */
-class SwitchableRingMirrorPort : RingMirrorPort {
-    @Volatile var delegate: RingMirrorPort = NoOpRingMirrorPort
-    override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) =
-        delegate.onLocal(kind, members, snoozedUntil)
+class SwitchableRingMirrorPort(private val outbox: MirrorOutbox = InMemoryMirrorOutbox()) : RingMirrorPort {
+    private val lock = Any()
+    @Volatile private var attached: RingMirrorPort? = null
+
+    /** [NoOpRingMirrorPort] until assigned. Assigning replays the queued calls into the new value, then forwards to it. */
+    var delegate: RingMirrorPort
+        get() = attached ?: NoOpRingMirrorPort
+        set(value) {
+            synchronized(lock) {
+                drain(value)
+                attached = value
+            }
+        }
+
+    override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) {
+        val target = synchronized(lock) {
+            attached ?: run {
+                try {
+                    outbox.append(MirrorCall(kind, members, snoozedUntil))
+                } catch (e: Throwable) {
+                    runCatching { Log.e(TAG, "queueing a mirror call failed; dropped", e) }
+                }
+                return
+            }
+        }
+        target.onLocal(kind, members, snoozedUntil)
+    }
+
+    private fun drain(target: RingMirrorPort) {
+        val queued = try {
+            outbox.entries()
+        } catch (e: Throwable) {
+            runCatching { Log.e(TAG, "reading the mirror outbox failed", e) }
+            return
+        }
+        for ((seq, c) in queued) {
+            try {
+                target.onLocal(c.kind, c.members, c.snoozedUntil)
+            } catch (e: Throwable) {
+                runCatching { Log.w(TAG, "replaying mirror call $c failed; retrying once", e) }
+                try {
+                    target.onLocal(c.kind, c.members, c.snoozedUntil)
+                } catch (e: Throwable) {
+                    runCatching { Log.e(TAG, "replaying mirror call $c failed twice; dropped", e) }
+                }
+            }
+            try {
+                outbox.removeThrough(seq)
+            } catch (e: Throwable) {
+                runCatching { Log.e(TAG, "removing replayed mirror calls through $seq failed", e) }
+            }
+        }
+    }
+
+    private companion object {
+        const val TAG = "RingMirrorPort"
+    }
 }
 
 /** Loops the first candidate URI that opens; the adapter appends system-default fallbacks after [candidates]. */

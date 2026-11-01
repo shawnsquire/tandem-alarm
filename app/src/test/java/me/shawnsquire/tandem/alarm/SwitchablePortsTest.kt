@@ -454,7 +454,7 @@ class SwitchablePortsTest {
     fun ringMirrorPortDefaultsToNoOpAndForwardsToTheDelegate() {
         val port = SwitchableRingMirrorPort()
         val members = listOf(me.shawnsquire.tandem.schedule.RingMember("a", Instant.parse("2026-03-02T06:30:00Z")))
-        port.onLocal(MirrorKind.DISMISS, members, null) // no-op, must not throw
+        port.onLocal(MirrorKind.DISMISS, members, null) // queued, must not throw
         assertEquals(NoOpRingMirrorPort, port.delegate)
 
         val calls = mutableListOf<Triple<MirrorKind, List<me.shawnsquire.tandem.schedule.RingMember>, Instant?>>()
@@ -465,6 +465,7 @@ class SwitchablePortsTest {
         }
         val until = Instant.parse("2026-03-02T06:40:00Z")
         port.onLocal(MirrorKind.SNOOZE, members, until)
-        assertEquals(listOf(Triple(MirrorKind.SNOOZE, members, until as Instant?)), calls)
+        // The call made while detached is replayed first, then the forwarded one.
+        assertEquals(listOf(Triple(MirrorKind.DISMISS, members, null as Instant?), Triple(MirrorKind.SNOOZE, members, until as Instant?)), calls)
     }
 }
