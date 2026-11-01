@@ -144,18 +144,19 @@ class FakeRingingController : RingingController {
         private set
     val snoozeOrigins = mutableListOf<RingOrigin>()
     val snoozeUntils = mutableListOf<Instant?>()
-    val dismissedOccurrences = mutableListOf<Triple<String, Instant, RingOrigin>>()
-    val snoozedOccurrences = mutableListOf<List<Any>>()
+    data class OccurrenceCall(val alarmId: String, val occurrenceAt: Instant, val origin: RingOrigin)
+    data class SnoozeOccurrenceCall(val alarmId: String, val occurrenceAt: Instant, val until: Instant, val origin: RingOrigin)
+    val dismissedOccurrences = mutableListOf<OccurrenceCall>()
+    val snoozedOccurrences = mutableListOf<SnoozeOccurrenceCall>()
     override suspend fun dismiss(ringId: String, origin: RingOrigin) { dismissed += ringId; dismissOrigins += origin }
     override suspend fun snooze(origin: RingOrigin, until: Instant?) {
         snoozeCount++; snoozeOrigins += origin; snoozeUntils += until
     }
     override suspend fun dismissOccurrence(alarmId: String, occurrenceAt: Instant, origin: RingOrigin) {
-        dismissedOccurrences += Triple(alarmId, occurrenceAt, origin)
+        dismissedOccurrences += OccurrenceCall(alarmId, occurrenceAt, origin)
     }
-    /** Each entry is [alarmId, occurrenceAt, until, origin]. */
     override suspend fun snoozeOccurrence(alarmId: String, occurrenceAt: Instant, until: Instant, origin: RingOrigin) {
-        snoozedOccurrences += listOf(alarmId, occurrenceAt, until, origin)
+        snoozedOccurrences += SnoozeOccurrenceCall(alarmId, occurrenceAt, until, origin)
     }
 
     /** When set, [writeUnlessRinging] refuses (as if that ring had started) instead of writing. */
