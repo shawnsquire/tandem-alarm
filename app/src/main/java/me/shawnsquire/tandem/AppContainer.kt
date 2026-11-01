@@ -112,12 +112,13 @@ class AppContainer private constructor(
     // use anything declared above (alarmRepository, settingsRepository, partnerRepository,
     // commandSender, commandRemote, householdFlow, commandNotifier, alarmScheduler, ringingController,
     // syncScope, context). They are declared before the consumers below, which take them as inputs,
-    // and the init block hands ringMirror and linkedMediaCache to the engine.
+    // and the init block hands ringMirror and linkedMediaCache to the engine. Their order lets each use
+    // the earlier ones: LinkSync feeds linkedMediaCache, MediaPublisher reads linkRepository.openInvites.
+    val linkedMediaCache: LinkedMediaCache = FakeLinkedMediaCache() // L5: swap to real (the engine gets it in init)
     val linkRepository: LinkRepository = FakeLinkRepository() // L4: swap to real
     val linkSync: LinkSync = FakeLinkSync() // L4: swap to real
     val ringMirror: RingMirror = FakeRingMirror() // L4: swap to real (the engine's port gets it in init)
     val mediaPublisher: MediaPublisher = FakeMediaPublisher() // L5: swap to real
-    val linkedMediaCache: LinkedMediaCache = FakeLinkedMediaCache() // L5: swap to real (the engine gets it in init)
 
     val commandApplierImpl = CommandApplierImpl(
         alarmRepository, ringStateStore, alarmScheduler, ringingController, commandRemote, householdFlow,
