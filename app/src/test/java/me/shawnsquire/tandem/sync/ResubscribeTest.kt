@@ -2,6 +2,7 @@ package me.shawnsquire.tandem.sync
 
 import app.cash.turbine.test
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -29,22 +30,32 @@ class ResubscribeTest {
         assertEquals(listOf(0L, 2_000L, 6_000L, 11_000L), times)
     }
 
-    @Test fun `a good value resets the wait`() = runTest {
+    @Test fun `a subscription that stayed up for the wait resets it`() = runTest {
         var n = 0
         val times = mutableListOf<Long>()
         val src = flow {
             times += testScheduler.currentTime
-            if (++n == 3) emit(7)
+            emit(7)
+            if (++n == 3) delay(5.seconds) // up for longer than the 4 s wait it was started with
             throw IllegalStateException("x")
         }
         src.resubscribeOnError(-1, initial = 1.seconds, max = 60.seconds).test {
-            assertEquals(-1, awaitItem()); assertEquals(-1, awaitItem())
-            assertEquals(7, awaitItem()); assertEquals(-1, awaitItem())
-            assertEquals(-1, awaitItem())
+            repeat(4) { assertEquals(7, awaitItem()); assertEquals(-1, awaitItem()) }
             cancelAndIgnoreRemainingEvents()
         }
-        // 0, +1s, +2s (value 7 then error), then reset to +1s
-        assertEquals(listOf(0L, 1_000L, 3_000L, 4_000L), times.take(4))
+        // 0, +1s, +2s; the third stays up 5 s and fails at 8 s, then the wait starts over at 1 s.
+        assertEquals(listOf(0L, 1_000L, 3_000L, 9_000L), times.take(4))
+    }
+
+    @Test fun `a value right before each failure doesn't reset the wait`() = runTest {
+        // A cached snapshot raised before the server rejects the listen (PERMISSION_DENIED).
+        val times = mutableListOf<Long>()
+        val src = flow { times += testScheduler.currentTime; emit(7); throw IllegalStateException("denied") }
+        src.resubscribeOnError(-1, initial = 2.seconds, max = 5.seconds).test {
+            repeat(4) { assertEquals(7, awaitItem()); assertEquals(-1, awaitItem()) }
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertEquals(listOf(0L, 2_000L, 6_000L, 11_000L), times)
     }
 
     @Test fun `an error is logged before resubscribing`() = runTest {
