@@ -94,9 +94,9 @@ private class GatedSlot(private val inner: RingSlot) : RingSlot {
     override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim {
         events?.add("claim"); gate.await(); return inner.claimFire(newRing, stillDue)
     }
-    override suspend fun claimSnoozeResume(ringId: String, alarmId: String): SlotClaim {
+    override suspend fun claimSnoozeResume(ringId: String, alarmId: String, onMerged: (RingMember) -> Unit): SlotClaim {
         gate.await()
-        return inner.claimSnoozeResume(ringId, alarmId)
+        return inner.claimSnoozeResume(ringId, alarmId, onMerged)
     }
     override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = inner.clearStale(isLive, reschedule)
 }
@@ -1203,26 +1203,66 @@ class RingingSessionTest {
         assertEquals(0, h.finished)
     }
 
-    @Test fun lateMergedClaimDoesNotStopOrAdoptTheRing() = runTest {
+    @Test fun lateMergedClaimKeepsSoundingUntilTheRingItJoinedEnds() = runTest {
+        val ringA = RingState("a", "ring-A", clockNow, null, occurrence)
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringA)
+        val slot = GatedSlot(h.controller)
+        val bAt = occurrence.plusSeconds(60)
+        slotSession(h, slot, ringId = "ring-B").start("b", bAt, false, null)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size) // rang on timeout, inert
+        slot.gate.complete(Unit) // the claim finishes late: b merged into A's sounding ring
+        runCurrent()
+        assertEquals(ringA.copy(merged = listOf(RingMember("b", bAt))), h.rawStore.state.first())
+        assertEquals(0, h.sound.stops)
+        assertEquals(0, h.finished)
+        assertTrue(h.notifier.ringing.isEmpty()) // the other ring's state is not adopted
+        h.rawStore.set(ringA.copy(merged = listOf(RingMember("b", bAt), RingMember("c", bAt)))) // still a member
+        runCurrent()
+        assertEquals(0, h.finished)
+
+        h.controller.dismiss("ring-A") // Stop on A resolves b too
+        runCurrent()
+        assertFalse(h.repo.get("b")!!.enabled)
+        assertEquals(1, h.finished) // so b's fallback ring ends with it
+        assertTrue(h.sound.stops >= 1)
+    }
+
+    @Test fun lateMergedSnoozeClaimKeepsSoundingUntilTheRingItJoinedIsSnoozed() = runTest {
+        val ringA = RingState("a", "ring-A", clockNow, null, occurrence)
+        val h = harness(alarms = listOf(alarm("a"), alarm("b")), state = ringA)
+        val xAt = occurrence.minusSeconds(600)
+        h.ledger.put("ring-X", "b", clockNow, xAt)
+        val slot = GatedSlot(h.controller)
+        slotSession(h, slot).start("b", clockNow, true, "ring-X")
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        slot.gate.complete(Unit)
+        runCurrent()
+        assertEquals(ringA.copy(merged = listOf(RingMember("b", xAt))), h.rawStore.state.first())
+        assertEquals(0, h.finished)
+
+        h.controller.snooze() // b splits out into its own snooze, which rings it later
+        runCurrent()
+        assertEquals(1, h.finished)
+        assertTrue(h.ledger.all().any { it.alarmId == "b" && it.occurrenceAt == xAt })
+    }
+
+    @Test fun lateMergedClaimEndsAtOnceWhenTheMemberIsAlreadyGone() = runTest {
         val gate = CompletableDeferred<Unit>()
         val h = harness()
         val slot = object : RingSlot by h.controller {
             override suspend fun claimFire(newRing: RingState, stillDue: suspend () -> Boolean): SlotClaim {
                 gate.await()
-                return SlotClaim.Merged
+                return SlotClaim.Merged // and that ring was stopped before this session heard back
             }
         }
         slotSession(h, slot).start("a", occurrence, false, null)
         advanceTimeBy(2_001); runCurrent()
-        assertEquals(1, h.sound.starts.size) // rang on timeout
-        gate.complete(Unit) // the claim finishes late: merged into another ring
+        assertEquals(1, h.sound.starts.size)
+        gate.complete(Unit)
         runCurrent()
-        assertEquals(0, h.sound.stops)
-        assertEquals(0, h.finished)
-        assertTrue(h.notifier.ringing.isEmpty()) // the other ring's state is not adopted
-        h.rawStore.set(RingState("b", "ring-other", clockNow, null)) // that ring changing does not end this one
-        runCurrent()
-        assertEquals(0, h.finished)
+        assertEquals(1, h.finished)
     }
 
     @Test fun lateClaimAfterSessionFinishedIsIgnored() = runTest {

@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.alarm
 
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
 
 /** What a [RingSlot] claim did with the slot. */
@@ -44,8 +45,10 @@ interface RingSlot {
      * sounding ring takes the snooze into its `merged` ([SlotClaim.Merged]); an entry without an
      * occurrence (written before occurrences were stored) supersedes it instead. A snoozed ring is
      * parked. Unless merged, writes [ringId] as sounding (same ringId, I3) and returns [SlotClaim.Claimed].
+     * [onMerged] gets the member it merged, inside the critical section, before [SlotClaim.Merged]
+     * returns: the caller knows only [alarmId], and the entry with the occurrence is gone by then.
      */
-    suspend fun claimSnoozeResume(ringId: String, alarmId: String): SlotClaim
+    suspend fun claimSnoozeResume(ringId: String, alarmId: String, onMerged: (RingMember) -> Unit = {}): SlotClaim
 
     /**
      * Clears a RingState left behind by a dead process: non-null, [isLive] false for its ringId,
@@ -56,3 +59,7 @@ interface RingSlot {
      */
     suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean = true)
 }
+
+/** The ring's members: the primary (left out without a known occurrence, never guessed) and every merged one. */
+internal fun RingState.members(): List<RingMember> =
+    listOfNotNull(occurrenceAt?.let { RingMember(alarmId, it) }) + merged

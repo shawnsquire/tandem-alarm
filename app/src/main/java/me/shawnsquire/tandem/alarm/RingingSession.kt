@@ -17,6 +17,7 @@ import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
@@ -215,6 +216,31 @@ class RingingSession(
         guarded("notifier", Unit) { notifier.showRinging(alarm, ringId) }
     }
 
+    /**
+     * A claim that timed out merged [member] into another sounding ring after all, while this
+     * session rings it as a fallback with no actions. That ring's Stop or Snooze resolves [member]
+     * too, so this ring ends with it: once [member] is no longer one of the slot ring's members, or
+     * the slot is empty or snoozed (a snooze splits every member out into its own). Never stops the
+     * ring on its own; null [member] (unknown) just logs.
+     */
+    private fun followMergedRing(member: RingMember?) {
+        if (member == null) {
+            log("late claim merged an unknown member; ringing until auto-silence", null)
+            return
+        }
+        if (finished) return
+        jobs += scope.launch {
+            try {
+                ringStateStore.state.first { it == null || it.snoozedUntil != null || member !in it.members() }
+            } catch (e: Throwable) {
+                currentCoroutineContext().ensureActive()
+                log("merged ring observation failed", e)
+                return@launch
+            }
+            finish()
+        }
+    }
+
     private suspend fun execute(alarmId: String, occurrence: Instant, isSnooze: Boolean, snoozeRingId: String?) {
         // Same occurrence already rang (a replay racing AlarmManager's own fire): quiet, before the network check.
         if (!isSnooze && guarded("fired ledger read", null as Instant?) { firedLedger.lastRang(alarmId) } == occurrence) {
@@ -237,18 +263,19 @@ class RingingSession(
         }
         register(snoozeRingId)
         var alarm: Alarm? = null
+        var mergedAs: RingMember? = null
         // Liveness check, ledger cleanup, merge or supersede and the state write happen in one critical section.
         val claim = boundedClaim(
             "snooze claim",
             onLate = { result: SlotClaim ->
-                // A late "not live" (dismissed while snoozed) or "merged" does not stop a ring that has started.
+                // A late "not live" (dismissed while snoozed) does not stop a ring that has started.
                 when (result) {
                     SlotClaim.Claimed -> adoptLateClaim(alarm, snoozeRingId)
-                    SlotClaim.Merged -> log("late snooze claim: merged into the sounding ring", null)
+                    SlotClaim.Merged -> followMergedRing(mergedAs)
                     SlotClaim.NotDue -> log("late snooze claim: snooze was dismissed", null)
                 }
             },
-        ) { ringSlot.claimSnoozeResume(snoozeRingId, alarmId) }
+        ) { ringSlot.claimSnoozeResume(snoozeRingId, alarmId) { mergedAs = it } }
         if (claim is Claim.Done && claim.value == SlotClaim.NotDue) {
             finish() // dismissed while snoozed
             return
@@ -305,10 +332,10 @@ class RingingSession(
         val claim = boundedClaim(
             "ring slot claim",
             onLate = { result: SlotClaim ->
-                // A late "no longer due" or "merged" does not stop a ring that has started.
+                // A late "no longer due" does not stop a ring that has started.
                 when (result) {
                     SlotClaim.Claimed -> adoptLateClaim(alarm, ringId)
-                    SlotClaim.Merged -> log("late ring slot claim: merged into the sounding ring", null)
+                    SlotClaim.Merged -> followMergedRing(RingMember(alarmId, occurrence))
                     SlotClaim.NotDue -> log("late ring slot claim: no longer due", null)
                 }
             },

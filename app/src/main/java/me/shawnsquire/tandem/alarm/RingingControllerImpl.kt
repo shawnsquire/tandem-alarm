@@ -300,7 +300,7 @@ class RingingControllerImpl(
         SlotClaim.Claimed
     } }
 
-    override suspend fun claimSnoozeResume(ringId: String, alarmId: String): SlotClaim =
+    override suspend fun claimSnoozeResume(ringId: String, alarmId: String, onMerged: (RingMember) -> Unit): SlotClaim =
         withContext(NonCancellable) { mutex.withLock {
             // A failed read here throws: the caller rings anyway (I1).
             val entry = ledger.get(ringId)
@@ -320,6 +320,7 @@ class RingingControllerImpl(
                 val member = entry?.occurrenceAt?.let { RingMember(entry.alarmId, it) }
                 if (mergeLocked(current, ringId, member)) {
                     dropFiredSnoozeLocked(ringId)
+                    member?.let(onMerged)
                     return@withLock SlotClaim.Merged
                 }
                 supersedeLocked(current, ringId)
@@ -463,10 +464,6 @@ class RingingControllerImpl(
         val next = merged.first()
         return copy(alarmId = next.alarmId, occurrenceAt = next.occurrenceAt, merged = merged.drop(1))
     }
-
-    /** The ring's members: the primary (left out without a known occurrence, never guessed) and every merged one. */
-    private fun RingState.members(): List<RingMember> =
-        listOfNotNull(occurrenceAt?.let { RingMember(alarmId, it) }) + merged
 
     /** Reports a LOCAL resolution of [members] (I4); best effort, so a resolved ring never turns into a throw. */
     private fun mirrorLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) {
