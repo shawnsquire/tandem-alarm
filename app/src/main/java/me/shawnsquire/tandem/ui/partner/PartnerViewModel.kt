@@ -19,6 +19,7 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.RingContext
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.sync.CommandSender
@@ -179,6 +180,18 @@ internal fun isLocalCopyLive(context: RingContext, rowId: String, x: Instant): B
         context.snoozes.any { it.alarmId == rowId && it.occurrenceAt == x }
 }
 
+/**
+ * One Stop tap's target. [key] dedups taps: the ringId for a whole-ring stop, or ringId plus one own
+ * member. [rowId] is this phone's copy to dismiss locally when it is live, [alarmId] the id the command names.
+ */
+private data class StopTarget(
+    val key: String,
+    val rowId: String?,
+    val occurrenceAt: Instant?,
+    val alarmId: String,
+    val byOccurrence: Boolean,
+)
+
 private data class UnpairedLocal(
     val code: String? = null,
     val codeLoading: Boolean = false,
@@ -206,10 +219,10 @@ class PartnerViewModel(
     private val stopStatuses = MutableStateFlow<Map<String, CommandUiStatus>>(emptyMap())
     private val jobs = HashMap<String, Job>()
 
-    /** Rings stopped through [RingingController.dismissOccurrence]; they never get a STOP_RINGING command. */
+    /** Stop targets dismissed through [RingingController.dismissOccurrence]; they never get a STOP_RINGING command. */
     private val dismissedLocally = HashSet<String>()
 
-    /** Rings a Stop tap already sent as STOP_RINGING; they never get a local dismiss. */
+    /** Stop targets a tap already sent as STOP_RINGING; they never get a local dismiss. */
     private val sentStops = HashSet<String>()
 
     /** Which action each alarm's latest command carried; written before the Pending status is published. */
@@ -363,19 +376,16 @@ class PartnerViewModel(
 
     fun stopRinging() {
         val ring = partner.value?.ringing ?: return
-        // One decision per ring: a repeat tap while it runs, or after the local dismiss (the mirror
+        val target = stopTarget(ring) ?: return
+        // One decision per target: a repeat tap while it runs, or after the local dismiss (the mirror
         // already sent the one STOP_RINGING), must not read the context again and fall through to a send.
-        val jobKey = "stoplocal:${ring.ringId}"
-        if (ring.ringId in dismissedLocally || jobs[jobKey]?.isActive == true) return
-        val x = ring.occurrenceAt
-        // Our copy of the ring: the linked row that joined the partner's alarm, or, when the partner is
-        // a joiner ringing one of our own alarms (published under its id), that alarm itself. Only the
-        // slot ring's id counts: if ours is just a merged member there, a local dismiss would mirror a
-        // stop for that member alone and leave the partner's ring sounding, so send the STOP instead.
-        val rowId = linkedRows.value[ring.alarmId] ?: ring.alarmId.takeIf { it in ownAlarms.value }
-        // A command already sent for this ring is the one STOP; never dismiss locally on top of it.
-        if (x == null || rowId == null || ring.ringId in sentStops) {
-            sendStop(ring)
+        val jobKey = "stoplocal:${target.key}"
+        if (target.key in dismissedLocally || jobs[jobKey]?.isActive == true) return
+        val rowId = target.rowId
+        val x = target.occurrenceAt
+        // A command already sent for this target is the one STOP; never dismiss locally on top of it.
+        if (x == null || rowId == null || target.key in sentStops) {
+            sendStop(ring, target)
             return
         }
         stopStatuses.update { it + (ring.ringId to CommandUiStatus.Pending) }
@@ -383,9 +393,9 @@ class PartnerViewModel(
             try {
                 if (isLocalCopyLive(ringingController.ringContext(rowId), rowId, x)) {
                     // The mirror sends the one STOP_RINGING; sending it here too would double it.
-                    dismissLocally(ring.ringId, rowId, x)
+                    dismissLocally(ring.ringId, target.key, rowId, x)
                 } else {
-                    sendStop(ring)
+                    sendStop(ring, target)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -395,15 +405,36 @@ class PartnerViewModel(
         }
     }
 
-    private fun sendStop(ring: RingState) {
-        sentStops += ring.ringId
-        run(stopStatuses, ring.ringId, CommandType.STOP_RINGING, ring.alarmId, null, ring.ringId)
+    /**
+     * What a Stop tap on the partner's [ring] stops. When the partner is a joiner ringing our own alarms
+     * (published under their ids), as the slot ring or merged members, it is one of them by occurrence:
+     * the joiner resolves only that member, so its own alarms in the ring keep sounding. Several of ours
+     * stop one per tap, and null means each was already dismissed here. Otherwise it is the whole ring by
+     * ringId, and our copy is the linked row that joined the partner's slot alarm.
+     */
+    private fun stopTarget(ring: RingState): StopTarget? {
+        val slot = ring.occurrenceAt?.let { RingMember(ring.alarmId, it) }
+        val own = (listOfNotNull(slot) + ring.merged).filter { it.alarmId in ownAlarms.value }
+        if (own.isEmpty()) {
+            return StopTarget(ring.ringId, linkedRows.value[ring.alarmId], ring.occurrenceAt, ring.alarmId, byOccurrence = false)
+        }
+        return own.map { StopTarget("${ring.ringId}/${it.alarmId}@${it.occurrenceAt}", it.alarmId, it.occurrenceAt, it.alarmId, byOccurrence = true) }
+            .firstOrNull { it.key !in dismissedLocally }
     }
 
-    private suspend fun dismissLocally(ringId: String, rowId: String, x: Instant) {
+    private fun sendStop(ring: RingState, target: StopTarget) {
+        sentStops += target.key
+        if (target.byOccurrence) {
+            run(stopStatuses, ring.ringId, CommandType.STOP_RINGING, target.alarmId, target.occurrenceAt, null)
+        } else {
+            run(stopStatuses, ring.ringId, CommandType.STOP_RINGING, target.alarmId, null, ring.ringId)
+        }
+    }
+
+    private suspend fun dismissLocally(ringId: String, key: String, rowId: String, x: Instant) {
         jobs.remove("stop:$ringId")?.cancel()
         ringingController.dismissOccurrence(rowId, x, RingOrigin.LOCAL)
-        dismissedLocally += ringId
+        dismissedLocally += key
         stopStatuses.update { it + (ringId to CommandUiStatus.Applied) }
     }
 
