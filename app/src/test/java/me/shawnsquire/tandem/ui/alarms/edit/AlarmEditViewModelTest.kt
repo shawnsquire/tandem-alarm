@@ -428,11 +428,27 @@ class AlarmEditViewModelTest {
         assertNull(e.vm.state.value.inviteStatus)
     }
 
-    @Test fun invitedStaysAfterAppliedUntilTheInviteOpensAndCloses() = runTest {
+    @Test fun invitedStaysThroughTheGapBetweenTheInviteClosingAndTheLinksArriving() = runTest {
         val e = edit()
         paired(e)
         e.vm.invite()
+        e.links.openInvites.value = setOf("a1")
+        e.links.openInvites.value = emptySet() // accepted: the invite closes before the partner's links land
         assertEquals(EditInvite.Invited, e.vm.state.value.invite)
+        e.vm.invite()
+        assertEquals(1, e.links.calls.count { it is FakeLinkRepository.Call.Invite })
+        e.partner.set(PartnerState("Alex", emptyList(), null, null, links = listOf(PublishedLink("a1", LinkMode.RING))))
+        assertEquals(EditInvite.Joined, e.vm.state.value.invite)
+    }
+
+    @Test fun anInviteThatExpiresUnansweredReturnsToInvite() = runTest {
+        val gate = kotlinx.coroutines.flow.MutableSharedFlow<Pair<CommandStatus, String?>>()
+        val e = Env("a1", listOf(existing), linkOverride = { fake ->
+            object : LinkRepository by fake { override fun invite(alarmId: String) = gate }
+        })
+        paired(e)
+        e.vm.invite()
+        gate.emit(CommandStatus.PENDING to null)
         e.links.openInvites.value = setOf("a1")
         assertEquals(EditInvite.Invited, e.vm.state.value.invite)
         e.links.openInvites.value = emptySet()

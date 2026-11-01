@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
@@ -31,6 +32,7 @@ import me.shawnsquire.tandem.ui.partner.CommandUiStatus
 import me.shawnsquire.tandem.ui.partner.FALLBACK_NAME
 import me.shawnsquire.tandem.ui.resolvePartnerName
 import java.time.Clock
+import java.time.Instant
 
 enum class LinkedError { RingtoneImport, WallpaperImport, Save }
 
@@ -95,25 +97,35 @@ class LinkedAlarmViewModel(
     private var lastTitle: Pair<String, String>? = null
 
     init {
-        // A command this sheet did not send (the Alarms switch, an earlier process or VM) is tracked too, so its
-        // Pending, then Applied or Rejected, shows here as well.
-        viewModelScope.launch {
-            repository.alarms.collect { alarms ->
-                val pending = alarms.firstOrNull { it.id == alarmId }?.link?.pendingBoth ?: return@collect
-                sent.update { tracked ->
-                    // A settled outcome belongs to the earlier command, even if an identical one is pending again.
-                    if (tracked?.type == pending.type && tracked.occurrenceAt == pending.occurrenceAt && tracked.outcome == null) tracked
-                    else SentBoth(pending.type, pending.occurrenceAt, returned = true)
-                }
-            }
-        }
-        // Latch the outcome once, the first time the tracked command is no longer pending.
+        // One collector tracks and settles the command, so each decision reads a single consistent snapshot and
+        // the alarms flow (which can lag a commit) is never mixed with state written from a newer one.
         viewModelScope.launch {
             combine(repository.alarms, sent) { alarms, tracked -> alarms.firstOrNull { it.id == alarmId } to tracked }
-                .collect { (alarm, tracked) ->
-                    if (alarm == null || tracked == null || tracked.outcome != null) return@collect
-                    val outcome = settleBoth(tracked, alarm, rejectedReason) ?: return@collect
-                    sent.update { if (it == tracked) tracked.copy(outcome = outcome) else it }
+                .collectLatest { (alarm, tracked) ->
+                    val pending = alarm?.link?.pendingBoth
+                    // A command this sheet did not send (the Alarms switch, an earlier process or VM) is tracked
+                    // too, so its Pending, then Applied or Rejected, shows here as well. A settled outcome
+                    // belongs to the earlier command, even if an identical one is pending again.
+                    if (pending != null && (tracked == null || tracked.outcome != null || !tracked.isFor(pending.type, pending.occurrenceAt))) {
+                        sent.value = SentBoth(pending.type, pending.occurrenceAt, returned = true, seenPending = true)
+                        return@collectLatest
+                    }
+                    if (alarm == null || tracked == null || tracked.outcome != null) return@collectLatest
+                    if (isStillPending(tracked, alarm)) {
+                        if (!tracked.seenPending) sent.update { if (it != null && it.isFor(tracked.type, tracked.occurrenceAt)) it.copy(seenPending = true) else it }
+                        return@collectLatest
+                    }
+                    // Settle only from a snapshot that showed it pending (or a failed send); otherwise this one may
+                    // predate the write, so read the row fresh.
+                    var outcome = settleBoth(tracked, alarm, rejectedReason)
+                    if (outcome == null && tracked.returned && !tracked.seenPending) {
+                        val fresh = currentRow() ?: return@collectLatest
+                        if (!isStillPending(tracked, fresh)) {
+                            outcome = settleBoth(tracked.copy(seenPending = true), fresh, rejectedReason)
+                        }
+                    }
+                    outcome ?: return@collectLatest
+                    sent.update { if (it != null && it.isFor(tracked.type, tracked.occurrenceAt) && it.outcome == null) it.copy(outcome = outcome) else it }
                 }
         }
     }
@@ -137,20 +149,25 @@ class LinkedAlarmViewModel(
                 armed = isArmed(alarm),
                 skippedForYou = isArmed(alarm) && alarm.skippedOccurrenceAt?.let { it > now } == true,
                 bothAvailable = ownerAlarm(partner, link)?.nextOccurrenceAt != null,
-                bothStatus = sent?.let { deriveBothStatus(it, alarm, rejectedReason) },
+                bothStatus = sent?.let { displayBoth(it, rejectedReason) },
                 askingSkip = local.askingSkip, confirmingLeave = local.confirmingLeave,
                 busy = local.busy, error = local.error,
             )
         }
             .mapLatest { s -> s.copy(ringtoneTitle = s.overrideRingtone?.let { titleOf(it) }.orEmpty()) }
-            // The replay cache expires with the subscription, so a stale `closed` is not shown when the sheet reopens.
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), LinkedSheetState())
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LinkedSheetState())
 
     private suspend fun titleOf(uri: String): String =
         lastTitle?.takeIf { it.first == uri }?.second ?: ringtoneTitle(uri).also { lastTitle = uri to it }
 
     private fun ownerAlarm(partner: PartnerState?, link: AlarmLink): PartnerAlarm? =
         partner?.alarms?.firstOrNull { it.id == link.ownerAlarmId }
+
+    /**
+     * True when the row is really gone. The retained [state] can still say `closed` from before a rejoin, so the
+     * sheet confirms here before it dismisses.
+     */
+    suspend fun isRowGone(): Boolean = currentRow() == null
 
     private suspend fun currentRow(): Alarm? = repository.get(alarmId)?.takeIf { it.link != null }
 
@@ -197,13 +214,17 @@ class LinkedAlarmViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                sent.update { if (it == command) command.copy(failed = true) else it }
+                sent.update { if (it != null && it.isFor(command.type, command.occurrenceAt)) it.copy(failed = true) else it }
             }
         }
     }
 
+    // Matched by command, not equality: the tracker may have set seenPending meanwhile.
+    private fun SentBoth.isFor(type: CommandType, occurrenceAt: Instant?) =
+        this.type == type && this.occurrenceAt == occurrenceAt
+
     private fun MutableStateFlow<SentBoth?>.compareAndSetReturned(command: SentBoth) =
-        update { if (it == command) command.copy(returned = true) else it }
+        update { if (it != null && it.isFor(command.type, command.occurrenceAt) && it.outcome == null) it.copy(returned = true) else it }
 
     // Leave.
 

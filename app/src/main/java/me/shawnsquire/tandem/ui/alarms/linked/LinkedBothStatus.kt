@@ -16,6 +16,8 @@ data class SentBoth(
     val occurrenceAt: Instant?,
     val returned: Boolean = false,
     val failed: Boolean = false,
+    /** A row emission showed the command pending, so later emissions postdate the write. */
+    val seenPending: Boolean = false,
     val outcome: CommandUiStatus? = null,
 )
 
@@ -27,13 +29,14 @@ internal fun isStillPending(sent: SentBoth, alarm: Alarm): Boolean {
 
 /**
  * Applied or Rejected once [sent] has settled, null while it is still on its way. `sendBoth` returns Unit, so
- * the outcome is read off the row once `link.pendingBoth` no longer holds the command.
+ * the outcome is read off the row once `link.pendingBoth` no longer holds the command. A snapshot that never
+ * showed the command pending may predate the write, so it settles nothing ([seenPending]).
  */
 internal fun settleBoth(sent: SentBoth, alarm: Alarm, rejectedReason: String): CommandUiStatus? {
     val rejected = CommandUiStatus.Rejected(rejectedReason)
     if (sent.failed) return rejected
     val link = alarm.link ?: return rejected
-    if (isStillPending(sent, alarm) || !sent.returned) return null
+    if (isStillPending(sent, alarm) || !sent.returned || !sent.seenPending) return null
     val reflected = when (sent.type) {
         // A one-shot has no skip to set: the owner turns it off instead.
         CommandType.SKIP_NEXT ->
@@ -46,6 +49,9 @@ internal fun settleBoth(sent: SentBoth, alarm: Alarm, rejectedReason: String): C
     return if (reflected) CommandUiStatus.Applied else rejected
 }
 
-/** Pending while the command is in flight or still held on the row, else its latched or freshly settled outcome. */
-internal fun deriveBothStatus(sent: SentBoth, alarm: Alarm, rejectedReason: String): CommandUiStatus =
-    sent.outcome ?: settleBoth(sent, alarm, rejectedReason) ?: CommandUiStatus.Pending
+/**
+ * What the sheet shows: the latched outcome once the ViewModel settled the command, Rejected for a failed send,
+ * else Pending. It never settles from the row itself, which could be a snapshot that predates the write.
+ */
+internal fun displayBoth(sent: SentBoth, rejectedReason: String): CommandUiStatus =
+    sent.outcome ?: if (sent.failed) CommandUiStatus.Rejected(rejectedReason) else CommandUiStatus.Pending

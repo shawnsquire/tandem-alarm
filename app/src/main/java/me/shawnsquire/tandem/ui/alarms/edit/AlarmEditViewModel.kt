@@ -98,6 +98,9 @@ class AlarmEditViewModel(
      */
     private val invitePending = MutableStateFlow(false)
 
+    /** The held invite's command reached APPLIED: only the partner's links release it from then on. */
+    private val inviteApplied = MutableStateFlow(false)
+
     /** The held invite has shown up in `openInvites`, so its leaving means it closed. */
     private var inviteSeenOpen = false
 
@@ -106,12 +109,14 @@ class AlarmEditViewModel(
     init {
         viewModelScope.launch {
             combine(
-                invitable, pairing.status, partnerRepository.partner, links.openInvites, invitePending,
-            ) { canInvite, status, partner, open, pending ->
+                invitable, pairing.status, partnerRepository.partner, links.openInvites,
+                combine(invitePending, inviteApplied) { pending, applied -> pending to applied },
+            ) { canInvite, status, partner, open, (pending, applied) ->
                 val joined = partner?.links?.any { it.ownerAlarmId == alarmId } == true
                 val isOpen = alarmId in open
                 if (pending && isOpen) inviteSeenOpen = true
-                val held = pending && !joined && !(inviteSeenOpen && !isOpen)
+                // Once applied, the invite closing and the links landing are not simultaneous: wait for the links.
+                val held = pending && !joined && (applied || !(inviteSeenOpen && !isOpen))
                 val invite = when {
                     !canInvite || status !is PairingStatus.Paired -> EditInvite.Hidden
                     joined -> EditInvite.Joined
@@ -120,7 +125,7 @@ class AlarmEditViewModel(
                 }
                 Triple(invite, resolvePartnerName(status, partner), pending && !held)
             }.collect { (invite, name, release) ->
-                if (release) invitePending.value = false
+                if (release) { invitePending.value = false; inviteApplied.value = false }
                 _state.update { it.copy(invite = invite, partnerName = name) }
             }
         }
@@ -155,6 +160,7 @@ class AlarmEditViewModel(
         _state.update { it.copy(inviteStatus = null) }
         inviteJob = viewModelScope.launch {
             inviteSeenOpen = false
+            inviteApplied.value = false
             invitePending.value = true
             var applied = false
             try {
@@ -162,7 +168,7 @@ class AlarmEditViewModel(
                     when (status) {
                         CommandStatus.PENDING -> invitePending.value = true
                         // Stays held: the partner joining or the invite closing releases it.
-                        CommandStatus.APPLIED -> applied = true
+                        CommandStatus.APPLIED -> { applied = true; inviteApplied.value = true }
                         CommandStatus.REJECTED -> {
                             invitePending.value = false
                             _state.update {

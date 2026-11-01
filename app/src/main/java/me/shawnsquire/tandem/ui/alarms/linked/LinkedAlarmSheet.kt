@@ -114,7 +114,8 @@ fun LinkedAlarmSheetRoute(
             viewModel.onSheetOpened()
         }
     }
-    LaunchedEffect(state.closed) { if (state.closed) latestDismiss() }
+    // `closed` can be stale in the retained state after a rejoin, so confirm the row is really gone.
+    LaunchedEffect(state.closed) { if (state.closed && viewModel.isRowGone()) latestDismiss() }
 
     val systemPicker = rememberLauncherForActivityResult(PickSystemRingtone()) { uri ->
         if (uri != null) viewModel.onSystemRingtonePicked(uri)

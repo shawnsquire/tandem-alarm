@@ -1,6 +1,9 @@
 package me.shawnsquire.tandem.ui.alarms.linked
 
 import app.cash.turbine.test
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
@@ -345,17 +348,57 @@ class LinkedAlarmViewModelTest {
         assertEquals(CommandUiStatus.Pending, e.latest().bothStatus)
     }
 
-    @Test fun aClosedStateDoesNotSurviveTheSubscriptionForARejoinedRow() = runTest {
+    @Test fun aStaleClosedIsNotConfirmedForARejoinedRow() = runTest {
         val e = Env(joined())
         e.vm.state.test {
             e.repo.delete("j")
             assertTrue(expectMostRecentItem().closed)
+            assertTrue(e.vm.isRowGone())
             cancelAndIgnoreRemainingEvents()
         }
         advanceTimeBy(6_000)
         e.repo.upsert(joined())
+        // The retained state may still say closed, but the row is back, so the sheet must not dismiss.
+        assertFalse(e.vm.isRowGone())
+    }
+
+    @Test fun stateStaysLoadedAcrossALongUnsubscribe() = runTest {
+        val e = Env(joined())
+        assertTrue(e.latest().loaded)
+        advanceTimeBy(60_000)
+        assertTrue(e.vm.state.value.loaded)
         assertFalse(e.vm.state.value.closed)
-        e.vm.onSheetOpened()
-        assertFalse(e.latest().closed)
+    }
+
+    // The alarms flow lags a commit (Room re-queries later) while get() is already current.
+
+    @Test fun neverSettlesFromASnapshotThatPredatesTheWrite() = runTest {
+        val row = joined()
+        val real = FakeAlarmRepository(listOf(row))
+        val lagging = MutableStateFlow(listOf(row))
+        val repo = object : me.shawnsquire.tandem.data.AlarmRepository by real {
+            override val alarms = lagging
+        }
+        val fake = FakeLinkRepository()
+        val links = object : me.shawnsquire.tandem.sync.LinkRepository by fake {
+            override suspend fun sendBoth(alarmId: String, type: CommandType, occurrenceAt: Instant?) {
+                real.updateLink(alarmId) { it.copy(pendingBoth = PendingBoth(type, occurrenceAt, "c1")) }
+            }
+        }
+        val vm = LinkedAlarmViewModel(
+            "j", repo, links, LinkedAlarmActions(links, AlarmEdits(repo, FakeAlarmScheduler())),
+            FakePairingRepository(), FakePartnerRepository(partnerState()), clock,
+            { it ?: "Default" }, { "x" }, {}, { "x" }, {}, "rejected",
+        )
+        val seen = mutableListOf<CommandUiStatus?>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect { seen += it.bothStatus } }
+        vm.skipBoth()
+        assertEquals(CommandUiStatus.Pending, vm.state.value.bothStatus)
+        lagging.value = listOf(real.get("j")!!) // now the flow shows the pending command
+        assertEquals(CommandUiStatus.Pending, vm.state.value.bothStatus)
+        real.updateLink("j") { it.copy(pendingBoth = null, ownerSkippedOccurrenceAt = ownerNext) }
+        lagging.value = listOf(real.get("j")!!)
+        assertEquals(CommandUiStatus.Applied, vm.state.value.bothStatus)
+        assertFalse(seen.any { it is CommandUiStatus.Rejected })
     }
 }
