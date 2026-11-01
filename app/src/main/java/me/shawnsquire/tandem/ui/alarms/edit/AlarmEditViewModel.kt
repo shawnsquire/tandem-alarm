@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.ui.alarms.edit
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -67,6 +68,8 @@ class AlarmEditViewModel(
     partnerRepository: PartnerRepository,
     /** Shown when an invite is rejected without a reason. */
     private val inviteFailedReason: String,
+    /** Called once the write committed, with the row as it was before the edit (null for a new alarm). */
+    private val onSaved: (previous: Alarm?, saved: Alarm) -> Unit = { _, _ -> },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AlarmEditUiState())
@@ -301,6 +304,7 @@ class AlarmEditViewModel(
                     enabled = true,
                     skippedOccurrenceAt = if (unchanged) current?.skippedOccurrenceAt else null,
                     soloSkippedOccurrenceAt = if (unchanged) current?.soloSkippedOccurrenceAt else null,
+                    lateRing = if (unchanged) current?.lateRing else null,
                     link = current?.link,
                     ringtoneUri = s.ringtoneUri,
                     wallpaperPath = s.wallpaperPath,
@@ -335,6 +339,12 @@ class AlarmEditViewModel(
         finished = true
         previous?.ringtoneUri?.takeIf { it != alarm.ringtoneUri }?.let(deleteRingtoneFile)
         previous?.wallpaperPath?.takeIf { it != alarm.wallpaperPath }?.let(deleteWallpaperFile)
+        // A throw here must not break the save flow.
+        try {
+            onSaved(previous, alarm)
+        } catch (e: Exception) {
+            Log.w(TAG, "post-save hook failed", e)
+        }
     }
 
     private suspend fun settleInterrupted(alarm: Alarm?, previous: Alarm?) {
@@ -345,7 +355,7 @@ class AlarmEditViewModel(
     /**
      * Whether [alarm] was written. Compares every field the editor writes and ignores only those other
      * writers change: `enabled` (partner ENABLE/DISABLE), `skippedOccurrenceAt` (partner skip, and the
-     * expired-skip strip on read) and `soloSkippedOccurrenceAt` (the owner's solo skip). A failed upsert leaves the old row, which differs in whatever was edited.
+     * expired-skip strip on read), `soloSkippedOccurrenceAt` (the owner's solo skip) and `lateRing` (the owner's late-ring answer, also stripped on read when expired). A failed upsert leaves the old row, which differs in whatever was edited.
      */
     private suspend fun writeLanded(alarm: Alarm): Boolean {
         val stored = runCatching { repository.get(alarm.id) }.getOrNull() ?: return false
@@ -353,6 +363,7 @@ class AlarmEditViewModel(
             enabled = alarm.enabled,
             skippedOccurrenceAt = alarm.skippedOccurrenceAt,
             soloSkippedOccurrenceAt = alarm.soloSkippedOccurrenceAt,
+            lateRing = alarm.lateRing,
         ) == alarm
     }
 
@@ -379,5 +390,9 @@ class AlarmEditViewModel(
         sessionWallpaper?.let(deleteWallpaperFile)
         sessionRingtone = null
         sessionWallpaper = null
+    }
+
+    private companion object {
+        const val TAG = "AlarmEditViewModel"
     }
 }

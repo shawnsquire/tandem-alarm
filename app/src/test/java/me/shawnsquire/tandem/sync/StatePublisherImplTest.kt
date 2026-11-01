@@ -362,6 +362,32 @@ class StatePublisherImplTest {
         assertEquals(emptyList<Any>(), none.writer.writes.single().second["links"])
     }
 
+    @Test
+    fun `setLateRing on an own alarm republishes it`() = runTest {
+        val e = env()
+        e.publisher.start()
+        advance(2_000)
+        assertFalse(e.writer.writes.last().second.firstAlarm().containsKey("lateRing"))
+        val x = start.plusSeconds(3600)
+        e.alarms.setLateRing("a1", me.shawnsquire.tandem.schedule.LateRing(x, false))
+        advance(2_000)
+        assertEquals(2, e.writer.writes.size)
+        val l = e.writer.writes.last().second.firstAlarm()["lateRing"] as Map<*, *>
+        assertEquals(false, l["ring"])
+        assertEquals(com.google.firebase.Timestamp(x.epochSecond, 0), l["occurrenceAt"])
+        e.alarms.setLateRing("a1", me.shawnsquire.tandem.schedule.LateRing(x, true))
+        advance(2_000)
+        assertEquals(true, (e.writer.writes.last().second.firstAlarm()["lateRing"] as Map<*, *>)["ring"])
+    }
+
+    @Test
+    fun `boundary includes the late ring expiry`() {
+        val x = Instant.parse("2026-03-02T06:00:00Z")
+        val a = weekly.copy(days = emptySet(), enabled = false, lateRing = me.shawnsquire.tandem.schedule.LateRing(x, true))
+        val after = x.plusSeconds(1)
+        assertEquals(x.plus(FIRE_GRACE.toJavaDuration()), nextPublishBoundary(listOf(a), after, zone))
+    }
+
     private fun media(hash: String) = PublishedMedia(MediaRef(hash, 10), emptyMap())
 
     @Test

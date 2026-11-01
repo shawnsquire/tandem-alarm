@@ -34,8 +34,8 @@ interface AlarmDao {
 
     /**
      * Persists what `withoutExpiredSkip` reads: clears each expired skip column, and turns off an
-     * own one-shot (`days = 0`, not a linked row) whose solo skip expired. Rows with nothing
-     * expired are untouched.
+     * own one-shot (`days = 0`, not a linked row) whose solo skip expired, and clears an expired
+     * late ring (both columns). Rows with nothing expired are untouched.
      */
     @Query(
         """
@@ -47,15 +47,23 @@ interface AlarmDao {
             soloSkippedOccurrenceAt = CASE WHEN soloSkippedOccurrenceAt <= :cutoffMillis
                 THEN NULL ELSE soloSkippedOccurrenceAt END,
             linkOwnerSkippedOccurrenceAt = CASE WHEN linkOwnerSkippedOccurrenceAt <= :cutoffMillis
-                THEN NULL ELSE linkOwnerSkippedOccurrenceAt END
+                THEN NULL ELSE linkOwnerSkippedOccurrenceAt END,
+            lateRingRing = CASE WHEN lateRingOccurrenceAt <= :cutoffMillis
+                THEN NULL ELSE lateRingRing END,
+            lateRingOccurrenceAt = CASE WHEN lateRingOccurrenceAt <= :cutoffMillis
+                THEN NULL ELSE lateRingOccurrenceAt END
         WHERE skippedOccurrenceAt <= :cutoffMillis OR soloSkippedOccurrenceAt <= :cutoffMillis
-            OR linkOwnerSkippedOccurrenceAt <= :cutoffMillis
+            OR linkOwnerSkippedOccurrenceAt <= :cutoffMillis OR lateRingOccurrenceAt <= :cutoffMillis
         """,
     )
     suspend fun clearExpiredSkips(cutoffMillis: Long)
 
     @Query("UPDATE alarms SET soloSkippedOccurrenceAt = :skippedAtMillis WHERE id = :id")
     suspend fun setSoloSkip(id: String, skippedAtMillis: Long?)
+
+    /** Own rows only (an owner column unset); a missing or linked row is left alone (I2). */
+    @Query("UPDATE alarms SET lateRingOccurrenceAt = :occurrenceAtMillis, lateRingRing = :ring WHERE id = :id AND (linkOwnerUid IS NULL OR linkOwnerAlarmId IS NULL)")
+    suspend fun setLateRing(id: String, occurrenceAtMillis: Long?, ring: Boolean?)
 
     /** Linked rows only (both owner columns set); a missing or own row is left alone. */
     @Query("UPDATE alarms SET linkJoinerEnabled = :enabled WHERE id = :id AND linkOwnerUid IS NOT NULL AND linkOwnerAlarmId IS NOT NULL")

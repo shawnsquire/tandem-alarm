@@ -21,6 +21,7 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.data.withoutExpiredSkip
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -124,6 +125,13 @@ class SwitchableAlarmRepository(
         write(DeferredWrite.SetSoloSkip(id, occurrence), { it.copy(soloSkippedOccurrenceAt = occurrence) }) { it.setSoloSkip(id, occurrence) }
 
     /**
+     * Deferrable like [setSkip]: queued and replayed on attach. The mirror doesn't encode lateRing
+     * (before the first unlock a late ring rings, I1), so a locked read doesn't show it.
+     */
+    override suspend fun setLateRing(id: String, lateRing: LateRing?) =
+        write(DeferredWrite.SetLateRing(id, lateRing), { it.copy(lateRing = lateRing) }) { it.setLateRing(id, lateRing) }
+
+    /**
      * Deferrable like [setEnabled]: queued and replayed on attach. The mirror carries the link,
      * so the change below applies to a linked mirrored row while locked.
      */
@@ -189,6 +197,7 @@ class SwitchableAlarmRepository(
         is DeferredWrite.SetEnabled -> real.setEnabled(w.id, w.enabled)
         is DeferredWrite.SetSkip -> real.setSkip(w.id, w.occurrence)
         is DeferredWrite.SetSoloSkip -> real.setSoloSkip(w.id, w.occurrence)
+        is DeferredWrite.SetLateRing -> real.setLateRing(w.id, w.lateRing)
         is DeferredWrite.SetJoinerEnabled -> real.setJoinerEnabled(w.id, w.enabled)
     }
 

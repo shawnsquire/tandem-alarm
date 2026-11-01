@@ -7,11 +7,15 @@ import java.time.Instant
  * An alarm owned by this phone. Per I2 the local Room DB is the single source of truth
  * and the partner never writes alarm data. A row with [link] is the joiner's copy of a
  * partner's alarm: it is still this phone's own row (its joiner-owned data is written only
- * here, per I2), but its copied fields (label, hour, minute, days, enabled) are written only
- * by LinkSync.
+ * here, per I2), but its copied fields (label, hour, minute, days, enabled, [lateRing]) are written
+ * only by LinkSync.
  *
  * Empty [days] means a one-shot alarm. [skippedOccurrenceAt] skips exactly that occurrence;
  * a skip whose instant has passed is ignored.
+ *
+ * [lateRing] is the owner's answer to "still ring at the old time?" after moving a joined alarm
+ * earlier. On an own row it is that answer; on a linked row it is copied from the owner's
+ * published alarm and written only by LinkSync, like hour/minute.
  */
 data class Alarm(
     val id: String,
@@ -25,7 +29,14 @@ data class Alarm(
     val wallpaperPath: String?,
     val link: AlarmLink? = null,
     val soloSkippedOccurrenceAt: Instant? = null,
+    val lateRing: LateRing? = null,
 )
+
+/**
+ * The owner's answer to "should it still ring at the old time?" for a joined alarm moved earlier.
+ * `ring = false` asks the joiner not to ring late at [occurrenceAt], the old occurrence.
+ */
+data class LateRing(val occurrenceAt: Instant, val ring: Boolean)
 
 /**
  * How a joiner's linked alarm behaves on this phone: [RING] rings like a normal alarm,

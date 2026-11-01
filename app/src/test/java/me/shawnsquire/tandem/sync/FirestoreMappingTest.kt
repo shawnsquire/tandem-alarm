@@ -11,6 +11,9 @@ import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.FIRE_GRACE
+import me.shawnsquire.tandem.schedule.LateRing
+import kotlin.time.toJavaDuration
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
@@ -284,6 +287,79 @@ class FirestoreMappingTest {
         assertEquals(emptyList<PublishedLink>(), partnerStateFromDoc(deviceDocMap("P", null, listOf(alarm), null, now, zone, emptyList()))!!.links)
         val cleared = deviceDocMap("P", null, listOf(alarm), null, now, zone, null, PublishedMedia(null, emptyMap()))
         assertTrue(cleared.containsKey("defaultWallpaper") && cleared["defaultWallpaper"] == null)
+    }
+
+    private fun linkOf(vararg extra: Pair<String, Any?>) =
+        partnerStateFromDoc(mapOf("displayName" to "P", "links" to listOf(mapOf("ownerAlarmId" to "o", "mode" to "RING") + extra)))!!.links.single()
+
+    @Test
+    fun linkScheduleRoundTripsIncludingOneShot() {
+        val links = listOf(
+            PublishedLink("o1", LinkMode.RING, 6, 30, setOf(DayOfWeek.WEDNESDAY, DayOfWeek.MONDAY)),
+            PublishedLink("o2", LinkMode.NOTIFY, 0, 0, emptySet()),
+            PublishedLink("o3", LinkMode.NOTIFY),
+        )
+        val m = deviceDocMap("P", null, listOf(alarm), null, now, zone, links)
+        val maps = (m["links"] as List<*>).map { it as Map<*, *> }
+        assertEquals(listOf("MONDAY", "WEDNESDAY"), maps[0]["days"])
+        assertEquals(setOf("ownerAlarmId", "mode"), maps[2].keys)
+        assertEquals(links, partnerStateFromDoc(m)!!.links)
+    }
+
+    @Test
+    fun linkWithoutAScheduleParsesWithNullSchedule() {
+        val l = linkOf()
+        assertEquals(PublishedLink("o", LinkMode.RING), l)
+        assertNull(l.hour)
+        assertNull(l.days)
+    }
+
+    @Test
+    fun linkScheduleIsAllOrNothing() {
+        val good = arrayOf("hour" to 6L, "minute" to 30L, "days" to listOf("MONDAY"))
+        assertEquals(PublishedLink("o", LinkMode.RING, 6, 30, setOf(DayOfWeek.MONDAY)), linkOf(*good))
+        val bad = listOf(
+            mapOf("hour" to 6L, "days" to listOf("MONDAY")),
+            mapOf("hour" to 24L, "minute" to 30L, "days" to listOf("MONDAY")),
+            mapOf("hour" to 6L, "minute" to 60L, "days" to listOf("MONDAY")),
+            mapOf("hour" to 6L, "minute" to 30L, "days" to listOf("MONDAY", "FUNDAY")),
+            mapOf("hour" to 6L, "minute" to 30L, "days" to "MONDAY"),
+            mapOf("hour" to 6L, "minute" to 30L),
+        )
+        for (b in bad) assertEquals(b.toString(), PublishedLink("o", LinkMode.RING), linkOf(*b.toList().toTypedArray()))
+    }
+
+    @Test
+    fun lateRingRoundTripsAndExpiresAfterTheGrace() {
+        val x = now.plusSeconds(1800)
+        val yes = alarm.copy(id = "y", lateRing = LateRing(x, true))
+        val no = alarm.copy(id = "n", lateRing = LateRing(x, false))
+        val s = partnerStateFromDoc(deviceDocMap("P", null, listOf(yes, no), null, now, zone))!!
+        assertEquals(LateRing(x, true), s.alarms[0].lateRing)
+        assertEquals(LateRing(x, false), s.alarms[1].lateRing)
+        val at = x.plus(FIRE_GRACE.toJavaDuration())
+        val just = deviceDocMap("P", null, listOf(yes), null, at.minusMillis(1), zone)
+        assertTrue((just["alarms"] as List<*>).first().let { (it as Map<*, *>).containsKey("lateRing") })
+        val gone = deviceDocMap("P", null, listOf(yes), null, at, zone)
+        assertFalse((gone["alarms"] as List<*>).first().let { (it as Map<*, *>).containsKey("lateRing") })
+        assertFalse((deviceDocMap("P", null, listOf(alarm), null, now, zone)["alarms"] as List<*>).first().let { (it as Map<*, *>).containsKey("lateRing") })
+    }
+
+    @Test
+    fun malformedLateRingParsesAsNullWithoutDroppingTheAlarm() {
+        val base = mapOf("id" to "a", "hour" to 6L, "minute" to 5L, "enabled" to true)
+        val s = partnerStateFromDoc(
+            mapOf(
+                "displayName" to "P",
+                "alarms" to listOf(
+                    base + ("lateRing" to mapOf("occurrenceAt" to Timestamp(5, 0))),
+                    base + ("lateRing" to mapOf("ring" to true)),
+                    base + ("lateRing" to "x"),
+                ),
+            ),
+        )!!
+        assertEquals(3, s.alarms.size)
+        assertTrue(s.alarms.all { it.lateRing == null })
     }
 
     @Test

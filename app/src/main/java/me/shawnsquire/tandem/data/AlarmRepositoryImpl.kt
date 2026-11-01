@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.LateRing
 
 class AlarmRepositoryImpl(
     private val dao: AlarmDao,
@@ -48,6 +49,9 @@ class AlarmRepositoryImpl(
 
     override suspend fun setSoloSkip(id: String, occurrence: Instant?) = dao.setSoloSkip(id, occurrence?.toEpochMilli())
 
+    override suspend fun setLateRing(id: String, lateRing: LateRing?) =
+        dao.setLateRing(id, lateRing?.occurrenceAt?.toEpochMilli(), lateRing?.ring)
+
     override suspend fun setJoinerEnabled(id: String, enabled: Boolean) = dao.setJoinerEnabled(id, enabled)
 
     override suspend fun upsertLinked(alarm: Alarm) {
@@ -61,6 +65,8 @@ class AlarmRepositoryImpl(
                 minute = incoming.minute,
                 days = incoming.days,
                 enabled = incoming.enabled,
+                lateRingOccurrenceAt = incoming.lateRingOccurrenceAt,
+                lateRingRing = incoming.lateRingRing,
                 linkOwnerSkippedOccurrenceAt = incoming.linkOwnerSkippedOccurrenceAt,
             )
         }

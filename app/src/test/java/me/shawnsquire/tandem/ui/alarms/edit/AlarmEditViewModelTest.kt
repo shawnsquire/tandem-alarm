@@ -10,6 +10,7 @@ import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PartnerState
@@ -61,6 +62,7 @@ class AlarmEditViewModelTest {
         val links = FakeLinkRepository()
         val pairing = FakePairingRepository()
         val partner = FakePartnerRepository(null)
+        val saved = mutableListOf<Pair<Alarm?, Alarm>>()
         val vm = AlarmEditViewModel(
             alarmId = id,
             repository = vmRepo,
@@ -83,6 +85,7 @@ class AlarmEditViewModelTest {
             pairing = pairing,
             partnerRepository = partner,
             inviteFailedReason = "invite failed",
+            onSaved = { previous, saved -> this.saved += previous to saved },
         )
     }
 
@@ -153,6 +156,18 @@ class AlarmEditViewModelTest {
         e.vm.setTime(7, 0)
         e.vm.save()
         assertNull(e.repo.get("a1")!!.soloSkippedOccurrenceAt)
+    }
+
+    @Test fun labelEditKeepsLateRingAndTimeEditClearsIt() = runTest {
+        val late = LateRing(Instant.parse("2026-11-04T06:30:00Z"), false)
+        val keep = Env("a1", listOf(existing.copy(lateRing = late)))
+        keep.vm.setLabel("x")
+        keep.vm.save()
+        assertEquals(late, keep.repo.get("a1")!!.lateRing)
+        val clear = Env("a1", listOf(existing.copy(lateRing = late)))
+        clear.vm.setTime(7, 0)
+        clear.vm.save()
+        assertNull(clear.repo.get("a1")!!.lateRing)
     }
 
     @Test fun titleIsLookedUpForCurrentUri() = runTest {
@@ -396,6 +411,30 @@ class AlarmEditViewModelTest {
         assertEquals(EditError.Save, e.vm.state.value.error)
         assertFalse(e.vm.state.value.closed)
         assertTrue(e.deletedRingtones.isEmpty() && e.deletedWallpapers.isEmpty())
+    }
+
+    @Test fun onSavedGetsThePreviousAndSavedRowsOnceAfterATimeEdit() = runTest {
+        val e = edit()
+        e.vm.setTime(6, 0)
+        e.vm.save()
+        val (previous, saved) = e.saved.single()
+        assertEquals(existing, previous)
+        assertEquals(6, saved.hour)
+        assertEquals(0, saved.minute)
+        assertEquals(e.repo.get("a1"), saved)
+    }
+
+    @Test fun onSavedGetsNullPreviousForANewAlarm() = runTest {
+        val e = fresh()
+        e.vm.save()
+        assertEquals(null, e.saved.single().first)
+    }
+
+    @Test fun onSavedIsNotCalledWhenTheSaveFailed() = runTest {
+        val e = failingEnv()
+        e.vm.setTime(8, 15)
+        e.vm.save()
+        assertTrue(e.saved.isEmpty())
     }
 
     // --- Invite / joined row ---

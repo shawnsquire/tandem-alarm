@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -712,7 +714,7 @@ class LinkRepositoryImplTest {
         val e = env(rows = listOf(linked("r1", ownerAlarmId = "b"), linked("r2", ownerAlarmId = "a"), linked("r3", ownerAlarmId = "c")))
         e.removals.add("r3", RemovalReason.OWNER_DELETED)
         assertEquals(
-            listOf(PublishedLink("a", LinkMode.NOTIFY), PublishedLink("b", LinkMode.NOTIFY)),
+            listOf(PublishedLink("a", LinkMode.NOTIFY, 6, 30, weekdays), PublishedLink("b", LinkMode.NOTIFY, 6, 30, weekdays)),
             e.repo.links.first(),
         )
     }
@@ -736,7 +738,30 @@ class LinkRepositoryImplTest {
     @Test
     fun linksDeduplicatesElements() = runTest {
         val e = env(rows = listOf(linked("r1", ownerAlarmId = "a"), linked("r2", ownerAlarmId = "a")))
-        assertEquals(listOf(PublishedLink("a", LinkMode.NOTIFY)), e.repo.links.first())
+        assertEquals(listOf(PublishedLink("a", LinkMode.NOTIFY, 6, 30, weekdays)), e.repo.links.first())
+    }
+
+    @Test
+    fun linksReEmitWhenACopiedScheduleChanges() = runTest {
+        val e = env(rows = listOf(linked("r1", ownerAlarmId = "a")))
+        val seen = mutableListOf<List<PublishedLink>>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { e.repo.links.toList(seen) }
+        runCurrent()
+        for (change in listOf<(Alarm) -> Alarm>(
+            { it.copy(hour = 5) }, { it.copy(minute = 15) }, { it.copy(days = setOf(DayOfWeek.SUNDAY)) },
+        )) {
+            e.fake.upsertLinked(change(e.rows().single()))
+            runCurrent()
+        }
+        assertEquals(
+            listOf(
+                PublishedLink("a", LinkMode.NOTIFY, 6, 30, weekdays),
+                PublishedLink("a", LinkMode.NOTIFY, 5, 30, weekdays),
+                PublishedLink("a", LinkMode.NOTIFY, 5, 15, weekdays),
+                PublishedLink("a", LinkMode.NOTIFY, 5, 15, setOf(DayOfWeek.SUNDAY)),
+            ),
+            seen.map { it.single() },
+        )
     }
 
     @Test

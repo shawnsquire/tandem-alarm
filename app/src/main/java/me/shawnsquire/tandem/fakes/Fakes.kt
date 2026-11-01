@@ -14,11 +14,14 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.sync.LateRingNotifier
+import me.shawnsquire.tandem.sync.LateRingPrompt
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingMember
@@ -95,6 +98,10 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
         list.map { if (it.id == id) it.copy(soloSkippedOccurrenceAt = occurrence) else it }
     }
 
+    override suspend fun setLateRing(id: String, lateRing: LateRing?) = state.update { list ->
+        list.map { if (it.id == id && it.link == null) it.copy(lateRing = lateRing) else it }
+    }
+
     override suspend fun setJoinerEnabled(id: String, enabled: Boolean) = state.update { list ->
         list.map { a -> if (a.id == id) a.link?.let { a.copy(link = it.copy(joinerEnabled = enabled)) } ?: a else a }
     }
@@ -111,6 +118,7 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
                     minute = alarm.minute,
                     days = alarm.days,
                     enabled = alarm.enabled,
+                    lateRing = alarm.lateRing,
                     link = storedLink.copy(ownerSkippedOccurrenceAt = incoming.ownerSkippedOccurrenceAt),
                 )
                 list.map { if (it.id == alarm.id) merged else it }
@@ -246,7 +254,8 @@ class FakePartnerRepository(initial: PartnerState? = sampleState()) : PartnerRep
 
     /** What [readFromServer] returns; null simulates a failed or offline read. */
     var serverState: PartnerState? = null
-    override suspend fun readFromServer(): PartnerState? = serverState
+    var serverReads = 0
+    override suspend fun readFromServer(): PartnerState? { serverReads++; return serverState }
 
     companion object {
         fun sampleState(): PartnerState {
@@ -274,6 +283,24 @@ class FakePartnerRepository(initial: PartnerState? = sampleState()) : PartnerRep
             )
         }
     }
+}
+
+class FakeLateRingNotifier : LateRingNotifier {
+    val posts = mutableListOf<LateRingPrompt>()
+    val cancels = mutableListOf<String>()
+    private val showing = LinkedHashMap<String, LateRingPrompt>()
+
+    override fun post(prompt: LateRingPrompt) {
+        posts += prompt
+        showing[prompt.alarmId] = prompt
+    }
+
+    override fun cancel(alarmId: String) {
+        cancels += alarmId
+        showing.remove(alarmId)
+    }
+
+    override fun posted(): Set<String> = showing.keys.toSet()
 }
 
 class FakePairingRepository : PairingRepository {

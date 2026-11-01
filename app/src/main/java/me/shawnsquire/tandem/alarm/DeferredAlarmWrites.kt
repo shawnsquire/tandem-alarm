@@ -2,6 +2,7 @@ package me.shawnsquire.tandem.alarm
 
 import android.content.Context
 import android.util.Log
+import me.shawnsquire.tandem.schedule.LateRing
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -13,6 +14,7 @@ sealed interface DeferredWrite {
     data class SetEnabled(override val id: String, val enabled: Boolean) : DeferredWrite
     data class SetSkip(override val id: String, val occurrence: Instant?) : DeferredWrite
     data class SetSoloSkip(override val id: String, val occurrence: Instant?) : DeferredWrite
+    data class SetLateRing(override val id: String, val lateRing: LateRing?) : DeferredWrite
     data class SetJoinerEnabled(override val id: String, val enabled: Boolean) : DeferredWrite
 }
 
@@ -68,6 +70,10 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
                 put("op", OP_SOLO_SKIP)
                 w.occurrence?.let { put("occurrence", it.toEpochMilli()) }
             }
+            is DeferredWrite.SetLateRing -> {
+                put("op", OP_LATE_RING)
+                w.lateRing?.let { put("occurrence", it.occurrenceAt.toEpochMilli()).put("ring", it.ring) }
+            }
             is DeferredWrite.SetJoinerEnabled -> put("op", OP_JOINER_ENABLED).put("enabled", w.enabled)
             is DeferredWrite.SetEnabled -> put("op", OP_ENABLED).put("enabled", w.enabled)
             is DeferredWrite.SetSkip -> {
@@ -86,6 +92,10 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
                 OP_ENABLED -> DeferredWrite.SetEnabled(id, o.getBoolean("enabled"))
                 OP_SKIP -> DeferredWrite.SetSkip(id, if (o.isNull("occurrence")) null else Instant.ofEpochMilli(o.getLong("occurrence")))
                 OP_SOLO_SKIP -> DeferredWrite.SetSoloSkip(id, if (o.isNull("occurrence")) null else Instant.ofEpochMilli(o.getLong("occurrence")))
+                OP_LATE_RING -> DeferredWrite.SetLateRing(
+                    id,
+                    if (o.isNull("occurrence")) null else LateRing(Instant.ofEpochMilli(o.getLong("occurrence")), o.getBoolean("ring")),
+                )
                 OP_JOINER_ENABLED -> DeferredWrite.SetJoinerEnabled(id, o.getBoolean("enabled"))
                 else -> throw IllegalArgumentException("unknown op $op")
             }
@@ -102,6 +112,7 @@ class SharedPrefsDeferredAlarmWrites(context: Context) : DeferredAlarmWrites {
         const val OP_ENABLED = "setEnabled"
         const val OP_SKIP = "setSkip"
         const val OP_SOLO_SKIP = "setSoloSkip"
+        const val OP_LATE_RING = "setLateRing"
         const val OP_JOINER_ENABLED = "setJoinerEnabled"
     }
 }

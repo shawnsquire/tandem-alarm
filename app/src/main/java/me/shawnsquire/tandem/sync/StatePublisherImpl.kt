@@ -197,5 +197,6 @@ internal fun nextPublishBoundary(alarms: List<Alarm>, now: Instant, zone: ZoneId
             a.skippedOccurrenceAt?.takeIf { it > now },
             solo?.takeIf { it > now },
             solo?.plus(FIRE_GRACE.toJavaDuration())?.takeIf { it > now },
+            a.lateRing?.occurrenceAt?.plus(FIRE_GRACE.toJavaDuration())?.takeIf { it > now },
         )
     }.minOrNull()

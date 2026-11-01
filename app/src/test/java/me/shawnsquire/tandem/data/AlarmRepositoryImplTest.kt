@@ -15,6 +15,7 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
+import me.shawnsquire.tandem.schedule.LateRing
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -422,6 +423,61 @@ class AlarmRepositoryImplTest {
         assertEquals(at, repo.get("a")!!.soloSkippedOccurrenceAt)
         repo.setSoloSkip("a", null)
         assertNull(repo.get("a")!!.soloSkippedOccurrenceAt)
+    }
+
+    @Test
+    fun lateRingRoundTripsAndSetLateRingSetsClearsAndIgnoresMissingRows() = runTest {
+        val late = LateRing(Instant.ofEpochMilli(1_700_000_900_000), false)
+        val a = alarm().copy(lateRing = late)
+        repo.upsert(a)
+        assertEquals(a, repo.get("a"))
+        repo.setLateRing("a", LateRing(late.occurrenceAt, true))
+        assertEquals(LateRing(late.occurrenceAt, true), repo.get("a")!!.lateRing)
+        repo.setLateRing("a", null)
+        assertNull(repo.get("a")!!.lateRing)
+        repo.setLateRing("missing", late)
+        assertNull(repo.get("missing"))
+    }
+
+    @Test
+    fun setLateRingIsNoOpForLinkedRows() = runTest {
+        val a = linked()
+        repo.upsertLinked(a)
+        repo.setLateRing(a.id, LateRing(Instant.ofEpochMilli(1_700_000_900_000), false))
+        assertNull(repo.get(a.id)!!.lateRing)
+    }
+
+    @Test
+    fun aHalfSetLateRingReadsAsNull() = runTest {
+        val at = 1_700_000_900_000
+        dao.upsert(alarm(id = "x").toEntity().copy(lateRingOccurrenceAt = at, lateRingRing = null))
+        dao.upsert(alarm(id = "y").toEntity().copy(lateRingOccurrenceAt = null, lateRingRing = true))
+        assertNull(repo.get("x")!!.lateRing)
+        assertNull(repo.get("y")!!.lateRing)
+    }
+
+    @Test
+    fun expiredLateRingIsClearedInReadAndDbAndLiveOneKept() = runTest {
+        val x = clock.now.plusSeconds(60)
+        repo.upsert(alarm(id = "old").copy(lateRing = LateRing(x, false)))
+        repo.upsert(alarm(id = "live").copy(lateRing = LateRing(x.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(120), false)))
+        clock.now = x.plus(FIRE_GRACE.toJavaDuration()).plusSeconds(1)
+        assertNull(repo.get("old")!!.lateRing)
+        val row = dao.get("old")!!
+        assertNull(row.lateRingOccurrenceAt)
+        assertNull(row.lateRingRing)
+        assertEquals(false, repo.get("live")!!.lateRing!!.ring)
+        assertEquals(false, dao.get("live")!!.lateRingRing)
+    }
+
+    @Test
+    fun upsertLinkedCopiesTheOwnersLateRingAndClearsIt() = runTest {
+        repo.upsert(linked())
+        val late = LateRing(Instant.ofEpochMilli(1_700_000_900_000), false)
+        repo.upsertLinked(linked().copy(lateRing = late))
+        assertEquals(late, repo.get("l")!!.lateRing)
+        repo.upsertLinked(linked())
+        assertNull(repo.get("l")!!.lateRing)
     }
 
     @Test

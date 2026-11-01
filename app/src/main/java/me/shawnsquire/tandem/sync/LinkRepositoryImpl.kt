@@ -82,7 +82,7 @@ class LinkRepositoryImpl(
     override val links: Flow<List<PublishedLink>> =
         combine(alarms.linkedAlarms, removals.pendingIds) { rows, pendingRemoval ->
             rows.filter { it.id !in pendingRemoval }
-                .mapNotNull { r -> r.link?.let { PublishedLink(it.ownerAlarmId, it.mode) } }
+                .mapNotNull { r -> r.link?.let { PublishedLink(it.ownerAlarmId, it.mode, r.hour, r.minute, r.days) } }
                 .distinct()
                 .sortedBy { it.ownerAlarmId }
         }.distinctUntilChanged()

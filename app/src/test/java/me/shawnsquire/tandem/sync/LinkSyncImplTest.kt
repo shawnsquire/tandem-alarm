@@ -146,6 +146,20 @@ class LinkSyncImplTest {
 
     // --- copy ---
 
+    @Test fun `copies the owner's late ring and a later doc without it clears it`() = runTest {
+        val e = started(env(partner = null))
+        val x = Instant.parse("2026-03-03T06:30:00Z")
+        e.partner.value = state(owner().copy(lateRing = me.shawnsquire.tandem.schedule.LateRing(x, false)))
+        runCurrent()
+        assertEquals(me.shawnsquire.tandem.schedule.LateRing(x, false), e.row()!!.lateRing)
+        e.partner.value = state(owner().copy(lateRing = me.shawnsquire.tandem.schedule.LateRing(x, true)))
+        runCurrent()
+        assertEquals(me.shawnsquire.tandem.schedule.LateRing(x, true), e.row()!!.lateRing)
+        e.partner.value = state(owner())
+        runCurrent()
+        assertNull(e.row()!!.lateRing)
+    }
+
     @Test fun `copies owner fields and never touches the joiner's own fields`() = runTest {
         val skip = Instant.parse("2026-03-03T06:45:00Z")
         val e = started(env(partner = null))
