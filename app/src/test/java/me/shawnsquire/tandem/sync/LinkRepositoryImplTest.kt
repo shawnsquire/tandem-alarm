@@ -6,6 +6,7 @@ import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -76,6 +77,7 @@ class LinkRepositoryImplTest {
         val cancelCalls = mutableListOf<String>()
         val noteCalls = mutableListOf<Pair<String, String>>()
         var cancelResult = true
+        var settled = true
         private fun store() = createSyncDataStore(
             File(tmp.root, "s-${storeCount++}.preferences_pb"), scope.backgroundScope,
         )
@@ -86,6 +88,7 @@ class LinkRepositoryImplTest {
             { id, r -> removalCalls += id to r },
             { id -> cancelCalls += id; if (cancelResult) removals.remove(id); cancelResult },
             { row, cmd -> noteCalls += row to cmd },
+            { settled },
             scheduler, notifier,
             Clock.fixed(now, ZoneOffset.UTC), scope.backgroundScope,
         ) }
@@ -304,6 +307,37 @@ class LinkRepositoryImplTest {
         assertNull(e.rows().single().link!!.pendingBoth)
         assertEquals(before + 1, e.scheduler.rescheduleCount)
         assertTrue(e.notifier.rejected.isEmpty())
+    }
+
+    @Test
+    fun appliedFallbackKeepsPendingWhileLinkSyncSawNoNewerDocUntilTheTtl() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.settled = false
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
+        advanceTimeBy(5.hours)
+        runCurrent()
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        e.settled = true
+        advanceTimeBy(31.minutes)
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+    }
+
+    @Test
+    fun appliedFallbackClearsAtTheTtlEvenIfNeverSettled() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.settled = false
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        e.remote.updatesFor("c1").emit(CommandStatus.APPLIED to null)
+        advanceTimeBy(23.hours)
+        runCurrent()
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        advanceTimeBy(2.hours)
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
     }
 
     @Test

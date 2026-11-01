@@ -905,4 +905,30 @@ class LinkSyncImplTest {
         runCurrent()
         assertEquals(1, e.media.updates.size)
     }
+
+    @Test fun `with no baseline a stale cached doc does not clear a pending enable, a newer one does`() = runTest {
+        val pb = PendingBoth(CommandType.ENABLE, null, "c1")
+        val e = started(env(rows = listOf(row(enabled = false, pendingBoth = pb))))
+        e.sync.noteApplied("row1", "c1") // no doc processed yet: null baseline
+        e.partner.value = state(owner(enabled = false), seen = t1) // stale, pre-apply
+        runCurrent()
+        assertEquals(pb, e.row()!!.link!!.pendingBoth)
+        assertFalse(e.sync.appliedSettled("c1"))
+        e.partner.value = state(owner(enabled = false, label = "n"), seen = t2)
+        runCurrent()
+        assertNull(e.row()!!.link!!.pendingBoth)
+        assertTrue(e.sync.appliedSettled("c1"))
+    }
+
+    @Test fun `appliedSettled is false until a doc newer than the baseline is processed`() = runTest {
+        val pb = PendingBoth(CommandType.DISABLE, null, "c1")
+        val e = started(env(rows = listOf(row(pendingBoth = pb))))
+        e.partner.value = state(owner(), seen = t1)
+        runCurrent()
+        e.sync.noteApplied("row1", "c1")
+        assertFalse(e.sync.appliedSettled("c1"))
+        e.partner.value = state(owner(label = "same doc"), seen = t1)
+        runCurrent()
+        assertFalse(e.sync.appliedSettled("c1"))
+    }
 }

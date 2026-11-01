@@ -140,6 +140,7 @@ class AppContainer private constructor(
         { id, reason -> linkSyncImpl.requestRemoval(id, reason) },
         { id -> linkSyncImpl.cancelRemoval(id) },
         { row, cmd -> linkSyncImpl.noteApplied(row, cmd) },
+        { cmd -> linkSyncImpl.appliedSettled(cmd) },
         alarmScheduler, commandNotifier, LiveZoneClock, syncScope,
     )
     val linkRepository: LinkRepository = linkRepositoryImpl

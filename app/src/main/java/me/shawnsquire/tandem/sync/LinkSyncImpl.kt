@@ -85,8 +85,14 @@ class LinkSyncImpl(
     /** `updatedAt` of the latest partner doc a pass processed; the baseline [noteApplied] records. */
     private var lastDocSeen: Instant? = null
 
-    /** Both-of-us commands the owner reported APPLIED, to the [lastDocSeen] at that moment. Memory only. */
-    private val applied = HashMap<String, Instant?>()
+    /**
+     * Both-of-us commands the owner reported APPLIED. [baseline] starts as the [lastDocSeen] at that
+     * moment; with none yet it becomes the first doc processed afterwards (that doc may predate the
+     * application), so only a strictly newer doc counts as reflecting it. Memory only.
+     */
+    private class AppliedMark(var baseline: Instant?)
+
+    private val applied = HashMap<String, AppliedMark>()
 
     private data class MediaArgs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val wallpaper: MediaRef?)
     private data class Trigger(val partner: PartnerState?, val household: Household?)
@@ -247,7 +253,7 @@ class LinkSyncImpl(
      */
     internal suspend fun noteApplied(rowId: String, commandId: String) {
         scope.async {
-            lock.withLock { if (!applied.containsKey(commandId)) applied[commandId] = lastDocSeen }
+            lock.withLock { if (!applied.containsKey(commandId)) applied[commandId] = AppliedMark(lastDocSeen) }
         }.await()
     }
 
@@ -287,9 +293,7 @@ class LinkSyncImpl(
         val ownPending = pb?.type == CommandType.DISABLE || oneShotSkip
         val notify = turnedOff && link.joinerEnabled && !ownPending && (!oneShot || oneShotIsFuture(row))
         val resetJoiner = oneShot && !row.enabled && doc.enabled
-        val reflectedByNewDoc = pb != null && applied.containsKey(pb.commandId) &&
-            seen != null && applied[pb.commandId].let { it == null || seen > it }
-        val clear = pb != null && (matches(pb, doc, oneShot) || reflectedByNewDoc)
+        val clear = pb != null && (matches(pb, doc, oneShot) || reflectedByNewDoc(pb, seen))
 
         val copied = row.copy(
             label = doc.label, hour = doc.hour, minute = doc.minute, days = doc.days, enabled = doc.enabled,
@@ -327,6 +331,30 @@ class LinkSyncImpl(
         }
         return changed
     }
+
+    private fun reflectedByNewDoc(pb: PendingBoth, seen: Instant?): Boolean {
+        val mark = applied[pb.commandId] ?: return false
+        if (seen == null) return false
+        val baseline = mark.baseline
+        if (baseline == null) {
+            mark.baseline = seen
+            return false
+        }
+        return seen > baseline
+    }
+
+    /**
+     * True once an owner doc newer than [commandId]'s baseline has been processed, or when LinkSync no
+     * longer tracks it (cleared). False while only the cached or baseline doc has been seen.
+     */
+    internal suspend fun appliedSettled(commandId: String): Boolean = scope.async {
+        lock.withLock {
+            val mark = applied[commandId] ?: return@withLock true
+            val baseline = mark.baseline
+            val seen = lastDocSeen
+            baseline != null && seen != null && seen > baseline
+        }
+    }.await()
 
     /** Whether the owner's doc now reflects the "both" command [pb] (decision: matched means cleared). */
     private fun matches(pb: PendingBoth, doc: PartnerAlarm, oneShot: Boolean): Boolean = when (pb.type) {

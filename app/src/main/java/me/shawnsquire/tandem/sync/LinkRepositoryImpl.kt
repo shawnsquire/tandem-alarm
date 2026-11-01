@@ -29,6 +29,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -51,12 +52,16 @@ class LinkRepositoryImpl(
     private val cancelRemoval: suspend (String) -> Boolean,
     /** LinkSync.noteApplied(rowId, commandId): LinkSync clears the pending command from the owner's next doc. */
     private val noteApplied: suspend (String, String) -> Unit,
+    /** LinkSync.appliedSettled(commandId): true once LinkSync has processed an owner doc newer than the application. */
+    private val appliedSettled: suspend (String) -> Boolean,
     private val scheduler: AlarmScheduler,
     private val notifier: CommandNotifier,
     private val clock: Clock,
     private val scope: CoroutineScope,
     /** How long an APPLIED both-of-us command may wait for LinkSync to clear it before it is cleared here, silently. */
     private val appliedFallback: kotlin.time.Duration = 30.minutes,
+    /** The most an APPLIED command waits for a newer owner doc (the command's own TTL), counted from when the watcher began. */
+    private val appliedTtl: kotlin.time.Duration = 24.hours,
 ) : LinkRepository {
     private val joinLock = Mutex()
     private val watchLock = Any()
@@ -262,9 +267,16 @@ class LinkRepositoryImpl(
                 val applied = done?.first == CommandStatus.APPLIED
                 if (applied) {
                     // APPLIED is terminal. LinkSync clears pendingBoth from the owner's next doc (inside its
-                    // pass, so the turn-off notice still sees it); this is only the bound if none ever comes.
+                    // pass, so the turn-off notice still sees it). Only after LinkSync has processed a newer doc
+                    // (or the TTL) is it cleared here: with a dead listener or no network the stale copy must
+                    // not re-arm a "both off".
                     noteApplied(rowId, pending.commandId)
-                    delay(appliedFallback)
+                    var waited = appliedFallback
+                    delay(waited)
+                    while (!appliedSettled(pending.commandId) && waited < appliedTtl) {
+                        delay(appliedFallback)
+                        waited += appliedFallback
+                    }
                 }
                 val reason = done?.second ?: "expired"
                 var cleared = false
