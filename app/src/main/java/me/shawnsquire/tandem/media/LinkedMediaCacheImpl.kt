@@ -12,7 +12,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 
-/** Outcome of [LinkedMediaCacheImpl.downloadMissing]: [retryable] is set when a failure may succeed later (network, I/O), not for a missing or tampered blob. */
+/** Outcome of [LinkedMediaCacheImpl.downloadMissing]: [retryable] is set when a failure may succeed later (network, I/O), for a missing blob only while attempts remain, never for a tampered one. */
 data class DownloadResult(val allPresent: Boolean, val retryable: Boolean)
 
 /**
@@ -112,9 +112,10 @@ class LinkedMediaCacheImpl(
 
     /**
      * Downloads every referenced blob that is not cached, re-reading the refs until nothing new is
-     * missing (an [update] during a run is not enqueued again).
+     * missing (an [update] during a run is not enqueued again). A missing blob may be a re-pair or upload
+     * still in flight, so it counts as retryable until [attempt] (the worker's run attempt count) reaches [MAX_NOT_FOUND_ATTEMPTS].
      */
-    suspend fun downloadMissing(hid: String): DownloadResult = withContext(io) {
+    suspend fun downloadMissing(hid: String, attempt: Int = 0): DownloadResult = withContext(io) {
         val tried = mutableSetOf<String>()
         var failed = false
         var retryable = false
@@ -127,6 +128,7 @@ class LinkedMediaCacheImpl(
                 when (fetch(hid, refs.ownerUid, sha)) {
                     Fetch.OK -> Unit
                     Fetch.RETRY -> { failed = true; retryable = true }
+                    Fetch.NOT_FOUND -> { failed = true; if (attempt < MAX_NOT_FOUND_ATTEMPTS) retryable = true }
                     Fetch.PERMANENT -> failed = true
                 }
             }
@@ -135,7 +137,7 @@ class LinkedMediaCacheImpl(
         DownloadResult(allPresent = !failed, retryable = retryable)
     }
 
-    private enum class Fetch { OK, RETRY, PERMANENT }
+    private enum class Fetch { OK, RETRY, NOT_FOUND, PERMANENT }
 
     private suspend fun fetch(hid: String, ownerUid: String, sha: String): Fetch {
         linkedDir.mkdirs()
@@ -153,7 +155,7 @@ class LinkedMediaCacheImpl(
             }
         } catch (e: MediaNotFoundException) {
             Log.w(TAG, "$sha is not in Storage", e)
-            Fetch.PERMANENT
+            Fetch.NOT_FOUND
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.w(TAG, "downloading $sha failed", e)
@@ -228,6 +230,7 @@ class LinkedMediaCacheImpl(
         /** Directory under filesDir holding the owner's cached media; also swept by [MediaOrphanSweeper]. */
         const val LINKED_DIR = "linked"
         private const val TAG = "LinkedMediaCache"
+        const val MAX_NOT_FOUND_ATTEMPTS = 5
         private val SHA = Regex("^[0-9a-f]{64}$")
     }
 }

@@ -7,13 +7,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -73,9 +76,21 @@ class MediaPublisherImpl(
     private val state: MutableStateFlow<MediaPublishState> by lazy { MutableStateFlow(store.load()) }
     private var job: Job? = null
 
+    /**
+     * The persisted refs, emitted at once; once the household is known and differs from the one they were
+     * made for (re-pair), empty refs instead, since those blobs do not exist in the new household.
+     */
     override val published: Flow<PublishedMedia?> = flow {
         val s = withContext(io) { state }
-        emitAll(s.map { it.published }.distinctUntilChanged())
+        emitAll(
+            combine(s, household.onStart { emit(null) }) { st, hh ->
+                if (hh != null && st.published != null && st.publishedHid != null && st.publishedHid != hh.id) {
+                    PublishedMedia(null, emptyMap())
+                } else {
+                    st.published
+                }
+            }.distinctUntilChanged(),
+        )
     }
 
     @Synchronized
@@ -119,7 +134,8 @@ class MediaPublisherImpl(
 
     private suspend fun pass(hh: Household, input: Input): Boolean {
         var failed = false
-        val prev = state.value.published
+        // Refs of another household point at blobs that do not exist here, so they are no fallback.
+        val prev = state.value.published.takeIf { state.value.publishedHid == hh.id }
         val tracked = Tracked(
             state.value.uploaded[hh.id].orEmpty().toMutableSet(),
             state.value.pendingDelete[hh.id].orEmpty().toMutableSet(),
@@ -143,17 +159,18 @@ class MediaPublisherImpl(
             )
             if (m.wallpaper != null || m.ringtone != null) perAlarm[c.id] = m
         }
-        val refs = if (prev == null && defaultWallpaper == null && perAlarm.isEmpty()) null else PublishedMedia(defaultWallpaper, perAlarm)
+        val refs = if (state.value.published == null && defaultWallpaper == null && perAlarm.isEmpty()) null else PublishedMedia(defaultWallpaper, perAlarm)
 
         val referenced = buildSet {
             refs?.defaultWallpaper?.let { add(it.sha) }
             refs?.alarms?.values?.forEach { m -> m.wallpaper?.let { add(it.sha) }; m.ringtone?.let { add(it.sha) } }
         }
-        commit { it.copy(published = refs) }
+        commit { it.copy(published = refs, publishedHid = hh.id) }
         commitTracked(hh, tracked)
 
         // Never delete what the refs just emitted point at, even if it is still in a set.
         for (sha in (tracked.uploaded + tracked.pending) - referenced) {
+            currentCoroutineContext().ensureActive()
             try {
                 // Persist "might be gone" first: the delete can finish server-side and still be cancelled or lose its result.
                 tracked.uploaded -= sha
@@ -203,10 +220,14 @@ class MediaPublisherImpl(
                 // A cancelled upload may still finish server-side; pending makes cleanup delete it if nothing references it.
                 t.pending += sha
                 commitTracked(hh, t)
-                storage.upload(hh.id, hh.myUid, sha, tmp, contentType)
-                t.pending -= sha
-                t.uploaded += sha
-                commitTracked(hh, t)
+                // Not cancellable: the SDK upload keeps running when cancelled, and collectLatest joins this pass
+                // before the next, so cleanup cannot delete the sha before the upload has finalized.
+                withContext(NonCancellable) {
+                    storage.upload(hh.id, hh.myUid, sha, tmp, contentType)
+                    t.pending -= sha
+                    t.uploaded += sha
+                    commitTracked(hh, t)
+                }
             }
             return Outcome.Ok(MediaRef(sha, size, if (kind == MediaKind.RINGTONE) info.title else null))
         } catch (e: CancellationException) {

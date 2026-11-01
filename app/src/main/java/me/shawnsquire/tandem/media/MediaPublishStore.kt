@@ -14,6 +14,8 @@ data class MediaPublishState(
     val published: PublishedMedia? = null,
     val uploaded: Map<String, Set<String>> = emptyMap(),
     val pendingDelete: Map<String, Set<String>> = emptyMap(),
+    /** The household id [published] was made for; null when unknown (older file). */
+    val publishedHid: String? = null,
 )
 
 /**
@@ -48,6 +50,7 @@ class MediaPublishStore(private val file: File) {
                 })
             })
         }
+        s.publishedHid?.let { put("publishedHid", it) }
         put("uploaded", shaSets(s.uploaded))
         put("pendingDelete", shaSets(s.pendingDelete))
     }
@@ -71,7 +74,7 @@ class MediaPublishStore(private val file: File) {
             )
         }
         // A missing pendingDelete (older file) is empty.
-        return MediaPublishState(published, shaSets(o.optJSONObject("uploaded")), shaSets(o.optJSONObject("pendingDelete")))
+        return MediaPublishState(published, shaSets(o.optJSONObject("uploaded")), shaSets(o.optJSONObject("pendingDelete")), if (o.has("publishedHid")) o.getString("publishedHid") else null)
     }
 
 }

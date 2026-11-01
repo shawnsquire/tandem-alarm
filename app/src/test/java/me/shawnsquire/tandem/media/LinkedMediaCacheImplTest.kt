@@ -334,15 +334,17 @@ class LinkedMediaCacheImplTest {
         assertNotNull(c.pathFor(sha256(late)))
     }
 
-    @Test fun aMissingBlobIsAPermanentFailure() = runTest {
+    @Test fun aMissingBlobIsRetryableOnlyForABoundedNumberOfAttempts() = runTest {
         storage.blobs[sha256(photoBytes)] = photoBytes
         storage.notFound += sha256(ringBytes)
         val c = cache()
         c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), ref(ringBytes))), null)
         val r = c.downloadMissing("hid")
         assertFalse(r.allPresent)
-        assertFalse(r.retryable)
+        assertTrue(r.retryable)
         assertNotNull(c.pathFor(sha256(photoBytes)))
+        assertTrue(c.downloadMissing("hid", attempt = 4).retryable)
+        assertFalse(c.downloadMissing("hid", attempt = 5).retryable)
     }
 
     @Test fun aHashMismatchIsNotRetryable() = runTest {

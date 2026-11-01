@@ -3,7 +3,7 @@ package me.shawnsquire.tandem.media
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -21,6 +21,7 @@ import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.sync.Household
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.sync.PublishedLink
+import me.shawnsquire.tandem.sync.PublishedMedia
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -46,12 +47,14 @@ private class FakeMediaStorage : MediaStorage {
     /** What is in Storage "server-side"; the hooks run after the effect, like a call whose result is lost. */
     val server = mutableSetOf<String>()
     var afterUpload: (suspend (sha: String) -> Unit)? = null
+    var uploadGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     var afterDelete: (suspend (sha: String) -> Unit)? = null
     var deleteGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     val calls = mutableListOf<String>()
 
     override suspend fun upload(hid: String, ownerUid: String, sha: String, file: File, contentType: String) {
         if (failUploads) throw IOException("offline")
+        uploadGate?.await()
         uploads += Upload(hid, ownerUid, sha, file.readBytes().size, contentType)
         calls += "upload:$sha"
         server += sha
@@ -404,6 +407,7 @@ class MediaPublisherImplTest {
         advanceUntilIdle()
 
         val a = sha(bytesA)
+        assertTrue("delete:$a" in storage.calls)
         assertTrue(storage.calls.indexOf("delete:$a") < storage.calls.lastIndexOf("upload:$a"))
         assertEquals(sha(bytesA), p.published.first()!!.alarms.getValue("a").wallpaper!!.sha)
         assertEquals(setOf(a), storage.server)
@@ -436,7 +440,7 @@ class MediaPublisherImplTest {
     }
 
     @Test
-    fun aCancelledUploadsBlobIsDeletedByALaterCleanup() = runTest {
+    fun anUploadFinishedJustAsInputsChangeIsDeletedByTheNextPass() = runTest {
         source.put("/w/b.jpg", bytesB)
         source.put("/w/c.jpg", bytesC)
         linkedWallpaper("/w/b.jpg")
@@ -446,7 +450,6 @@ class MediaPublisherImplTest {
             if (sha == sha(bytesB)) {
                 storage.afterUpload = null
                 linkedWallpaper("/w/c.jpg")
-                awaitCancellation()
             }
         }
         val p = publisher()
@@ -464,5 +467,79 @@ class MediaPublisherImplTest {
         val s = MediaPublishStore(stateFile).load()
         assertEquals(setOf("x"), s.uploaded.getValue("hid-1"))
         assertTrue(s.pendingDelete.isEmpty())
+    }
+
+    @Test
+    fun anUploadInFlightFinishesBeforeCleanupCanDeleteItsSha() = runTest {
+        source.put("/w/b.jpg", bytesB)
+        source.put("/w/c.jpg", bytesC)
+        linkedWallpaper("/w/b.jpg")
+        partner.set(link("a"))
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        storage.uploadGate = gate
+        val p = publisher()
+        p.start()
+        runCurrent() // uploading B, suspended
+        storage.uploadGate = null
+        linkedWallpaper("/w/c.jpg") // B is no longer referenced; cancels the pass
+        runCurrent()
+        assertTrue(storage.deletes.isEmpty())
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        val b = sha(bytesB)
+        assertTrue("upload:$b" in storage.calls)
+        assertTrue(storage.calls.indexOf("upload:$b") < storage.calls.indexOf("delete:$b"))
+        assertEquals(setOf(sha(bytesC)), storage.server)
+        val st = MediaPublishStore(stateFile).load()
+        assertEquals(setOf(sha(bytesC)), st.uploaded.getValue("hid-1"))
+        assertEquals(emptySet<String>(), st.pendingDelete.getValue("hid-1"))
+    }
+
+    private fun persistRefs(hid: String) {
+        MediaPublishStore(stateFile).save(
+            MediaPublishState(
+                published = PublishedMedia(null, mapOf("a" to AlarmMedia(MediaRef(sha(bytesA), 3), null))),
+                uploaded = mapOf(hid to setOf(sha(bytesA))),
+                publishedHid = hid,
+            ),
+        )
+    }
+
+    private fun TestScope.lastPublished(p: MediaPublisherImpl): PublishedMedia? {
+        var last: PublishedMedia? = null
+        val j = launch(StandardTestDispatcher(testScheduler)) { p.published.collect { last = it } }
+        runCurrent()
+        j.cancel()
+        return last
+    }
+
+    @Test
+    fun persistedRefsOfAnotherHouseholdAreNotEmitted() = runTest {
+        persistRefs("hid-old")
+        assertEquals(PublishedMedia(null, emptyMap()), lastPublished(publisher()))
+    }
+
+    @Test
+    fun persistedRefsOfTheCurrentOrUnknownHouseholdAreEmitted() = runTest {
+        persistRefs("hid-1")
+        assertEquals(setOf("a"), lastPublished(publisher())!!.alarms.keys)
+        household.value = null
+        assertEquals(setOf("a"), lastPublished(publisher())!!.alarms.keys)
+    }
+
+    @Test
+    fun aFailedUploadInANewHouseholdDoesNotFallBackToTheOldRefs() = runTest {
+        persistRefs("hid-old")
+        source.put("/w/a.jpg", bytesA)
+        linkedWallpaper("/w/a.jpg")
+        partner.set(link("a"))
+        storage.failUploads = true
+        val p = publisher()
+        p.start()
+        runCurrent()
+        assertTrue(lastPublished(p)!!.alarms.isEmpty())
+        assertEquals("hid-1", MediaPublishStore(stateFile).load().publishedHid)
+        scopes.forEach { it.cancel() } // else runTest would advance the retry timer forever
     }
 }

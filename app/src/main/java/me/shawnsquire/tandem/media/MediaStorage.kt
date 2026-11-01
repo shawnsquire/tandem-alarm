@@ -100,18 +100,6 @@ class FirebaseMediaStorage(
         }
     }
 
-    private suspend fun reported(block: suspend () -> Unit) {
-        try {
-            block()
-            report(true)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            report(false)
-            throw e
-        }
-    }
-
     private suspend fun report(ok: Boolean) {
         try { withContext(Dispatchers.Default) { onResult(ok) } } catch (e: CancellationException) { throw e } catch (_: Exception) { /* a listener must not fail a Storage call */ }
     }
