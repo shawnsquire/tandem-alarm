@@ -18,7 +18,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { deleteObject, getBytes, ref, uploadBytes } from "firebase/storage";
+import { deleteObject, getBytes, ref, updateMetadata, uploadBytes } from "firebase/storage";
 
 const MAX_BYTES = 15 * 1024 * 1024; // 15728640
 const HID = "h1";
@@ -554,6 +554,43 @@ describe("storage media", () => {
     await seedMedia(ALICE, SHA);
     await assertFails(deleteObject(ref(storageFor(BOB), mediaPath(ALICE, SHA))));
     await assertSucceeds(deleteObject(ref(storageFor(ALICE), mediaPath(ALICE, SHA))));
+  });
+  it("denies a member writing in a solo household", async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "households/solo"), { members: [CAROL] });
+    });
+    await assertFails(
+      uploadBytes(ref(storageFor(CAROL), `households/solo/media/${CAROL}/${SHA}`), bytes(8), {
+        contentType: "audio/mpeg",
+      }),
+    );
+  });
+  it("denies an unauthenticated write", async () => {
+    await assertFails(
+      uploadBytes(
+        ref(testEnv.unauthenticatedContext().storage(), mediaPath(ALICE, SHA)),
+        bytes(8),
+        { contentType: "audio/mpeg" },
+      ),
+    );
+  });
+  it("denies read and write once the household is gone", async () => {
+    await seedMedia(ALICE, SHA);
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await deleteDoc(doc(ctx.firestore(), `households/${HID}`));
+    });
+    await assertFails(getBytes(ref(storageFor(ALICE), mediaPath(ALICE, SHA))));
+    await assertFails(
+      uploadBytes(ref(storageFor(ALICE), mediaPath(ALICE, "new")), bytes(8), {
+        contentType: "audio/mpeg",
+      }),
+    );
+  });
+  it("denies a metadata update", async () => {
+    await seedMedia(ALICE, SHA);
+    await assertFails(
+      updateMetadata(ref(storageFor(ALICE), mediaPath(ALICE, SHA)), { contentType: "image/png" }),
+    );
   });
   it("denies paths outside the media layout", async () => {
     await assertFails(
