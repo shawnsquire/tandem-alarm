@@ -251,6 +251,9 @@ class RingingSession(
         // re-arm there must replace this timer, not one this line would then orphan.
         autoSilence = null // this job: arming anew must not cancel it
         armAutoSilence(ringId)
+        // The first look only learns the members: the post above already alerted for the one that
+        // joined while silent, and a Notify join seen there would alert for it a second time.
+        seenMembers = null
         observe(ringId)
     }
 
@@ -646,9 +649,10 @@ class RingingSession(
 
     /**
      * Ends the session when the stored ring ends, is superseded or is snoozed. Meanwhile notes its
-     * members: one not seen before (merged, or back from a snooze) re-arms auto-silence. The first
-     * look on the snooze path, which starts without its own member, only learns them. A change of
-     * who rings relabels the notification ([relabelIfChanged]).
+     * members: one not seen before (merged, or back from a snooze) re-arms auto-silence and, on the
+     * Notify surface, alerts again ([alertJoined]). The first look on the snooze path, which starts
+     * without its own member, only learns them. A change of who rings relabels the notification
+     * ([relabelIfChanged]).
      */
     private fun observe(ringId: String) {
         if (observing) return
@@ -673,10 +677,32 @@ class RingingSession(
         }.also { jobs += it }
     }
 
-    private fun noteMembers(ringId: String, current: Set<RingMember>) {
-        val joined = seenMembers?.let { seen -> current.any { it !in seen } } ?: false
+    private suspend fun noteMembers(ringId: String, current: Set<RingMember>) {
+        val joined = seenMembers?.let { seen -> current.filter { it !in seen } }.orEmpty()
         seenMembers = current
-        if (joined) armAutoSilence(ringId)
+        if (joined.isEmpty()) return
+        armAutoSilence(ringId)
+        alertJoined(ringId, joined)
+    }
+
+    /**
+     * The Notify channel alerts once per post and a relabel is an update that never alerts, so a
+     * Notify member joining a sounding Notify ring would go unheard, then be auto-silenced and
+     * mirrored as dismissed. It gets the alerting post an un-silence makes: a fresh post that takes
+     * over as the one up, or the full surface when that can't alert (I1). Not tied to the relabel,
+     * which can time out; whichever of the two posts last, the notifier updates the Notify id up.
+     * A member that isn't a Notify link (or can't be read) is [watchMembers]' to upgrade, with no
+     * chime first. Only a join: a promotion or a split-out brings nobody new to hear.
+     */
+    private suspend fun alertJoined(ringId: String, joined: List<RingMember>) {
+        if (finished || silencing || fullSurface || !actionsPosted) return
+        for (id in joined.map { it.alarmId }.distinct()) {
+            if (!isNotifyLink(guarded("member alarm read", null as Alarm?) { alarmRepository.get(id) })) return
+        }
+        if (finished || silencing || fullSurface) return // changed across the reads
+        val shown = guarded("notifier", false) { notifier.showNotifyRinging(surfaceAlarm, ringId, surfaceLabels(surfaceAlarm), alertAgain = true) }
+        // Its own job: the media resolve must not hold up this observation.
+        if (!shown) jobs += scope.launch { ringInFull(surfaceAlarm, ringId) }
     }
 
     private fun finish() {

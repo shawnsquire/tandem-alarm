@@ -1894,6 +1894,60 @@ class RingingSessionTest {
         assertEquals(1, b.finished)
     }
 
+    @Test fun aNotifyMemberJoiningANotifyRingAlertsWithoutWaitingForTheRelabel() = runTest {
+        // The relabel resolves every member through the cache (hanging here, up to its 2 s bound):
+        // the joining alarm must be heard now, not then, and not only once a label changes.
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        slotSession(h, h.controller, cache = StubMediaCache(hang = true)).start("a", occurrence, false, null)
+        advanceTimeBy(RING_MEDIA_TIMEOUT.inWholeMilliseconds + 1); runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.notify)
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.notifyAlertsAgain)
+        assertTrue(h.notifier.relabels.isEmpty())
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(0, h.vibration.starts)
+    }
+
+    @Test fun aNotifyMemberJoiningANotifyRingThatCantAlertRingsInFull() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        // Only the alerting post reports it can't: the relabel's update still can, so it isn't what upgrades.
+        val notifier = object : RingingNotifier by h.notifier {
+            override fun showNotifyRinging(alarm: Alarm?, ringId: String, labels: List<String>, alertAgain: Boolean): Boolean =
+                !alertAgain && h.notifier.showNotifyRinging(alarm, ringId, labels, alertAgain)
+            override fun updateRingingLabel(alarm: Alarm?, ringId: String, labels: List<String>, notifySurface: Boolean): Boolean {
+                h.notifier.updateRingingLabel(alarm, ringId, labels, notifySurface)
+                return true
+            }
+        }
+        RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.sound, h.vibration, notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
+        ).start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(1, h.vibration.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun aPromotionInANotifyRingDoesNotAlertAgain() = runTest {
+        val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        assertEquals(1, h.notifier.notifyAlertsAgain.size)
+        h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE) // b promoted: nobody new to hear
+        runCurrent()
+        assertEquals(1, h.notifier.notifyAlertsAgain.size)
+        assertEquals(Triple("ring-1", listOf("b"), true), h.notifier.relabels.last()) // the label still follows
+        assertEquals(0, h.finished)
+    }
+
     @Test fun notifyFireMergingIntoARingRingChangesNothing() = runTest {
         val h = harness(alarms = listOf(alarm("a"), linkedAs(LinkMode.NOTIFY, "b")))
         h.fire(occ = occurrence)
@@ -1983,9 +2037,19 @@ class RingingSessionTest {
 
     @Test fun notifyRingRelabelledWhenItCantAlertAnyMoreRingsInFull() = runTest {
         val h = harness(alarms = listOf(linkedAs(LinkMode.NOTIFY), linkedAs(LinkMode.NOTIFY, "b")))
-        h.fire(occ = occurrence)
+        // The join's alerting post still goes out; only the relabel's update finds the surface can't alert.
+        val notifier = object : RingingNotifier by h.notifier {
+            override fun updateRingingLabel(alarm: Alarm?, ringId: String, labels: List<String>, notifySurface: Boolean): Boolean {
+                h.notifier.updateRingingLabel(alarm, ringId, labels, notifySurface)
+                return !notifySurface
+            }
+        }
+        RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.sound, h.vibration, notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { h.clock }, { "ring-1" }, firedLedger = h.fired, onFinished = { h.finished++ },
+        ).start("a", occurrence, false, null)
         runCurrent()
-        h.notifier.notifyCanAlert = false
         assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("b", "ring-B", h.clock, null, bOccurrence)))
         runCurrent()
         assertEquals(1, h.sound.starts.size)
