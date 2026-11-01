@@ -255,7 +255,7 @@ private fun validateRingOccurrence(
         return if (early) CommandDecision.Apply else CommandDecision.Reject("already rang or changed")
     }
     // A merged member's current snooze end is the slot ring's.
-    val slotEnd = context.ring?.takeIf { merged && it.occurrenceAt == x }?.snoozedUntil
+    val slotEnd = context.ring?.takeIf { merged }?.snoozedUntil
     val snoozeEnd = (listOfNotNull(ring?.snoozedUntil, slotEnd) + parked.map { it.until }).maxOrNull()
     if (cmd.type == CommandType.SNOOZE && until != null && snoozeEnd != null && until <= snoozeEnd) {
         return CommandDecision.Reject("already snoozed later")

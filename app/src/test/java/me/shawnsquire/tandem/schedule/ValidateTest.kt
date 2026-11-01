@@ -537,6 +537,16 @@ class ValidateTest {
     }
 
     @Test
+    fun mergedMemberOfRingAtOtherOccurrenceTakesRingSnoozeEnd() {
+        val y = x.plusSeconds(86400)
+        val slot = ringState(alarmId = "a2", occurrenceAt = y, snoozedUntil = t0)
+        val c = ctx(ring = slot, merged = listOf(RingMember("a1", x)))
+        assertEquals(reject("already snoozed later"), run(snooze(until = t0), alarm(), c))
+        assertEquals(reject("already snoozed later"), run(snooze(until = t0.minusSeconds(1)), alarm(), c))
+        assertEquals(apply, run(snooze(until = t0.plusSeconds(1)), alarm(), c))
+    }
+
+    @Test
     fun lastRangButSnoozedIsStillLive() {
         val at = x.plusSeconds(60)
         val c = ctx(lastRang = x, snoozes = listOf(ParkedSnooze("a1", x, x.plusSeconds(540))))
