@@ -137,8 +137,11 @@ fun isArmed(alarm: Alarm): Boolean {
  *    `joinerEnabled = false`. Live comes first because a ring that is sounding must be stoppable
  *    even when the row has since changed: the owner's one-shot disables itself on dismiss, and a
  *    joiner's linked copy can pick up `enabled = false` before the owner's STOP_RINGING{X} arrives.
- * 5. Early: X is the next occurrence and at most [FIRE_GRACE] away. STOP_RINGING dismisses it in
- *    advance; SNOOZE arms the snooze with no ring first.
+ * 5. Early ("not live yet or just fired"): X is the occurrence after `now - FIRE_GRACE` or after
+ *    `now` (the same two forms as the pinned checks, on the full alarm) and at most [FIRE_GRACE]
+ *    from `now` on either side. Before X, STOP_RINGING dismisses it in advance and SNOOZE arms the
+ *    snooze with no ring first. After X (inside the grace), the partner's dismissal beat this
+ *    phone's pre-fire check, so it applies the same way. X is not resolved (rule 2 ran first).
  * 6. Otherwise reject ("already rang or changed").
  *
  * STOP_RINGING with a `ringId` and no `occurrenceAt` keeps the ringId rule against [ring]. Rule 1
@@ -258,9 +261,13 @@ private fun validateRingOccurrence(
     if (ring == null && !merged && parked.isEmpty()) {
         if (context.lastRang == x) return CommandDecision.Reject("already rang or changed")
         if (!isArmed(alarm) || x in alarm.skippedOccurrences()) return CommandDecision.Reject("skipped here")
-        val early = x == nextOccurrence(alarm, now, zone) &&
-            java.time.Duration.between(now, x) <= FIRE_GRACE.toJavaDuration()
-        return if (early) CommandDecision.Apply else CommandDecision.Reject("already rang or changed")
+        // Same two forms as pinned(), on the full alarm: the occurrence that just fired (up to
+        // FIRE_GRACE ago, inclusive, hence the extra nano) or the genuinely next one.
+        val grace = FIRE_GRACE.toJavaDuration()
+        val adjacent = x == nextOccurrence(alarm, now.minus(grace).minusNanos(1), zone) ||
+            x == nextOccurrence(alarm, now, zone)
+        val near = java.time.Duration.between(now, x).abs() <= grace
+        return if (adjacent && near) CommandDecision.Apply else CommandDecision.Reject("already rang or changed")
     }
     // A merged member's current snooze end is the slot ring's.
     val slotEnd = context.ring?.takeIf { merged }?.snoozedUntil

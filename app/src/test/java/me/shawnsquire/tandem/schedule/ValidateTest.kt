@@ -648,8 +648,25 @@ class ValidateTest {
     }
 
     @Test
+    fun justFiredOccurrenceWithinFireGraceAfterAppliesWhenNotLive() {
+        // Phone A dismisses at X + 1 s while this phone's fire at X is still in its pre-fire check.
+        for (secondsLate in listOf(1L, 60L, 120L)) {
+            val at = x.plusSeconds(secondsLate)
+            assertEquals(apply, run(stop(), alarm(), ctx(), at))
+            assertEquals(apply, run(snooze(), alarm(), ctx(), at))
+        }
+    }
+
+    @Test
+    fun occurrenceBeyondFireGraceAfterRejects() {
+        val at = x.plusSeconds(121)
+        assertEquals(resolved, run(stop(), alarm(), ctx(), at))
+        assertEquals(resolved, run(snooze(), alarm(), ctx(), at))
+    }
+
+    @Test
     fun earlyOccurrenceBeyondFireGraceRejects() {
-        val at = x.minusSeconds(180)
+        val at = x.minusSeconds(121)
         assertEquals(resolved, run(stop(), alarm(), ctx(), at))
         assertEquals(resolved, run(snooze(), alarm(), ctx(), at))
     }
