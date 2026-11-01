@@ -105,7 +105,7 @@ class LinkedMediaCacheImpl(
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 Log.w(TAG, "resolving linked media failed", e)
-                DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
+                DefaultLinkedMediaCache.resolveFromRow(alarm, joinerDefaultRingtone, joinerDefaultWallpaper, systemAlarmSound)
             }
         }
     }

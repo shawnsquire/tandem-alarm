@@ -548,10 +548,9 @@ class RingingSession(
 
     /**
      * The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it.
-     * [candidates] were resolved for [primary]. A linked one's from the real cache or the fallback
-     * already carry the system alarm Uri, in the cache's order, so the adapter adds none of its own;
-     * the default cache (until AppContainer attaches the real one) leaves it out, so they get the
-     * adapter's defaults as an own ring's do.
+     * [candidates] were resolved for [primary]. A linked one's, from the real cache, the default
+     * cache or the fallback, already carry the system alarm Uri in the design's order, so the adapter
+     * adds none of its own; an own ring's get the adapter's defaults.
      */
     private suspend fun startRingOutputs(candidates: List<String>, primary: Alarm?) {
         startVibration("vibration")

@@ -2,7 +2,7 @@ package me.shawnsquire.tandem.media
 
 import me.shawnsquire.tandem.schedule.Alarm
 
-/** What a linked ring shows and plays. [soundCandidates] exclude the system/bundled fallbacks, which the sound adapter appends. */
+/** What a linked ring shows and plays. [soundCandidates] are in resolution order and already include the system alarm sound, so the ring passes them through without the adapter appending its defaults. */
 data class RingMedia(val label: String, val soundCandidates: List<String>, val wallpaperPaths: List<String>)
 
 /**

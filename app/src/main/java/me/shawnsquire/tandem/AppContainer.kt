@@ -123,8 +123,10 @@ class AppContainer private constructor(
     // use anything declared above (alarmRepository, settingsRepository, partnerRepository,
     // commandSender, commandRemote, householdFlow, commandNotifier, alarmScheduler, ringingController,
     // syncScope, context). They are declared before the consumers below, which take them as inputs,
-    // and the init block hands ringMirror and linkedMediaCache to the engine. Their order lets each use
-    // the earlier ones: LinkSync feeds linkedMediaCache, MediaPublisher reads linkRepository.openInvites.
+    // and the init block hands ringMirror and linkedMediaCache to the engine. The order is
+    // linkedMediaCache, linkRemovals, linkRepositoryImpl, linkSyncImpl (takes linkedMediaCache, which
+    // it feeds), ringMirror, then mediaPublisher (takes linkRepository, whose openInvites it reads);
+    // healthSignalsImpl comes last and is reached only through lambdas.
     // L5: real (the engine gets it in init). healthSignalsImpl is declared below; the lambdas run later.
     val linkedMediaCache: LinkedMediaCache = LinkedMediaCacheImpl(
         context.filesDir,
@@ -197,8 +199,8 @@ class AppContainer private constructor(
     // retry builds another. The provider runs when a fire pulls, not here.
     // The delegates come after attach, so they too are set only by a container that fully built:
     // assigning the mirror delegate replays the locked-boot outbox into it, and a failed attempt's
-    // mirror must never receive that. ringMirror and linkedMediaCache are the
-    // real implementations.
+    // mirror must never receive that. Until then the engine queues mirror calls on disk and uses the
+    // default media cache, which resolves from the alarm row alone; ringMirror and linkedMediaCache replace them.
     init {
         alarmEngine.attach(roomAlarmRepository, roomSettings) { preFireCheck }
         alarmEngine.ringMirrorPort.delegate = ringMirror
