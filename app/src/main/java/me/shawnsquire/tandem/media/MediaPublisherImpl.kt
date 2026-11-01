@@ -79,6 +79,7 @@ class MediaPublisherImpl(
     /**
      * The persisted refs, emitted at once; once the household is known and differs from the one they were
      * made for (re-pair), empty refs instead, since those blobs do not exist in the new household.
+     * The first value can be the persisted refs of a previous household until the household is known.
      */
     override val published: Flow<PublishedMedia?> = flow {
         val s = withContext(io) { state }
@@ -135,7 +136,7 @@ class MediaPublisherImpl(
     private suspend fun pass(hh: Household, input: Input): Boolean {
         var failed = false
         // Refs of another household point at blobs that do not exist here, so they are no fallback.
-        val prev = state.value.published.takeIf { state.value.publishedHid == hh.id }
+        val prev = state.value.published.takeIf { state.value.publishedHid.let { h -> h == null || h == hh.id } }
         val tracked = Tracked(
             state.value.uploaded[hh.id].orEmpty().toMutableSet(),
             state.value.pendingDelete[hh.id].orEmpty().toMutableSet(),
@@ -165,6 +166,8 @@ class MediaPublisherImpl(
             refs?.defaultWallpaper?.let { add(it.sha) }
             refs?.alarms?.values?.forEach { m -> m.wallpaper?.let { add(it.sha) }; m.ringtone?.let { add(it.sha) } }
         }
+        // A cancelled pass is stale: its refs must not be committed.
+        currentCoroutineContext().ensureActive()
         commit { it.copy(published = refs, publishedHid = hh.id) }
         commitTracked(hh, tracked)
 
@@ -201,6 +204,8 @@ class MediaPublisherImpl(
 
     /** Copies, hashes and (unless [t] has it uploaded) uploads one file, recording the sha as pending before and as uploaded after. */
     private suspend fun publish(hh: Household, path: String, kind: MediaKind, t: Tracked): Outcome {
+        // The upload below is not cancellable, so stop here instead of copying and uploading every remaining file.
+        currentCoroutineContext().ensureActive()
         val tmp = File(tmpDir, "publish-${System.nanoTime()}.tmp")
         try {
             check(tmpDir.isDirectory || tmpDir.mkdirs()) { "Cannot create $tmpDir" }

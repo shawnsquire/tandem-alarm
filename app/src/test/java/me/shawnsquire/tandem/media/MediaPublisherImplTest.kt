@@ -517,7 +517,12 @@ class MediaPublisherImplTest {
     @Test
     fun persistedRefsOfAnotherHouseholdAreNotEmitted() = runTest {
         persistRefs("hid-old")
-        assertEquals(PublishedMedia(null, emptyMap()), lastPublished(publisher()))
+        val seen = mutableListOf<PublishedMedia?>()
+        val job = launch(StandardTestDispatcher(testScheduler)) { publisher().published.collect { seen += it } }
+        runCurrent()
+        job.cancel()
+        // One transient value with the old household's refs precedes it: the persisted refs are emitted before the household is known.
+        assertEquals(PublishedMedia(null, emptyMap()), seen.last())
     }
 
     @Test
@@ -541,5 +546,30 @@ class MediaPublisherImplTest {
         assertTrue(lastPublished(p)!!.alarms.isEmpty())
         assertEquals("hid-1", MediaPublishStore(stateFile).load().publishedHid)
         scopes.forEach { it.cancel() } // else runTest would advance the retry timer forever
+    }
+
+    @Test
+    fun aCancelledPassCopiesUploadsAndCommitsNothingMore() = runTest {
+        source.put("/w/a.jpg", bytesA)
+        source.put("/w/b.jpg", bytesB)
+        alarms.upsert(alarm("a", wallpaper = "/w/a.jpg"))
+        alarms.upsert(alarm("b", wallpaper = "/w/b.jpg"))
+        partner.set(PartnerState("P", emptyList(), null, null, links = listOf(PublishedLink("a", LinkMode.RING), PublishedLink("b", LinkMode.RING))))
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        storage.uploadGate = gate
+        val p = publisher()
+        val seen = mutableListOf<PublishedMedia?>()
+        val job = launch(StandardTestDispatcher(testScheduler)) { p.published.collect { seen += it } }
+        p.start()
+        runCurrent() // uploading A, suspended
+        partner.set(link("a")) // B is no longer wanted; cancels the pass
+        runCurrent()
+        gate.complete(Unit)
+        advanceUntilIdle()
+        job.cancel()
+
+        assertTrue(storage.uploads.none { it.sha == sha(bytesB) })
+        assertTrue(seen.none { it?.alarms?.containsKey("b") == true })
+        assertEquals(setOf("a"), p.published.first()!!.alarms.keys)
     }
 }
