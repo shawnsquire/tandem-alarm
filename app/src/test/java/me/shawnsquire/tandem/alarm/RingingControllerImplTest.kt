@@ -591,6 +591,32 @@ class RingingControllerImplTest {
         assertEquals(1, writes)
     }
 
+    @Test fun writeUnlessRingingRefusesForAMemberSplitOutBySnooze() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX.copy(merged = listOf(RingMember("b", occurrenceY))))
+        val c = h.controller()
+        c.snooze()
+        assertTrue(h.store.state.first()!!.merged.isEmpty()) // b now lives in its own ledger entry
+        var writes = 0
+        assertFalse(c.writeUnlessRinging("b", null) { writes++ })
+        assertFalse(c.writeUnlessRinging("b", occurrenceY) { writes++ })
+        assertEquals(0, writes)
+        assertTrue(c.writeUnlessRinging("b", occurrenceY.plusSeconds(86400)) { writes++ }) // a later occurrence
+        assertEquals(1, writes)
+    }
+
+    @Test fun writeUnlessRingingRefusesForASnoozeParkedBehindAnotherRing() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("c", emptySet())), soundingX)
+        h.ledger.put("ring-P", "c", now.plusSeconds(300), occurrenceZ)
+        h.ledger.put("ring-L", "d", now.plusSeconds(300)) // written before occurrences were stored
+        var writes = 0
+        val c = h.controller()
+        assertFalse(c.writeUnlessRinging("c", occurrenceZ) { writes++ })
+        assertFalse(c.writeUnlessRinging("d", occurrenceZ.plusSeconds(86400)) { writes++ }) // unknown occurrence: any
+        assertEquals(0, writes)
+        assertTrue(c.writeUnlessRinging("c", occurrenceZ.plusSeconds(86400)) { writes++ })
+        assertEquals(1, writes)
+    }
+
     @Test fun dismissLinkedOneShotUsesSetJoinerEnabledAndLeavesEnabled() = runTest {
         val h = H(listOf(linkedAlarm("a")), ringing)
         h.controller().dismiss("ring-1")

@@ -146,6 +146,12 @@ class RingingControllerImpl(
             // A merged member is ringing too.
             val member = state?.merged.orEmpty().any { it.alarmId == alarmId && (occurrenceAt == null || it.occurrenceAt >= occurrenceAt) }
             if (member) return@withLock false
+            // Snoozed: a merged ring's members split out into their own entries, and parked snoozes.
+            // An entry without an occurrence (written before they were stored) counts for any.
+            val snoozed = ledger.all().any {
+                it.alarmId == alarmId && (occurrenceAt == null || it.occurrenceAt == null || it.occurrenceAt >= occurrenceAt)
+            }
+            if (snoozed) return@withLock false
             write()
             true
         } }
