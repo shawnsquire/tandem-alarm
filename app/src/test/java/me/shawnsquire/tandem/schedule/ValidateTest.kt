@@ -27,8 +27,11 @@ class ValidateTest {
     private fun alarm(
         enabled: Boolean = true,
         skippedOccurrenceAt: Instant? = null,
+        soloSkippedOccurrenceAt: Instant? = null,
+        link: AlarmLink? = null,
+        id: String = "a1",
     ) = Alarm(
-        id = "a1",
+        id = id,
         label = "",
         hour = 8,
         minute = 0,
@@ -37,13 +40,21 @@ class ValidateTest {
         skippedOccurrenceAt = skippedOccurrenceAt,
         ringtoneUri = null,
         wallpaperPath = null,
+        link = link,
+        soloSkippedOccurrenceAt = soloSkippedOccurrenceAt,
     )
 
-    private fun ringState(alarmId: String = "a1", ringId: String = "r1") = RingState(
+    private fun ringState(
+        alarmId: String = "a1",
+        ringId: String = "r1",
+        occurrenceAt: Instant? = null,
+        snoozedUntil: Instant? = null,
+    ) = RingState(
         alarmId = alarmId,
         ringId = ringId,
         startedAt = now,
-        snoozedUntil = null,
+        snoozedUntil = snoozedUntil,
+        occurrenceAt = occurrenceAt,
     )
 
     private fun cmd(
@@ -51,6 +62,7 @@ class ValidateTest {
         occurrenceAt: Instant? = null,
         ringId: String? = null,
         expiresAt: Instant = now.plusSeconds(3600),
+        snoozedUntil: Instant? = null,
     ) = Command(
         id = "c1",
         from = "partner",
@@ -61,6 +73,7 @@ class ValidateTest {
         ringId = ringId,
         createdAt = now.minusSeconds(60),
         expiresAt = expiresAt,
+        snoozedUntil = snoozedUntil,
     )
 
     private fun check(cmd: Command, alarm: Alarm?, ring: RingState? = null) =
@@ -408,5 +421,214 @@ class ValidateTest {
     fun isArmedMirrorsEnabled() {
         assertTrue(isArmed(alarm(enabled = true)))
         assertFalse(isArmed(alarm(enabled = false)))
+    }
+
+    // ---- Ring commands by occurrence (RingContext) ----
+
+    private val x = todayRing
+    private val t0 = x.plusSeconds(540)
+
+    private fun ctx(
+        ring: RingState? = null,
+        merged: List<RingMember> = emptyList(),
+        snoozes: List<ParkedSnooze> = emptyList(),
+        lastRang: Instant? = null,
+    ) = RingContext(ring, merged, snoozes, lastRang)
+
+    private fun stop(at: Instant = x) = cmd(CommandType.STOP_RINGING, at)
+
+    private fun snooze(until: Instant = t0, at: Instant = x) =
+        cmd(CommandType.SNOOZE, at, snoozedUntil = until)
+
+    private fun run(c: Command, a: Alarm?, context: RingContext?, at: Instant = now) =
+        validate(c.copy(expiresAt = at.plusSeconds(3600)), a, null, at, newYork, context)
+
+    private fun linkOf(
+        ownerSkip: Instant? = null,
+        joinerEnabled: Boolean = true,
+        pending: PendingBoth? = null,
+    ) = AlarmLink("owner", "a1", LinkMode.RING, ownerSkip, joinerEnabled, pending, null, null, null)
+
+    private fun linked(
+        enabled: Boolean = true,
+        skippedOccurrenceAt: Instant? = null,
+        link: AlarmLink = linkOf(),
+    ) = alarm(enabled = enabled, skippedOccurrenceAt = skippedOccurrenceAt, link = link, id = "L1")
+
+    private val skippedHere = reject("skipped here")
+    private val resolved = reject("already rang or changed")
+
+    @Test
+    fun ownerWithSoloSkipRejectsPartnerRingCommands() {
+        val a = alarm(soloSkippedOccurrenceAt = x)
+        assertEquals(skippedHere, run(stop(), a, ctx()))
+        assertEquals(skippedHere, run(snooze(), a, ctx()))
+    }
+
+    @Test
+    fun ownerWithSharedSkipRejectsPartnerRingCommands() {
+        val a = alarm(skippedOccurrenceAt = x)
+        assertEquals(skippedHere, run(stop(), a, ctx()))
+        assertEquals(skippedHere, run(snooze(), a, ctx()))
+    }
+
+    @Test
+    fun joinerWithJustMeSkipRejectsOwnerRingCommands() {
+        val a = linked(skippedOccurrenceAt = x)
+        assertEquals(skippedHere, run(stop(), a, ctx()))
+        assertEquals(skippedHere, run(snooze(), a, ctx()))
+    }
+
+    @Test
+    fun linkedRowSkippedForOtherReasonsRejects() {
+        val pendingSkip = PendingBoth(CommandType.SKIP_NEXT, x, "p1")
+        val cases = listOf(
+            linked(link = linkOf(joinerEnabled = false)),
+            linked(link = linkOf(pending = PendingBoth(CommandType.DISABLE, x, "p1"))),
+            linked(link = linkOf(pending = pendingSkip)),
+            linked(link = linkOf(ownerSkip = x)),
+            linked(enabled = false),
+        )
+        for (a in cases) {
+            assertEquals(skippedHere, run(stop(), a, ctx()))
+            assertEquals(skippedHere, run(snooze(), a, ctx()))
+        }
+    }
+
+    @Test
+    fun disabledOwnRowRejectsAsSkippedHere() {
+        assertEquals(skippedHere, run(stop(), alarm(enabled = false), ctx()))
+    }
+
+    @Test
+    fun skippedOccurrenceBeatsLive() {
+        val a = alarm(skippedOccurrenceAt = x)
+        val live = ctx(ring = ringState(occurrenceAt = x))
+        assertEquals(skippedHere, run(stop(), a, live))
+        assertEquals(skippedHere, run(snooze(), a, live))
+    }
+
+    @Test
+    fun lastRangDismissedNotLiveRejectsInsideFireGrace() {
+        val at = x.plusSeconds(60)
+        val c = ctx(lastRang = x)
+        assertEquals(resolved, run(stop(), alarm(), c, at))
+        assertEquals(resolved, run(snooze(), alarm(), c, at))
+    }
+
+    @Test
+    fun lastRangButSnoozedIsStillLive() {
+        val at = x.plusSeconds(60)
+        val c = ctx(lastRang = x, snoozes = listOf(ParkedSnooze("a1", x, x.plusSeconds(540))))
+        assertEquals(apply, run(stop(), alarm(), c, at))
+        assertEquals(apply, run(snooze(until = x.plusSeconds(900)), alarm(), c, at))
+    }
+
+    @Test
+    fun soundingSlotRingApplies() {
+        val c = ctx(ring = ringState(occurrenceAt = x))
+        assertEquals(apply, run(stop(), alarm(), c))
+        assertEquals(apply, run(snooze(), alarm(), c))
+    }
+
+    @Test
+    fun mergedMemberApplies() {
+        val c = ctx(ring = ringState(alarmId = "other", occurrenceAt = x), merged = listOf(RingMember("a1", x)))
+        assertEquals(apply, run(stop(), alarm(), c))
+        assertEquals(apply, run(snooze(), alarm(), c))
+    }
+
+    @Test
+    fun parkedSnoozeApplies() {
+        val c = ctx(snoozes = listOf(ParkedSnooze("a1", x, x.plusSeconds(60))))
+        assertEquals(apply, run(stop(), alarm(), c))
+        assertEquals(apply, run(snooze(), alarm(), c))
+    }
+
+    @Test
+    fun crossingSnoozesSettleOnLaterTime() {
+        val c = ctx(ring = ringState(occurrenceAt = x, snoozedUntil = t0))
+        assertEquals(apply, run(snooze(until = t0.plusSeconds(1)), alarm(), c))
+        assertEquals(reject("already snoozed later"), run(snooze(until = t0), alarm(), c))
+        assertEquals(reject("already snoozed later"), run(snooze(until = t0.minusSeconds(1)), alarm(), c))
+        assertEquals(apply, run(stop(), alarm(), c))
+    }
+
+    @Test
+    fun parkedSnoozeEndAlsoGuardsSnooze() {
+        val c = ctx(snoozes = listOf(ParkedSnooze("a1", x, t0)))
+        assertEquals(reject("already snoozed later"), run(snooze(until = t0), alarm(), c))
+        assertEquals(apply, run(snooze(until = t0.plusSeconds(1)), alarm(), c))
+    }
+
+    @Test
+    fun otherAlarmsLiveStateAtSameOccurrenceIsNotLive() {
+        val c = ctx(
+            ring = ringState(alarmId = "other", occurrenceAt = x),
+            merged = listOf(RingMember("other", x)),
+            snoozes = listOf(ParkedSnooze("other", x, t0)),
+        )
+        assertEquals(resolved, run(stop(), alarm(), c))
+        assertEquals(resolved, run(snooze(), alarm(), c))
+    }
+
+    @Test
+    fun linkedRowMatchesLiveStateByRowIdNotCommandAlarmId() {
+        val c = ctx(ring = ringState(alarmId = "L1", occurrenceAt = x))
+        assertEquals("a1", stop().alarmId)
+        assertEquals(apply, run(stop(), linked(), c))
+        assertEquals(apply, run(snooze(), linked(), c))
+        // Live under the owner's id does not count for the linked row.
+        val wrong = ctx(ring = ringState(alarmId = "a1", occurrenceAt = x))
+        assertEquals(resolved, run(stop(), linked(), wrong))
+    }
+
+    @Test
+    fun earlyOccurrenceWithinFireGraceApplies() {
+        for (secondsEarly in listOf(60L, 120L)) {
+            val at = x.minusSeconds(secondsEarly)
+            assertEquals(apply, run(stop(), alarm(), ctx(), at))
+            assertEquals(apply, run(snooze(), alarm(), ctx(), at))
+        }
+    }
+
+    @Test
+    fun earlyOccurrenceBeyondFireGraceRejects() {
+        val at = x.minusSeconds(180)
+        assertEquals(resolved, run(stop(), alarm(), ctx(), at))
+        assertEquals(resolved, run(snooze(), alarm(), ctx(), at))
+    }
+
+    @Test
+    fun staleOccurrenceRejects() {
+        assertEquals(resolved, run(stop(yesterdayRing), alarm(), ctx()))
+        assertEquals(resolved, run(snooze(at = yesterdayRing), alarm(), ctx()))
+    }
+
+    @Test
+    fun stopRingingWithRingIdAndContextKeepsTodaysRule() {
+        val live = ctx(ring = ringState(occurrenceAt = x))
+        val c = cmd(CommandType.STOP_RINGING, ringId = "r1")
+        assertEquals(apply, validate(c, alarm(), ringState(), now, newYork, live))
+        assertEquals(reject("not ringing"), validate(c, alarm(), ringState(ringId = "r2"), now, newYork, live))
+        assertEquals(reject("not ringing"), validate(c, alarm(), null, now, newYork, live))
+    }
+
+    @Test
+    fun stopRingingWithBothUsesOccurrencePath() {
+        val c = cmd(CommandType.STOP_RINGING, x, ringId = "r1")
+        assertEquals(resolved, validate(c, alarm(), ringState(), now.minusSeconds(3600 * 5), newYork, ctx()))
+    }
+
+    @Test
+    fun snoozeWithoutContextIsNotSupported() {
+        assertEquals(reject("not supported yet"), check(snooze(), alarm()))
+    }
+
+    @Test
+    fun malformedSnoozeRejectsCleanly() {
+        val live = ctx(ring = ringState(occurrenceAt = x))
+        assertEquals(reject("not supported yet"), run(cmd(CommandType.SNOOZE, x), alarm(), live))
+        assertEquals(reject("not supported yet"), run(cmd(CommandType.SNOOZE, snoozedUntil = t0), alarm(), live))
     }
 }
