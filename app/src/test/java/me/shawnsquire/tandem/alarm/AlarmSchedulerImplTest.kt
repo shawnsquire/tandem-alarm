@@ -689,6 +689,20 @@ class AlarmSchedulerImplTest {
     }
 
     @Test
+    fun replayForOwnerSkipCancelledByPendingUnskip() = runTest {
+        val stored = alarm("a", 5, 0, days = DayOfWeek.entries.toSet()).copy(
+            link = link.copy(ownerSkippedOccurrenceAt = replayAt, pendingBoth = PendingBoth(CommandType.UNSKIP, replayAt, "c1")),
+        )
+        assertEquals(1, replaysWith(stored).size)
+    }
+
+    @Test
+    fun replayForSoloSkipOnALinkedRow() = runTest {
+        val stored = alarm("a", 5, 0, days = DayOfWeek.entries.toSet()).copy(soloSkippedOccurrenceAt = replayAt, link = link)
+        assertEquals(1, replaysWith(stored).size)
+    }
+
+    @Test
     fun replayStillArmedWhenStoredSkipsAreForOtherInstants() = runTest {
         val other = replayAt.plusSeconds(86_400)
         // Repeating, so tomorrow's skipped occurrence still leaves a next fire: an armed alarm with

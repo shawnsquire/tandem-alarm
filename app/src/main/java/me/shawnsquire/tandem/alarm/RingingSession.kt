@@ -16,11 +16,11 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
-import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.isArmed
+import me.shawnsquire.tandem.schedule.skippedOccurrences
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 import java.util.UUID
@@ -495,13 +495,11 @@ class RingingSession(
 }
 
 /**
- * Whether [occurrence] is one of the skips stored on [alarm]: the shared skip, the owner's solo
- * skip, the owner's skip copied onto a linked row, or a pending "both" skip. Lists the same skips
- * `nextOccurrence` honors, but by exact stored instant, never by recomputing the next occurrence:
- * a zone change, DST or a time edit must not suppress a ring no stored command asked for (I1).
+ * Whether [occurrence] is one of the skips stored on [alarm], by the scheduler's own rule
+ * ([skippedOccurrences]): what `nextOccurrence` skips is exactly what a fire or replay suppresses,
+ * so a pending "unskip for both" re-arms and rings X, and a linked row's solo skip is ignored. By
+ * exact stored instant, never by recomputing the next occurrence: a zone change, DST or a time
+ * edit must not suppress a ring no stored command asked for (I1).
  */
 internal fun isSkippedOccurrence(alarm: Alarm, occurrence: Instant): Boolean =
-    alarm.skippedOccurrenceAt == occurrence ||
-        alarm.soloSkippedOccurrenceAt == occurrence ||
-        alarm.link?.ownerSkippedOccurrenceAt == occurrence ||
-        alarm.link?.pendingBoth?.let { it.type == CommandType.SKIP_NEXT && it.occurrenceAt == occurrence } == true
+    occurrence in alarm.skippedOccurrences()

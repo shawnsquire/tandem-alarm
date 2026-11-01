@@ -485,6 +485,23 @@ class RingingSessionTest {
         assertEquals(1, h.sound.starts.size)
     }
 
+    @Test fun pendingUnskipOfTheOwnersSkipRings() = runTest {
+        // The joiner tapped "unskip for both" while the owner was offline: nextOccurrence armed X.
+        val h = harness(alarms = listOf(linked(ownerSkipped = occurrence, pendingBoth = PendingBoth(CommandType.UNSKIP, occurrence, "c1"))))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun soloSkipOnALinkedRowDoesNotSuppress() = runTest {
+        // The owner's solo skip is copied onto no linked row; a stray value there is never honored.
+        val h = harness(alarms = listOf(linked().copy(soloSkippedOccurrenceAt = occurrence)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+    }
+
     @Test fun pendingBothDisableSuppressesThroughIsArmed() = runTest {
         val h = harness(alarms = listOf(linked(pendingBoth = PendingBoth(CommandType.DISABLE, occurrence, "c1"))))
         h.fire(occ = occurrence)
