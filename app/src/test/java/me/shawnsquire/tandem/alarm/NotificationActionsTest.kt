@@ -36,6 +36,12 @@ class NotificationActionsTest {
     fun grantNotifications() = shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
     private val manager = context.getSystemService(NotificationManager::class.java)
 
+    /** The phone's default notification sound is set; Robolectric has none, which would make the Notify channel unable to alert. */
+    @org.junit.Before
+    fun setDefaultNotificationSound() {
+        android.provider.Settings.System.putString(context.contentResolver, android.provider.Settings.System.NOTIFICATION_SOUND, "content://media/internal/audio/media/1")
+    }
+
     @Test
     fun controlAsyncRunsDismissAndSnooze() = runTest {
         val controller = FakeRingingController()
@@ -237,6 +243,23 @@ class NotificationActionsTest {
         )
         AndroidRingingNotifier(context).ensureChannels()
         assertNull(manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).sound)
+    }
+
+    @Test
+    fun notifyRingingCantAlertOnAChannelWithAnEmptySound() = assertNotifyCantAlert {
+        manager.createNotificationChannel(
+            NotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL, "n", NotificationManager.IMPORTANCE_HIGH).apply { setSound(android.net.Uri.EMPTY, null) },
+        )
+        AndroidRingingNotifier(context).ensureChannels()
+        assertEquals(android.net.Uri.EMPTY, manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).sound)
+    }
+
+    @Test
+    fun notifyRingingCantAlertWhenTheDefaultNotificationSoundIsNone() = assertNotifyCantAlert {
+        // The channel keeps the symbolic default Uri; the user's own default (Settings > Sound) is None.
+        android.provider.Settings.System.putString(context.contentResolver, android.provider.Settings.System.NOTIFICATION_SOUND, null)
+        AndroidRingingNotifier(context).ensureChannels()
+        assertEquals(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI, manager.getNotificationChannel(AndroidRingingNotifier.NOTIFY_CHANNEL).sound)
     }
 
     // ---- relabels and re-alerts ----

@@ -7,6 +7,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.net.Uri
 import android.provider.Settings
 import me.shawnsquire.tandem.R
@@ -162,13 +163,23 @@ class AndroidRingingNotifier(
      * https://developer.android.com/reference/android/app/NotificationManager#areNotificationsEnabled()
      * https://developer.android.com/reference/android/app/NotificationChannel#getImportance()
      * https://developer.android.com/reference/android/app/NotificationChannel#getSound()
+     * The channel's sound is the symbolic default-notification Uri, which resolves to the user's
+     * actual default at play time; if that is None the post is silent. getDefaultType gives the type
+     * of a default Uri "or -1" (a custom sound, nothing to resolve), and getActualDefaultRingtoneUri
+     * the "actual sound Uri" for that type.
+     * https://developer.android.com/reference/android/media/RingtoneManager#getDefaultType(android.net.Uri)
+     * https://developer.android.com/reference/android/media/RingtoneManager#getActualDefaultRingtoneUri(android.content.Context,%20int)
      */
     private fun notifyCanAlert(): Boolean {
         if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
         if (!manager.areNotificationsEnabled()) return false
         val channel = manager.getNotificationChannel(NOTIFY_CHANNEL) ?: return false
         // An empty Uri plays nothing either; the system treats it as no sound.
-        return channel.importance >= NotificationManager.IMPORTANCE_DEFAULT && channel.sound.let { it != null && it != Uri.EMPTY }
+        if (channel.importance < NotificationManager.IMPORTANCE_DEFAULT) return false
+        val sound = channel.sound
+        if (sound == null || sound == Uri.EMPTY) return false
+        val type = RingtoneManager.getDefaultType(sound)
+        return type == -1 || RingtoneManager.getActualDefaultRingtoneUri(context, type) != null
     }
 
     /** [fullScreen] is false for a relabel: an update of the notification already up must not launch the screen again. */
