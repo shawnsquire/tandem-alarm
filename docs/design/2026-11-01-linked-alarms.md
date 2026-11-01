@@ -52,7 +52,7 @@ A linked row has its own local `id` (a new UUID, like any alarm); `link.ownerAla
 - `pendingBoth` makes a "both of us" choice take effect on the joiner at once, even while the owner is offline. It is cleared when `LinkSync` sees the owner's state match (skip copied, `enabled` copied), or when the command is rejected or expires; a rejection notifies the joiner like any rejected command. "Both on" also sets `joinerEnabled = true`; "both off" leaves `joinerEnabled` alone, so the joiner comes back when the owner turns the alarm on again.
 - A one-shot that turns itself off after ringing, or after a "just me" skip, sets `joinerEnabled = false`, not the copied `enabled`. When a one-shot's copied `enabled` later goes from false to true, `LinkSync` resets `joinerEnabled` to true, since the owner has set it up again. Repeating alarms never reset it, because there only the joiner's own switch changes it.
 
-**Owner's "just me" skip.** The owner's `Alarm` gains `soloSkippedOccurrenceAt`. It is published in `alarms[]` for display ("Shawn's skipping, you're still on"), but `LinkSync` never copies it into `ownerSkippedOccurrenceAt`, so the joiner's copy stays armed. On the owner, `nextOccurrence` skips both it and `skippedOccurrenceAt`. A one-shot with a solo skip turns off once X has passed (on the suppressed fire), not when the skip is set, because an earlier `enabled = false` would be copied and silence the joiner. A partner `SKIP_NEXT` for the same X upgrades it to a shared skip; a partner `UNSKIP` clears only the shared skip; the owner's own un-skip clears either. On an alarm nobody has joined, Skip doesn't ask and sets the shared skip as today.
+**Owner's "just me" skip.** The owner's `Alarm` gains `soloSkippedOccurrenceAt`. It is published in `alarms[]` for display ("Shawn's skipping, you're still on"), but `LinkSync` never copies it into `ownerSkippedOccurrenceAt`, so the joiner's copy stays armed. On the owner, `nextOccurrence` skips both it and `skippedOccurrenceAt`. A one-shot with a solo skip turns off once X has passed (through skip expiry, see Decisions made during the build), not when the skip is set, because an earlier `enabled = false` would be copied and silence the joiner. A partner `SKIP_NEXT` for the same X upgrades it to a shared skip; a partner `UNSKIP` clears only the shared skip; the owner's own un-skip clears either. On an alarm nobody has joined, Skip doesn't ask and sets the shared skip as today.
 
 Because a linked alarm is an ordinary row, the scheduler, the direct-boot mirror (`AlarmMirror`), boot re-arming, the ringing service and the Health check need no separate path. The mirror must carry `link` so a locked boot still knows a ring is linked.
 
@@ -97,7 +97,7 @@ On commands sent by the owner to the joiner, `alarmId` is the owner's alarm id; 
 
 ### Ring command validation
 
-A received `STOP_RINGING{occurrenceAt: X}` or `SNOOZE{X, T}` is checked in this order. Validation looks at the slot's ring, its `merged` members and the snooze ledger, not only the slot's single ring as `validate` does today.
+A received `STOP_RINGING{occurrenceAt: X}` or `SNOOZE{X, T}` is checked in the order below, except that rule 2 runs after rule 4 (see Decisions made during the build). Validation looks at the slot's ring, its `merged` members and the snooze ledger, not only the slot's single ring as `validate` does today.
 
 1. **Expired or duplicate:** reject (I3, unchanged).
 2. **Not ringing here** ("skipped here"): this phone's own state says X wouldn't ring: its `skippedOccurrenceAt` or `soloSkippedOccurrenceAt`, `link.ownerSkippedOccurrenceAt`, a pending "both" skip or off, copied `enabled = false`, or `joinerEnabled = false`. Without this, the partner's snooze would arm a ring on a phone that chose not to ring, in either direction.
@@ -168,10 +168,73 @@ A received `STOP_RINGING{occurrenceAt: X}` or `SNOOZE{X, T}` is checked in this 
 - Media download fails: retried by WorkManager; the ring uses the next item in the resolution order. Upload fails: retried on the next publish pass; the joiner meanwhile falls through.
 - Owner deletes a joined alarm while the joiner's copy is ringing: the ring finishes normally; the row is removed afterwards.
 
+## Decisions made during the build
+
+These were settled while the units were built and integrated. Where one differs from the text above, this section wins.
+
+**Ring command validation**
+
+- The checks run in the order 1 expired, 3 already resolved, 4 live, 2 skipped here, 5 early, 6 reject. Rule 2 comes after rule 4 because a ring that is sounding must stay stoppable even when the row has changed under it: the owner's one-shot disables itself on dismiss, and a joiner's copy can pick up `enabled = false` before the owner's STOP arrives. "Skipped here" only applies to an X that isn't live.
+- The early window is X − `FIRE_GRACE` up to, but not including, X + `FIRE_GRACE`. A dismiss sent at X + 1 s still reaches a phone whose fire is in its pre-fire check; one at X + `FIRE_GRACE` does not.
+- An `INVITE_LINK` is valid until it expires, even when the joiner has no row for the alarm, since a joiner never has one before joining. The applier checks the owner's alarm against the partner's published state.
+- `SKIP_NEXT` and `DISABLE` pinned to an occurrence accept either view of the owner's alarm: the shared one, which ignores the solo skip, and the published one, which the Partner tab sends. A partner `UNSKIP` counts only the shared skip, and an `UNSKIP` at X masks only the owner's skip on X, never the joiner's own.
+- Any non-ring command aimed at a linked row is rejected as "alarm not found".
+- Ring commands that map onto a row pending removal by Leave are rejected with "left this alarm". Rows removed because the owner deleted the alarm or the pair ended still accept them, since such a row may still be ringing.
+
+**Scheduling**
+
+- The weekly search window is 29 days. Three skips (own, owner's, a pending "both") can stack on one weekday, and the worst case lands on day 28.
+- A solo-skipped one-shot turns off through skip expiry, which runs once X + `FIRE_GRACE` has passed. The fire path doesn't touch the solo skip. Until the skip expires, `nextOccurrence` returns nothing for that one-shot, so tomorrow's time doesn't ring.
+- A linked one-shot that turns itself off after ringing uses `setJoinerEnabled(false)` and leaves the copied `enabled` alone. Otherwise `LinkSync` would see the owner's alarm still on and re-arm it.
+- Re-enabling a one-shot with an expired solo skip runs the expired-skip cleanup first, so the alarm doesn't come back on already off.
+- A linked fire is suppressed when X no longer falls on the row's schedule (hour, minute and days), checked in the zone X was armed in. The fire intent carries that zone. A fire without a zone rings (I1). Own alarms are never suppressed this way: a skip is only a stored instant, and a zone change or DST shift alone must not silence a ring.
+
+**Ringing**
+
+- A Notify ring that can't alert rings in full (I1). That covers notifications off, the permission denied, the Notify channel blocked or set below default importance, its sound removed or the phone's default notification sound set to None, and a post that throws. A channel setting is neither a stored command nor a successful pre-fire check, so I1 requires a ring.
+- The Notify channel plays the default notification sound once, with alarm usage and the alarm category. Tapping it opens the app. A Notify alarm joining a sounding Notify ring alerts again; a Ring member joining upgrades the ring to the full screen and sound.
+- Each alarm in a merged ring gets its own full 10 minutes of auto-silence, counted from when it joined, so the ring ends 10 minutes after the last merge. Auto-silence checks the ring is unchanged before it dismisses, so a member that joined while the dismiss waited isn't resolved without having sounded.
+- A `STOP_RINGING` by `ringId` received for a merged ring resolves only the primary, which is the alarm the partner saw. The rest are promoted under the same `ringId` and keep sounding. A local action resolves the whole group.
+- A merged ring that is snoozed locally keeps one ledger entry per member but shows one notification listing every label. Its Dismiss resolves the whole group as one local action. A remote action, or a local one on a single occurrence, resolves only its own member.
+- Linked sound candidates from the media cache pass through unchanged when they already contain the system alarm sound. Otherwise the audio adapter appends the system defaults, as it does before first unlock.
+- The media cache puts the system alarm sound before the joiner's default itself, so the design's order holds even though the adapter also appends it at the end.
+- A mirrored STOP by occurrence posts no notification on the receiving phone, since the ringing screen shows "Shawn dismissed". A Partner-tab STOP by `ringId` does post one.
+- The joiner publishes a linked ring under the owner's alarm id, in `ringing` and in `merged`. On the owner, the Partner tab shows "Your 6:30, joined", and Stop follows the same rule as on the joiner: a local dismiss if the owner's own copy is live, otherwise `STOP_RINGING` with the owner's alarm id and the joiner's `ringId`.
+- When the owner's alarm is only a merged member of the joiner's ring, that Stop ends the joiner's whole ring, and the owner's copy keeps ringing.
+- A joiner that left while ringing leaves the owner's Stop rejected with "left this alarm".
+
+**Sync**
+
+- `RingingCommandListener` stays attached whenever any `RingState` exists, sounding or snoozed, on both phones. Two snoozes that cross (rule 4 settles on the later T) and a partner's STOP during a snooze have to land within seconds, not at the next FCM message or pull. The owner needs it too, because the joiner's `SNOOZE` and `STOP_RINGING` target the owner's ring. The cost is one Firestore listener for the length of the snooze. Parked snoozes with no `RingState` still rely on FCM and the pull.
+- A "both" command stays pending on the server until the owner applies it, and `pendingBoth` stays set on the joiner until `LinkSync` sees the owner's state match. An `INVITE_LINK` stays pending until the joiner answers Join or Decline, or it expires; it is notified once per process.
+- A "both" command's 24 h window runs from `PendingBoth.createdAt`, so a restart doesn't extend it. The Room migration to v3 adds that column and stamps rows already pending with the upgrade time.
+- The joiner writes `pendingBoth` before it creates the command, using the command's own id, and undoes it if the create fails.
+- Open invites persist in the sync DataStore (command id, alarm id, expiry), so the owner still has them after a restart. Media upload for an invited alarm resumes with them. The set of invites already notified on the joiner persists the same way.
+- Household and partner listeners resubscribe with backoff from 2 s to 60 s after an error. A null from either means "unknown" and removes nothing.
+- Unpairing is confirmed on the server before any linked row is removed: a `Source.SERVER` read of the user doc and the household must both show the pair is gone. A null household alone removes nothing. A re-pair removes only the old partner's rows.
+- Leave is a deferred, durable removal and is never mirrored. Removal after the owner deletes the alarm waits while the row is ringing, snoozed or merged, and survives process death.
+- A pre-fire read of the owner's doc uses `Source.SERVER`, so a cache-only answer can't suppress a ring. It runs at the same time as the command pull under the one 3 s cap.
+- Notification texts avoid pronouns, because the app doesn't know the partner's. They read "Sam turned off the 6:30 you joined, so it's off for you too" where this doc says "his 6:30".
+- The state publisher republishes at a solo skip's X and again at X + `FIRE_GRACE`, applying skip expiry when it publishes, so the partner's display clears without an edit.
+
+**Media and backend**
+
+- Storage uploads need a paired household (two members). Without that, any signed-in user could create a solo household and use Storage as free hosting.
+- Re-uploading an existing hash is a `create`, so it passes through the owner, size and type checks. Metadata updates are denied.
+- The joiner treats hashes from the partner's doc as untrusted: 64 lowercase hex characters, and a downloaded file must match its hash. A mismatch isn't retried; a missing file is retried five times. Owner media is used only when the row's owner is the partner whose refs were stored.
+- `unpair` deletes the household's media after the Firestore cleanup, and a failure there is logged without failing the unpair.
+- Override files count as references in `MediaOrphanSweeper`, so a joiner's override isn't swept after an hour.
+- Room columns for the link are flat and nullable, because `ALTER TABLE ADD COLUMN` can't add an embedded NOT NULL column without a default.
+- Sound overrides that can't be read fall to the next candidate, and the bundled tone is always last.
+
 ## Known limitations
 
 - A phone that hasn't been unlocked since a reboot can't receive mirror commands, so it keeps ringing until dismissed locally or auto-silenced. Its own snooze and dismiss are sent after unlock.
 - The joiner rings on the last copy of the owner's alarm it saw; a time change made while the joiner is offline takes effect when it next syncs, or at the pre-fire read if that succeeds.
+- The owner's clock running 2 minutes or more ahead can suppress the joiner's ring at X. The joiner's pre-fire read at X finds the owner's one-shot already expired and copied as off.
+- A joiner phone that was off at X and syncs after X + `FIRE_GRACE` gets the "turned off" notice for a one-shot that has simply expired.
+- After a reboot within the overdue window, a replay of an occurrence that the owner has since moved rings once at the old X, because replays carry no zone and skip the schedule check.
+- If the owner moves the time earlier and the joiner only learns of it at the old X, the joiner doesn't ring that day. The pre-fire check allows this, since X no longer falls on the owner's schedule.
 
 ## Testing
 
