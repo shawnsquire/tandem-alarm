@@ -59,6 +59,7 @@ import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmSheetRoute
+import me.shawnsquire.tandem.ui.alarms.linked.LinkedSwitchOptions
 import me.shawnsquire.tandem.ui.alarms.linked.LinkedSwitchQuestion
 import me.shawnsquire.tandem.ui.alarmsViewModelFactory
 import me.shawnsquire.tandem.ui.amPm
@@ -127,6 +128,7 @@ fun AlarmsRoute(
         onLinkedBoth = viewModel::setLinkedBoth,
         onToggleEnabled = viewModel::setEnabled,
         onSkipNext = viewModel::skipNext,
+        onSkipJustMe = viewModel::skipJustMe,
         onUnskip = viewModel::unskip,
         showSetupBanner = showBanner,
         onSetupBannerClick = {
@@ -153,6 +155,7 @@ fun AlarmsScreen(
     onOpenLinked: (String) -> Unit = {},
     onLinkedJustMe: (String) -> Unit = {},
     onLinkedBoth: (String) -> Unit = {},
+    onSkipJustMe: (String) -> Unit = {},
     showSetupBanner: Boolean = false,
     onSetupBannerClick: () -> Unit = {},
     onSetupBannerDismiss: () -> Unit = {},
@@ -198,6 +201,7 @@ fun AlarmsScreen(
                             onLinkedJustMe = { onLinkedJustMe(row.id) },
                             onLinkedBoth = { onLinkedBoth(row.id) },
                             onSkipNext = { onSkipNext(row.id) },
+                            onSkipJustMe = { onSkipJustMe(row.id) },
                             onUnskip = { onUnskip(row.id) },
                         )
                     }
@@ -245,9 +249,12 @@ private fun AlarmRow(
     onLinkedJustMe: () -> Unit,
     onLinkedBoth: () -> Unit,
     onSkipNext: () -> Unit,
+    onSkipJustMe: () -> Unit,
     onUnskip: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    // On an own row the partner joined, Skip asks "Just me or both of us?" inside the same menu.
+    var skipQuestionOpen by remember { mutableStateOf(false) }
     var switchQuestionOpen by remember { mutableStateOf(false) }
     val dim = if (row.enabled) 1f else 0.6f
     Row(
@@ -281,7 +288,16 @@ private fun AlarmRow(
                 overflow = TextOverflow.Ellipsis,
             )
             row.linked?.let { LinkedChips(it) }
-            SuggestionChip(onClick = onClick, label = { Text(row.daysText) })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                SuggestionChip(onClick = onClick, label = { Text(row.daysText) })
+                row.partnerJoined?.let { name ->
+                    AssistChip(
+                        onClick = {},
+                        enabled = false,
+                        label = { Text(stringResource(R.string.link_joined, name)) },
+                    )
+                }
+            }
             Text(
                 row.ringsInText ?: stringResource(R.string.alarm_off),
                 style = MaterialTheme.typography.bodyMedium,
@@ -294,7 +310,9 @@ private fun AlarmRow(
                     onClick = onUnskip,
                     label = {
                         Text(
-                            if (next != null) {
+                            if (row.skippedSolo) {
+                                stringResource(R.string.link_state_skipped_for_you)
+                            } else if (next != null) {
                                 stringResource(R.string.alarm_skipped_next, formatWeekdayTime(next, zone, is24Hour))
                             } else {
                                 stringResource(R.string.alarm_skipped)
@@ -326,8 +344,17 @@ private fun AlarmRow(
             IconButton(onClick = { menuOpen = true }) {
                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.alarm_more_options))
             }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                if (row.skipped) {
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false; skipQuestionOpen = false },
+            ) {
+                if (skipQuestionOpen) {
+                    LinkedSwitchQuestion(
+                        options = LinkedSwitchOptions(justMe = true, both = true),
+                        onJustMe = { menuOpen = false; skipQuestionOpen = false; onSkipJustMe() },
+                        onBoth = { menuOpen = false; skipQuestionOpen = false; onSkipNext() },
+                    )
+                } else if (row.skipped) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.alarm_unskip)) },
                         onClick = { menuOpen = false; onUnskip() },
@@ -335,7 +362,14 @@ private fun AlarmRow(
                 } else if (row.enabled) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.alarm_skip_next)) },
-                        onClick = { menuOpen = false; onSkipNext() },
+                        onClick = {
+                            if (row.partnerJoined != null) {
+                                skipQuestionOpen = true
+                            } else {
+                                menuOpen = false
+                                onSkipNext()
+                            }
+                        },
                     )
                 }
             }
@@ -475,6 +509,32 @@ private fun JoinedOwnerSkippingSoloPreview() {
     TandemTheme {
         AlarmsScreen(
             joinedPreviewState(joinedPreviewRow("j3", LinkMode.RING) { copy(ownerSkippingSolo = true) }),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
+    }
+}
+
+private fun ownJoinedPreviewRow(id: String, change: AlarmRowState.() -> AlarmRowState = { this }) = AlarmRowState(
+    id, 6, 30, "Work", "Mon–Fri", true, Instant.parse("2026-11-03T06:30:00Z"), "Rings in 1 d 1 h", false, false,
+    partnerJoined = "Shawn",
+).change()
+
+/** An own alarm the partner joined. */
+@Preview(showBackground = true)
+@Composable
+private fun OwnJoinedPreview() {
+    TandemTheme {
+        AlarmsScreen(joinedPreviewState(ownJoinedPreviewRow("p1")), remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {})
+    }
+}
+
+/** An own alarm with only the owner's "just me" skip. */
+@Preview(showBackground = true)
+@Composable
+private fun OwnJoinedSkippedForYouPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(ownJoinedPreviewRow("p2") { copy(skipped = true, skippedSolo = true) }),
             remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
         )
     }

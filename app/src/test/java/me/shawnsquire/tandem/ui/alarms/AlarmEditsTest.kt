@@ -22,6 +22,7 @@ private class OrderedRepo(private val inner: FakeAlarmRepository, val log: Mutab
     override suspend fun delete(id: String) { inner.delete(id); log += "write" }
     override suspend fun setEnabled(id: String, enabled: Boolean) { inner.setEnabled(id, enabled); log += "write" }
     override suspend fun setSkip(id: String, occurrence: Instant?) { inner.setSkip(id, occurrence); log += "write" }
+    override suspend fun setSoloSkip(id: String, occurrence: Instant?) { inner.setSoloSkip(id, occurrence); log += "write" }
 }
 
 private class LoggingScheduler(val log: MutableList<String>) : me.shawnsquire.tandem.alarm.AlarmScheduler {
@@ -42,6 +43,12 @@ class AlarmEditsTest {
     @Test fun delete() = assertEquals(listOf("write", "reschedule"), logOf { it.delete(a.id) })
     @Test fun setEnabled() = assertEquals(listOf("write", "reschedule"), logOf { it.setEnabled(a.id, false) })
     @Test fun setSkip() = assertEquals(listOf("write", "reschedule"), logOf { it.setSkip(a.id, Instant.EPOCH) })
+
+    @Test fun setSoloSkip() = assertEquals(listOf("write", "reschedule"), logOf { it.setSoloSkip(a.id, Instant.EPOCH) })
+
+    @Test fun clearSkipsIsTwoWritesAndOneReschedule() = assertEquals(
+        listOf("write", "write", "reschedule"), logOf { it.clearSkips(a.id) },
+    )
 
     @Test fun writesReachRepositoryAndScheduleOnce() = runTest {
         val repo = FakeAlarmRepository()

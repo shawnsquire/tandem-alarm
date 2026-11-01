@@ -5,6 +5,17 @@ import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
+import me.shawnsquire.tandem.fakes.FakeLinkRepository
+import me.shawnsquire.tandem.fakes.FakePairingRepository
+import me.shawnsquire.tandem.fakes.FakePartnerRepository
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.sync.LinkRepository
+import me.shawnsquire.tandem.sync.PartnerState
+import me.shawnsquire.tandem.sync.PublishedLink
+import me.shawnsquire.tandem.ui.partner.CommandUiStatus
+import kotlinx.coroutines.flow.flowOf
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.ui.MainDispatcherRule
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
@@ -35,6 +46,7 @@ class AlarmEditViewModelTest {
         id: String?,
         initial: List<Alarm>,
         gate: CompletableDeferred<Unit>? = null,
+        linkOverride: ((FakeLinkRepository) -> LinkRepository)? = null,
         schedulerOverride: ((FakeAlarmRepository) -> me.shawnsquire.tandem.alarm.AlarmScheduler)? = null,
     ) {
         val repo = FakeAlarmRepository(initial)
@@ -46,6 +58,9 @@ class AlarmEditViewModelTest {
         val deletedRingtones = mutableListOf<String>()
         val deletedWallpapers = mutableListOf<String>()
         var failImport = false
+        val links = FakeLinkRepository()
+        val pairing = FakePairingRepository()
+        val partner = FakePartnerRepository(null)
         val vm = AlarmEditViewModel(
             alarmId = id,
             repository = vmRepo,
@@ -64,6 +79,10 @@ class AlarmEditViewModelTest {
             },
             deleteWallpaperFile = { deletedWallpapers += it },
             newId = { "new-id" },
+            links = linkOverride?.invoke(links) ?: links,
+            pairing = pairing,
+            partnerRepository = partner,
+            inviteFailedReason = "invite failed",
         )
     }
 
@@ -119,30 +138,21 @@ class AlarmEditViewModelTest {
         assertEquals(skip, e.repo.get("a1")!!.skippedOccurrenceAt)
     }
 
-    @Test fun labelEditKeepsSoloSkipAndLink() = runTest {
-        val link = me.shawnsquire.tandem.schedule.AlarmLink(
-            "owner", "owner-alarm", me.shawnsquire.tandem.schedule.LinkMode.RING, null, true, null, null, null, null,
-        )
+    @Test fun labelEditKeepsSoloSkip() = runTest {
         val solo = Instant.parse("2026-11-04T06:30:00Z")
-        val e = Env("a1", listOf(existing.copy(soloSkippedOccurrenceAt = solo, link = link)))
+        val e = Env("a1", listOf(existing.copy(soloSkippedOccurrenceAt = solo)))
         e.vm.setLabel("x")
         e.vm.save()
         val saved = e.repo.get("a1")!!
         assertEquals("x", saved.label)
         assertEquals(solo, saved.soloSkippedOccurrenceAt)
-        assertEquals(link, saved.link)
     }
 
-    @Test fun timeEditClearsSoloSkipButKeepsLink() = runTest {
-        val link = me.shawnsquire.tandem.schedule.AlarmLink(
-            "owner", "owner-alarm", me.shawnsquire.tandem.schedule.LinkMode.RING, null, true, null, null, null, null,
-        )
-        val e = Env("a1", listOf(existing.copy(soloSkippedOccurrenceAt = Instant.parse("2026-11-04T06:30:00Z"), link = link)))
+    @Test fun timeEditClearsSoloSkip() = runTest {
+        val e = Env("a1", listOf(existing.copy(soloSkippedOccurrenceAt = Instant.parse("2026-11-04T06:30:00Z"))))
         e.vm.setTime(7, 0)
         e.vm.save()
-        val saved = e.repo.get("a1")!!
-        assertNull(saved.soloSkippedOccurrenceAt)
-        assertEquals(link, saved.link)
+        assertNull(e.repo.get("a1")!!.soloSkippedOccurrenceAt)
     }
 
     @Test fun titleIsLookedUpForCurrentUri() = runTest {
@@ -386,5 +396,105 @@ class AlarmEditViewModelTest {
         assertEquals(EditError.Save, e.vm.state.value.error)
         assertFalse(e.vm.state.value.closed)
         assertTrue(e.deletedRingtones.isEmpty() && e.deletedWallpapers.isEmpty())
+    }
+
+    // --- Invite / joined row ---
+
+    private suspend fun paired(e: Env) = e.pairing.join("ABC123") // partnerName "Alex"
+
+    @Test fun inviteIsOfferedForASavedOwnAlarmWhilePaired() = runTest {
+        val e = edit()
+        assertEquals(EditInvite.Hidden, e.vm.state.value.invite) // unpaired
+        paired(e)
+        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+        assertEquals("Alex", e.vm.state.value.partnerName)
+        e.pairing.unpair()
+        assertEquals(EditInvite.Hidden, e.vm.state.value.invite)
+    }
+
+    @Test fun inviteIsHiddenForANewAlarm() = runTest {
+        val e = fresh()
+        paired(e)
+        assertEquals(EditInvite.Hidden, e.vm.state.value.invite)
+    }
+
+    @Test fun invitingCollectsTheLinkRepositoryAndSettlesBackWhenNotOpen() = runTest {
+        val e = edit()
+        paired(e)
+        e.vm.invite()
+        assertEquals(listOf<FakeLinkRepository.Call>(FakeLinkRepository.Call.Invite("a1")), e.links.calls)
+        // The fake's flow ends APPLIED; the partner joining (or the invite closing) is what changes the row next.
+        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+        assertNull(e.vm.state.value.inviteStatus)
+    }
+
+    @Test fun invitedWhileTheAlarmHasAnOpenInvite() = runTest {
+        val e = edit()
+        paired(e)
+        e.links.openInvites.value = setOf("a1")
+        assertEquals(EditInvite.Invited, e.vm.state.value.invite)
+        e.links.openInvites.value = setOf("other")
+        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+    }
+
+    @Test fun invitedWhileThisScreensInviteIsPending() = runTest {
+        val gate = kotlinx.coroutines.flow.MutableSharedFlow<Pair<CommandStatus, String?>>()
+        val e = Env("a1", listOf(existing), linkOverride = { fake ->
+            object : LinkRepository by fake { override fun invite(alarmId: String) = gate }
+        })
+        paired(e)
+        e.vm.invite()
+        gate.emit(CommandStatus.PENDING to null)
+        assertEquals(EditInvite.Invited, e.vm.state.value.invite)
+        gate.emit(CommandStatus.APPLIED to null)
+        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+    }
+
+    @Test fun joinedTakesPrecedence() = runTest {
+        val e = edit()
+        paired(e)
+        e.links.openInvites.value = setOf("a1")
+        e.partner.set(PartnerState("Alex", emptyList(), null, null, links = listOf(PublishedLink("a1", LinkMode.RING))))
+        assertEquals(EditInvite.Joined, e.vm.state.value.invite)
+    }
+
+    @Test fun rejectedInviteGoesBackToInviteWithItsReason() = runTest {
+        val e = Env("a1", listOf(existing), linkOverride = { fake ->
+            object : LinkRepository by fake {
+                override fun invite(alarmId: String) =
+                    flowOf(CommandStatus.PENDING to null, CommandStatus.REJECTED to "Alex said no")
+            }
+        })
+        paired(e)
+        e.vm.invite()
+        assertEquals(EditInvite.Invite, e.vm.state.value.invite)
+        assertEquals(CommandUiStatus.Rejected("Alex said no"), e.vm.state.value.inviteStatus)
+    }
+
+    @Test fun rejectedWithoutAReasonUsesTheFallbackAndAResendClearsIt() = runTest {
+        var reject = true
+        val e = Env("a1", listOf(existing), linkOverride = { fake ->
+            object : LinkRepository by fake {
+                override fun invite(alarmId: String) = flowOf(
+                    if (reject) CommandStatus.REJECTED to null else CommandStatus.APPLIED to null,
+                )
+            }
+        })
+        paired(e)
+        e.vm.invite()
+        assertEquals(CommandUiStatus.Rejected("invite failed"), e.vm.state.value.inviteStatus)
+        reject = false
+        e.vm.invite()
+        assertNull(e.vm.state.value.inviteStatus)
+    }
+
+    @Test fun editorClosesForAJoinedRow() = runTest {
+        val linked = existing.copy(
+            link = AlarmLink("uid", "o1", LinkMode.RING, null, true, null, null, null, null),
+        )
+        val e = Env("a1", listOf(linked))
+        assertTrue(e.vm.state.value.closed)
+        paired(e)
+        assertEquals(EditInvite.Hidden, e.vm.state.value.invite)
     }
 }

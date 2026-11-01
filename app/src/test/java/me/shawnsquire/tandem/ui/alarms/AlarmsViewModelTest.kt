@@ -14,6 +14,7 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.sync.PartnerAlarm
+import me.shawnsquire.tandem.sync.PublishedLink
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.ui.MainDispatcherRule
 import org.junit.Assert.assertEquals
@@ -411,5 +412,106 @@ class AlarmsViewModelTest {
         e.vm.setLinkedBoth("w")
         assertTrue(e.links.calls.isEmpty())
         assertTrue(e.repo.get("w")!!.enabled)
+    }
+
+    // --- Own rows the partner joined ---
+
+    private val joinedLinks = listOf(PublishedLink("w", LinkMode.RING))
+
+    @Test fun joinedBadgeOnlyWhenPartnerLinksIncludeTheAlarm() {
+        val rows = buildAlarmsState(
+            listOf(alarm("w"), alarm("x", hour = 7)), now, ZoneOffset.UTC, "Sam", partnerLinks = joinedLinks,
+        ).rows.associateBy { it.id }
+        assertEquals("Sam", rows.getValue("w").partnerJoined)
+        assertNull(rows.getValue("x").partnerJoined)
+    }
+
+    @Test fun noBadgeWithoutPartnerState() = runTest {
+        val e = env(alarm("w"))
+        e.vm.state.test {
+            assertNull(expectMostRecentItem().rows.single().partnerJoined)
+            e.partner.set(PartnerState("Sam", emptyList(), null, null, links = joinedLinks))
+            assertEquals("Sam", expectMostRecentItem().rows.single().partnerJoined)
+            e.partner.set(null)
+            assertNull(expectMostRecentItem().rows.single().partnerJoined)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test fun skipJustMeWritesSoloSkipOnRepeatingAlarm() = runTest {
+        val e = env(alarm("w"))
+        e.vm.skipJustMe("w")
+        val a = e.repo.get("w")!!
+        assertEquals(Instant.parse("2026-11-02T06:30:00Z"), a.soloSkippedOccurrenceAt)
+        assertNull(a.skippedOccurrenceAt)
+        assertEquals(1, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun skipJustMeOnOneShotKeepsItEnabled() = runTest {
+        val e = env(alarm("o", days = emptySet()))
+        e.vm.skipJustMe("o")
+        val a = e.repo.get("o")!!
+        assertTrue(a.enabled)
+        assertEquals(Instant.parse("2026-11-02T06:30:00Z"), a.soloSkippedOccurrenceAt)
+        assertNull(a.skippedOccurrenceAt)
+        assertEquals(1, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun skipJustMeIgnoresDisabledAndJoinedRows() = runTest {
+        val e = env(alarm("off", enabled = false), linkedAlarm("j"))
+        e.vm.skipJustMe("off")
+        e.vm.skipJustMe("j")
+        assertNull(e.repo.get("off")!!.soloSkippedOccurrenceAt)
+        assertNull(e.repo.get("j")!!.soloSkippedOccurrenceAt)
+        assertEquals(0, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun skipBothKeepsTodaysBehaviour() = runTest {
+        val e = env(alarm("w"), alarm("o", days = emptySet(), hour = 7))
+        e.vm.skipNext("w")
+        e.vm.skipNext("o")
+        assertEquals(Instant.parse("2026-11-02T06:30:00Z"), e.repo.get("w")!!.skippedOccurrenceAt)
+        assertNull(e.repo.get("w")!!.soloSkippedOccurrenceAt)
+        assertFalse(e.repo.get("o")!!.enabled)
+        assertEquals(2, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun soloSkipShowsAsSkippedForYouWhileASharedSkipStaysSkipped() {
+        val rows = buildAlarmsState(
+            listOf(
+                alarm("solo").copy(soloSkippedOccurrenceAt = future),
+                alarm("shared", skip = future),
+                alarm("plain"),
+                alarm("stale").copy(soloSkippedOccurrenceAt = past),
+            ),
+            now, ZoneOffset.UTC,
+        ).rows.associateBy { it.id }
+        assertTrue(rows.getValue("solo").skipped)
+        assertTrue(rows.getValue("solo").skippedSolo)
+        assertEquals(Instant.parse("2026-11-03T06:30:00Z"), rows.getValue("solo").nextRing)
+        assertTrue(rows.getValue("shared").skipped)
+        assertFalse(rows.getValue("shared").skippedSolo)
+        assertFalse(rows.getValue("plain").skipped)
+        assertFalse(rows.getValue("stale").skipped)
+        assertFalse(rows.getValue("stale").skippedSolo)
+    }
+
+    @Test fun unskipClearsBothSkipsWithOneReschedule() = runTest {
+        val e = env(alarm("w", skip = future).copy(soloSkippedOccurrenceAt = future))
+        e.vm.unskip("w")
+        val a = e.repo.get("w")!!
+        assertNull(a.skippedOccurrenceAt)
+        assertNull(a.soloSkippedOccurrenceAt)
+        assertEquals(1, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun switchOnAJoinedOwnAlarmIsStillASingleWrite() = runTest {
+        val e = env(alarm("w"))
+        e.partner.set(PartnerState("Sam", emptyList(), null, null, links = joinedLinks))
+        e.vm.setEnabled("w", false)
+        assertFalse(e.repo.get("w")!!.enabled)
+        assertNull(e.repo.get("w")!!.soloSkippedOccurrenceAt)
+        assertEquals(1, e.scheduler.rescheduleCount)
+        assertTrue(e.links.calls.isEmpty())
     }
 }

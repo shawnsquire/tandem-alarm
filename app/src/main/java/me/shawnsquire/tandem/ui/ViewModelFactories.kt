@@ -71,6 +71,10 @@ val alarmEditViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
             newId = { UUID.randomUUID().toString() },
+            links = container.linkRepository,
+            pairing = container.pairingRepository,
+            partnerRepository = container.partnerRepository,
+            inviteFailedReason = app.getString(R.string.link_invite_failed),
         )
     }
 }

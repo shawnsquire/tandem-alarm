@@ -25,4 +25,8 @@
     <string name="link_cancel">Cancel</string>
     <string name="link_error_save">Couldn\'t save that change</string>
     <string name="link_both_rejected">That didn\'t go through for both of you</string>
+    <string name="link_joined">%1$s joined</string>
+    <string name="link_invite">Invite %1$s</string>
+    <string name="link_invited">Invited</string>
+    <string name="link_invite_failed">That invite didn\'t go through</string>
 </resources>

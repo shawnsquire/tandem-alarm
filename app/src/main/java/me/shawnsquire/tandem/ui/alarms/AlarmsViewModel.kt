@@ -19,6 +19,7 @@ import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.sync.PartnerRepository
+import me.shawnsquire.tandem.sync.PublishedLink
 import me.shawnsquire.tandem.ui.partner.FALLBACK_NAME
 import me.shawnsquire.tandem.ui.resolvePartnerName
 import me.shawnsquire.tandem.schedule.isOneShot
@@ -48,6 +49,10 @@ data class AlarmRowState(
     val oneShot: Boolean,
     /** Non-null for a joined row: the partner's alarm this phone mirrors. */
     val linked: LinkedRowState? = null,
+    /** On an own row: the partner's name once they have joined it, else null. */
+    val partnerJoined: String? = null,
+    /** On an own row: [skipped] only because of the owner's "just me" skip, shown as "Skipped for you". */
+    val skippedSolo: Boolean = false,
 )
 
 /** What a joined row shows beyond a plain alarm. At most one of the skip flags is shown, in this order. */
@@ -82,7 +87,10 @@ internal fun buildAlarmsState(
     zone: ZoneId,
     partnerName: String = FALLBACK_NAME,
     partnerAlarms: Map<String, PartnerAlarm> = emptyMap(),
+    /** What the partner has joined; matched against own rows' ids. */
+    partnerLinks: List<PublishedLink> = emptyList(),
 ): AlarmsUiState {
+    val joinedIds = partnerLinks.mapTo(HashSet()) { it.ownerAlarmId }
     val rows = alarms
         .sortedWith(compareBy<Alarm>({ it.hour }, { it.minute }, { it.label.lowercase() }, { it.id }))
         .map { a ->
@@ -90,6 +98,8 @@ internal fun buildAlarmsState(
             val armed = isArmed(a)
             val next = nextOccurrence(a, now, zone)
             val ownSkip = armed && a.skippedOccurrenceAt?.let { it > now } == true
+            // The owner's "just me" skip; a joiner's copy never carries one.
+            val soloSkip = link == null && armed && a.soloSkippedOccurrenceAt?.let { it > now } == true
             val linked = link?.let {
                 val ownerSkipped = armed && it.ownerSkippedOccurrenceAt?.let { t -> t > now } == true
                 LinkedRowState(
@@ -108,8 +118,10 @@ internal fun buildAlarmsState(
                 daysText = formatDays(a.days), enabled = armed,
                 nextRing = next,
                 ringsInText = next?.let { formatRingsIn(Duration.between(now, it)) },
-                skipped = ownSkip || linked?.ownerSkipped == true, oneShot = a.isOneShot(),
+                skipped = ownSkip || soloSkip || linked?.ownerSkipped == true, oneShot = a.isOneShot(),
                 linked = linked,
+                partnerJoined = partnerName.takeIf { link == null && a.id in joinedIds },
+                skippedSolo = soloSkip && !ownSkip,
             )
         }
     return AlarmsUiState(loaded = true, rows = rows, zone = zone)
@@ -135,6 +147,7 @@ class AlarmsViewModel(
                 alarms, clock.instant(), clock.zone,
                 partnerName = resolvePartnerName(status, partner),
                 partnerAlarms = partner?.alarms.orEmpty().associateBy { it.id },
+                partnerLinks = partner?.links.orEmpty(),
             )
         }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlarmsUiState(zone = clock.zone))
@@ -175,7 +188,10 @@ class AlarmsViewModel(
         }
     }
 
-    /** Repeating alarms pin the skip to the occurrence due right now; a one-shot is simply turned off. */
+    /**
+     * Skip "both of us" (and the only skip for an alarm nobody joined). Repeating alarms pin the skip to the
+     * occurrence due right now; a one-shot is simply turned off.
+     */
     fun skipNext(id: String) {
         viewModelScope.launch {
             val alarm = repository.get(id) ?: return@launch
@@ -189,10 +205,23 @@ class AlarmsViewModel(
         }
     }
 
+    /**
+     * Skip "just me" on an alarm the partner joined: only this phone stops ringing. A one-shot stays on
+     * (turning it off would be copied to the partner), so the occurrence is pinned like a repeating one.
+     */
+    fun skipJustMe(id: String) {
+        viewModelScope.launch {
+            val alarm = repository.get(id) ?: return@launch
+            if (alarm.link != null || !alarm.enabled) return@launch
+            val next = nextOccurrence(alarm, clock.instant(), clock.zone) ?: return@launch
+            edits.setSoloSkip(id, next)
+        }
+    }
+
     fun unskip(id: String) {
         viewModelScope.launch {
             if (repository.get(id)?.link != null) return@launch
-            edits.setSkip(id, null)
+            edits.clearSkips(id)
         }
     }
 

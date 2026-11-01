@@ -7,16 +7,28 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.sync.LinkRepository
+import me.shawnsquire.tandem.sync.PairingRepository
+import me.shawnsquire.tandem.sync.PairingStatus
+import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
+import me.shawnsquire.tandem.ui.partner.CommandUiStatus
+import me.shawnsquire.tandem.ui.partner.FALLBACK_NAME
+import me.shawnsquire.tandem.ui.resolvePartnerName
 import java.time.DayOfWeek
 
 enum class EditError { RingtoneImport, WallpaperImport, Save }
+
+/** What the editor offers about the partner joining this alarm. */
+enum class EditInvite { Hidden, Invite, Invited, Joined }
 
 data class AlarmEditUiState(
     val loaded: Boolean = false,
@@ -32,6 +44,10 @@ data class AlarmEditUiState(
     val error: EditError? = null,
     /** Set once the screen should close (saved, cancelled, or the alarm vanished). */
     val closed: Boolean = false,
+    val invite: EditInvite = EditInvite.Hidden,
+    val partnerName: String = FALLBACK_NAME,
+    /** Set to Rejected when the last invite did not go through; cleared on the next send. */
+    val inviteStatus: CommandUiStatus? = null,
 )
 
 class AlarmEditViewModel(
@@ -45,6 +61,11 @@ class AlarmEditViewModel(
     private val importWallpaper: suspend (String) -> String,
     private val deleteWallpaperFile: (String) -> Unit,
     private val newId: () -> String,
+    private val links: LinkRepository,
+    pairing: PairingRepository,
+    partnerRepository: PartnerRepository,
+    /** Shown when an invite is rejected without a reason. */
+    private val inviteFailedReason: String,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AlarmEditUiState())
@@ -66,15 +87,37 @@ class AlarmEditViewModel(
     /** A new alarm keeps one id across failed saves so a retry cannot create a duplicate. */
     private var newAlarmId: String? = null
 
+    /** True once a saved own alarm has loaded; only then can the partner be invited to it. */
+    private val invitable = MutableStateFlow(false)
+
+    /** This screen's own invite is waiting for the partner. */
+    private val invitePending = MutableStateFlow(false)
+
     init {
+        viewModelScope.launch {
+            combine(
+                invitable, pairing.status, partnerRepository.partner, links.openInvites, invitePending,
+            ) { canInvite, status, partner, open, pending ->
+                val joined = partner?.links?.any { it.ownerAlarmId == alarmId } == true
+                val invite = when {
+                    !canInvite || status !is PairingStatus.Paired -> EditInvite.Hidden
+                    joined -> EditInvite.Joined
+                    pending || alarmId in open -> EditInvite.Invited
+                    else -> EditInvite.Invite
+                }
+                invite to resolvePartnerName(status, partner)
+            }.collect { (invite, name) -> _state.update { it.copy(invite = invite, partnerName = name) } }
+        }
         viewModelScope.launch {
             if (alarmId == null) {
                 _state.update { it.copy(loaded = true, isNew = true, ringtoneTitle = ringtoneTitle(null)) }
             } else {
                 val alarm = repository.get(alarmId)
-                if (alarm == null) {
+                if (alarm == null || alarm.link != null) {
+                    // A joined row is edited in its sheet, never here.
                     _state.update { it.copy(loaded = true, closed = true) }
                 } else {
+                    invitable.value = true
                     _state.update {
                         it.copy(
                             loaded = true, isNew = false, hour = alarm.hour, minute = alarm.minute,
@@ -84,6 +127,36 @@ class AlarmEditViewModel(
                         )
                     }
                 }
+            }
+        }
+    }
+
+    /** Invites the partner to join this alarm; the result shows as Invited, then Joined, or a reason. */
+    fun invite() {
+        val id = alarmId ?: return
+        if (_state.value.invite != EditInvite.Invite) return
+        _state.update { it.copy(inviteStatus = null) }
+        viewModelScope.launch {
+            invitePending.value = true
+            try {
+                links.invite(id).collect { (status, reason) ->
+                    when (status) {
+                        CommandStatus.PENDING -> invitePending.value = true
+                        CommandStatus.APPLIED -> invitePending.value = false
+                        CommandStatus.REJECTED -> {
+                            invitePending.value = false
+                            _state.update {
+                                it.copy(inviteStatus = CommandUiStatus.Rejected(reason ?: inviteFailedReason))
+                            }
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _state.update { it.copy(inviteStatus = CommandUiStatus.Rejected(inviteFailedReason)) }
+            } finally {
+                invitePending.value = false
             }
         }
     }
