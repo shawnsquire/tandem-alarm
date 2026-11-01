@@ -61,7 +61,8 @@ interface AlarmDao {
     @Query("UPDATE alarms SET soloSkippedOccurrenceAt = :skippedAtMillis WHERE id = :id")
     suspend fun setSoloSkip(id: String, skippedAtMillis: Long?)
 
-    @Query("UPDATE alarms SET lateRingOccurrenceAt = :occurrenceAtMillis, lateRingRing = :ring WHERE id = :id")
+    /** Own rows only (an owner column unset); a missing or linked row is left alone (I2). */
+    @Query("UPDATE alarms SET lateRingOccurrenceAt = :occurrenceAtMillis, lateRingRing = :ring WHERE id = :id AND (linkOwnerUid IS NULL OR linkOwnerAlarmId IS NULL)")
     suspend fun setLateRing(id: String, occurrenceAtMillis: Long?, ring: Boolean?)
 
     /** Linked rows only (both owner columns set); a missing or own row is left alone. */

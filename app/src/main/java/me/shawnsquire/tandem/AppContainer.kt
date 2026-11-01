@@ -120,7 +120,7 @@ class AppContainer private constructor(
     val partnerRepository: PartnerRepository = PartnerRepositoryImpl(householdFlow, firestore)
     // L8: asks the owner whether a joiner that hasn't picked up an earlier move should ring late.
     val lateRingPrompts = LateRingPrompts(
-        alarmRepository, partnerRepository, AndroidLateRingNotifier(context),
+        alarmRepository, partnerRepository, householdFlow, AndroidLateRingNotifier(context),
         { LateRingCheckWorker.enqueue(context, it) }, { LateRingCheckWorker.cancel(context, it) }, LiveZoneClock, syncScope,
     )
     val pairingRepository: PairingRepository =

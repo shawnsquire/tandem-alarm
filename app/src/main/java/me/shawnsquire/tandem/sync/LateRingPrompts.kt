@@ -6,13 +6,17 @@ import java.time.DayOfWeek
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.earlierOccurrenceThatDay
 import me.shawnsquire.tandem.schedule.nextOccurrence
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The question put to the owner: "[partnerName] may still ring at [occurrenceAt]; you moved the alarm
@@ -54,6 +58,8 @@ interface LateRingNotifier {
 class LateRingPrompts(
     private val alarms: AlarmRepository,
     private val partner: PartnerRepository,
+    /** Non-null only while paired. */
+    private val household: Flow<Household?>,
     private val notifier: LateRingNotifier,
     /** Schedules a [check] for the alarm (4b: unique per alarm, replacing, delayed). */
     private val enqueueCheck: (alarmId: String) -> Unit,
@@ -65,16 +71,16 @@ class LateRingPrompts(
 
     /**
      * Called by the editor after a save commits. The newest edit wins: any prompt showing is removed,
-     * and a check is queued only when the edit moved an upcoming occurrence earlier. A new alarm, a
-     * linked row or a save that leaves hour, minute and days alone changes nothing.
+     * and a check is queued when the alarm is on, or dropped when it is off. The check, pinned to the
+     * joiner's copy, decides whether to ask. A new alarm, a linked row or a save that leaves hour,
+     * minute and days alone changes nothing.
      */
     fun onEdited(previous: Alarm?, saved: Alarm) {
         try {
             if (previous == null || previous.link != null || saved.link != null) return
             if (previous.hour == saved.hour && previous.minute == saved.minute && previous.days == saved.days) return
             notifier.cancel(saved.id)
-            val x = nextOccurrence(previous, clock.instant(), clock.zone)
-            if (x != null && saved.enabled && earlierOccurrenceThatDay(saved, x, clock.zone) != null) {
+            if (saved.enabled) {
                 enqueueCheck(saved.id)
             } else {
                 cancelCheck(saved.id)
@@ -90,6 +96,9 @@ class LateRingPrompts(
     suspend fun check(alarmId: String): CheckResult {
         val alarm = alarms.get(alarmId)
         if (alarm == null || alarm.link != null || !alarm.enabled) return CheckResult.DONE
+        // Unpaired: nothing to read, so stop at once. Not known yet: try again later.
+        val known = withTimeoutOrNull(HOUSEHOLD_WAIT) { listOf(household.first()) } ?: return CheckResult.RETRY
+        if (known.single() == null) return CheckResult.DONE
         val state = partner.readFromServer() ?: return CheckResult.RETRY
         val link = state.links.firstOrNull { it.ownerAlarmId == alarmId } ?: return CheckResult.DONE
         val hour = link.hour
@@ -161,5 +170,6 @@ class LateRingPrompts(
     private companion object {
         const val TAG = "LateRingPrompts"
         const val FALLBACK_NAME = "Your partner"
+        val HOUSEHOLD_WAIT = 10.seconds
     }
 }

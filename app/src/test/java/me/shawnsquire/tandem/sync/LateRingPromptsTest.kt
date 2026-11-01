@@ -6,6 +6,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
@@ -55,15 +56,21 @@ class LateRingPromptsTest {
     private fun state(vararg links: PublishedLink, name: String = "Alex") =
         PartnerState(displayName = name, alarms = emptyList(), ringing = null, lastSeen = null, links = links.toList())
 
-    private inner class Env(owner: Alarm = alarm(), now: Instant = at("05:50"), partnerState: PartnerState? = state(published())) {
+    private inner class Env(
+        owner: Alarm = alarm(),
+        now: Instant = at("05:50"),
+        partnerState: PartnerState? = state(published()),
+        paired: Boolean = true,
+    ) {
         val clock = MutableClock(now)
         val alarms = FakeAlarmRepository(listOf(owner))
         val partner = FakePartnerRepository(null).also { it.serverState = partnerState }
         val notifier = FakeLateRingNotifier()
+        val household = flowOf(if (paired) Household("h", "me", "them") else null)
         val enqueued = mutableListOf<String>()
         val cancelled = mutableListOf<String>()
         fun prompts(scope: kotlinx.coroutines.CoroutineScope) = LateRingPrompts(
-            alarms, partner, notifier, { enqueued += it }, { cancelled += it }, clock, scope,
+            alarms, partner, household, notifier, { enqueued += it }, { cancelled += it }, clock, scope,
         )
     }
 
@@ -78,14 +85,17 @@ class LateRingPromptsTest {
         assertTrue(env.notifier.posted().isEmpty())
     }
 
-    @Test fun `later move cancels the check instead`() = runTest {
-        val env = Env()
-        env.prompts(this).onEdited(alarm(6, 30), alarm(7, 0))
-        assertTrue(env.enqueued.isEmpty())
-        assertEquals(listOf("a1"), env.cancelled)
+    @Test fun `later move enqueues and the check posts nothing`() = runTest {
+        val env = Env(owner = alarm(7, 0))
+        val prompts = env.prompts(this)
+        prompts.onEdited(alarm(6, 30), alarm(7, 0))
+        assertEquals(listOf("a1"), env.enqueued)
+        assertTrue(env.cancelled.isEmpty())
+        assertEquals(LateRingPrompts.CheckResult.DONE, prompts.check("a1"))
+        assertTrue(env.notifier.posts.isEmpty())
     }
 
-    @Test fun `second edit replaces the first and the second that is not earlier cancels`() = runTest {
+    @Test fun `every schedule edit of an enabled alarm enqueues and clears the prompt`() = runTest {
         val env = Env()
         val prompts = env.prompts(this)
         prompts.onEdited(alarm(6, 30), alarm(6, 0))
@@ -94,8 +104,30 @@ class LateRingPromptsTest {
         assertEquals(listOf("a1", "a1"), env.enqueued)
         assertTrue(env.notifier.posted().isEmpty())
         prompts.onEdited(alarm(5, 30), alarm(7, 0))
-        assertEquals(2, env.enqueued.size)
-        assertEquals(listOf("a1"), env.cancelled)
+        assertEquals(listOf("a1", "a1", "a1"), env.enqueued)
+        assertTrue(env.cancelled.isEmpty())
+    }
+
+    @Test fun `skip then a second edit toward the partner's copy asks again`() = runTest {
+        val env = Env(owner = alarm(6, 0))
+        val prompts = env.prompts(this)
+        prompts.onEdited(alarm(6, 30), alarm(6, 0))
+        assertEquals(listOf("a1"), env.enqueued)
+        prompts.check("a1")
+        assertEquals(listOf(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30"))), env.notifier.posts)
+        prompts.answer("a1", at("06:30"), ring = false)
+        assertEquals(LateRing(at("06:30"), false), env.alarms.get("a1")!!.lateRing)
+        // Second edit 6:00 -> 6:15; the editor clears the answer.
+        env.alarms.upsert(alarm(6, 15))
+        prompts.onEdited(alarm(6, 0).copy(lateRing = LateRing(at("06:30"), false)), alarm(6, 15))
+        assertEquals(listOf("a1", "a1"), env.enqueued)
+        assertTrue(env.cancelled.isEmpty())
+        assertTrue(env.notifier.posted().isEmpty())
+        prompts.check("a1")
+        val prompt = env.notifier.posts.last()
+        assertEquals(at("06:30"), prompt.occurrenceAt)
+        assertEquals(at("06:15"), prompt.movedTo)
+        assertEquals(2, env.notifier.posts.size)
     }
 
     @Test fun `edit after the new time passed still enqueues`() = runTest {
@@ -122,7 +154,7 @@ class LateRingPromptsTest {
         assertTrue(env.cancelled.isEmpty())
     }
 
-    @Test fun `disabled alarm is not asked about`() = runTest {
+    @Test fun `a save that turns the alarm off cancels the check`() = runTest {
         val env = Env()
         env.prompts(this).onEdited(alarm(6, 30), alarm(6, 0).copy(enabled = false))
         assertTrue(env.enqueued.isEmpty())
@@ -135,6 +167,13 @@ class LateRingPromptsTest {
         val env = Env()
         assertEquals(LateRingPrompts.CheckResult.DONE, env.prompts(this).check("a1"))
         assertEquals(listOf(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30"))), env.notifier.posts)
+    }
+
+    @Test fun `no household is done without reading the server or posting`() = runTest {
+        val env = Env(paired = false)
+        assertEquals(LateRingPrompts.CheckResult.DONE, env.prompts(this).check("a1"))
+        assertTrue(env.notifier.posts.isEmpty())
+        assertEquals(0, env.partner.serverReads)
     }
 
     @Test fun `blank partner name falls back`() = runTest {
@@ -251,7 +290,7 @@ class LateRingPromptsTest {
 
     private fun TestScope.watched(env: Env): LateRingPrompts {
         val prompts = LateRingPrompts(
-            env.alarms, env.partner, env.notifier, { env.enqueued += it }, { env.cancelled += it }, env.clock,
+            env.alarms, env.partner, env.household, env.notifier, { env.enqueued += it }, { env.cancelled += it }, env.clock,
             kotlinx.coroutines.CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
         )
         env.notifier.post(LateRingPrompt("a1", "Alex", at("06:00"), at("06:30")))

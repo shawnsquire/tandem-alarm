@@ -99,7 +99,7 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
     }
 
     override suspend fun setLateRing(id: String, lateRing: LateRing?) = state.update { list ->
-        list.map { if (it.id == id) it.copy(lateRing = lateRing) else it }
+        list.map { if (it.id == id && it.link == null) it.copy(lateRing = lateRing) else it }
     }
 
     override suspend fun setJoinerEnabled(id: String, enabled: Boolean) = state.update { list ->
@@ -254,7 +254,8 @@ class FakePartnerRepository(initial: PartnerState? = sampleState()) : PartnerRep
 
     /** What [readFromServer] returns; null simulates a failed or offline read. */
     var serverState: PartnerState? = null
-    override suspend fun readFromServer(): PartnerState? = serverState
+    var serverReads = 0
+    override suspend fun readFromServer(): PartnerState? { serverReads++; return serverState }
 
     companion object {
         fun sampleState(): PartnerState {

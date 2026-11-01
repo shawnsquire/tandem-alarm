@@ -440,6 +440,14 @@ class AlarmRepositoryImplTest {
     }
 
     @Test
+    fun setLateRingIsNoOpForLinkedRows() = runTest {
+        val a = linked()
+        repo.upsertLinked(a)
+        repo.setLateRing(a.id, LateRing(Instant.ofEpochMilli(1_700_000_900_000), false))
+        assertNull(repo.get(a.id)!!.lateRing)
+    }
+
+    @Test
     fun aHalfSetLateRingReadsAsNull() = runTest {
         val at = 1_700_000_900_000
         dao.upsert(alarm(id = "x").toEntity().copy(lateRingOccurrenceAt = at, lateRingRing = null))

@@ -23,7 +23,7 @@ interface AlarmRepository {
     /** Owner's "just me" skip (Alarm.soloSkippedOccurrenceAt); null clears it. */
     suspend fun setSoloSkip(id: String, occurrence: Instant?)
 
-    /** The owner's late-ring answer on its own row (Alarm.lateRing); null clears it. No-op if the row is missing. */
+    /** The owner's late-ring answer on its own row (Alarm.lateRing); null clears it. No-op for a missing or linked row. */
     suspend fun setLateRing(id: String, lateRing: LateRing?)
 
     /**
