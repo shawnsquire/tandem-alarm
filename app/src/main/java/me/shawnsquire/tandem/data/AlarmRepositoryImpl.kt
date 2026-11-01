@@ -43,6 +43,8 @@ class AlarmRepositoryImpl(
 
     override suspend fun setSoloSkip(id: String, occurrence: Instant?) = dao.setSoloSkip(id, occurrence?.toEpochMilli())
 
+    override suspend fun setJoinerEnabled(id: String, enabled: Boolean) = dao.setJoinerEnabled(id, enabled)
+
     override suspend fun upsertLinked(alarm: Alarm) {
         require(alarm.link != null) { "upsertLinked needs a linked alarm" }
         dao.upsertMerging(alarm.toEntity()) { stored, incoming ->

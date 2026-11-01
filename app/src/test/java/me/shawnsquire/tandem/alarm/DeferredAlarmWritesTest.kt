@@ -83,6 +83,26 @@ class DeferredAlarmWritesTest {
         assertEquals(writes.drop(1), SharedPrefsDeferredAlarmWrites(context).all())
     }
 
+    @Test fun joinerEnabledRoundTripsAndOlderQueuedEntriesStillDecode() {
+        val old = """[{"seq":0,"id":"a","op":"setEnabled","enabled":false},""" +
+            """{"seq":1,"id":"b","op":"setSoloSkip","occurrence":${t1.toEpochMilli()}}]"""
+        deviceProtectedPrefs(context, "alarm_deferred_writes").edit().putString("writes", old).commit()
+        val queue = SharedPrefsDeferredAlarmWrites(context)
+        assertEquals(
+            listOf(DeferredWrite.SetEnabled("a", false), DeferredWrite.SetSoloSkip("b", t1)),
+            queue.all(),
+        )
+        queue.append(DeferredWrite.SetJoinerEnabled("c", false))
+        queue.append(DeferredWrite.SetJoinerEnabled("c", true))
+        assertEquals(
+            listOf(
+                DeferredWrite.SetEnabled("a", false), DeferredWrite.SetSoloSkip("b", t1),
+                DeferredWrite.SetJoinerEnabled("c", false), DeferredWrite.SetJoinerEnabled("c", true),
+            ),
+            SharedPrefsDeferredAlarmWrites(context).all(),
+        )
+    }
+
     @Test fun drainedLegacyQueueNeverReusesItsSeqs() {
         val legacy = """[{"id":"a","op":"setEnabled","enabled":false},{"id":"a","op":"setEnabled","enabled":true}]"""
         deviceProtectedPrefs(context, "alarm_deferred_writes").edit().putString("writes", legacy).commit()

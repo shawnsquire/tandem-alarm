@@ -336,6 +336,29 @@ class AlarmRepositoryImplTest {
     }
 
     @Test
+    fun setJoinerEnabledWritesOnlyTheLinkField() = runTest {
+        val a = linked()
+        repo.upsertLinked(a)
+        repo.setJoinerEnabled(a.id, false)
+        val stored = repo.get(a.id)!!
+        assertFalse(stored.link!!.joinerEnabled)
+        assertEquals(a.enabled, stored.enabled)
+        assertEquals(a.copy(link = a.link!!.copy(joinerEnabled = false)), stored)
+        repo.setJoinerEnabled(a.id, true)
+        assertTrue(repo.get(a.id)!!.link!!.joinerEnabled)
+    }
+
+    @Test
+    fun setJoinerEnabledIsNoOpForOwnOrMissingRows() = runTest {
+        repo.upsert(alarm())
+        val before = repo.get("a")
+        repo.setJoinerEnabled("a", false)
+        repo.setJoinerEnabled("missing", false)
+        assertEquals(before, repo.get("a"))
+        assertNull(repo.get("missing"))
+    }
+
+    @Test
     fun upsertLinkedInsertsWhenAbsent() = runTest {
         val a = linked()
         repo.upsertLinked(a)

@@ -23,6 +23,13 @@ interface AlarmRepository {
     suspend fun setSoloSkip(id: String, occurrence: Instant?)
 
     /**
+     * Writes link.joinerEnabled only (the joiner's "just me" on/off) and nothing else, so it never
+     * touches the copied `enabled` field. No-op if the row is missing or not linked. Deferrable while
+     * locked, unlike [updateLink]: a linked one-shot dismissed on a locked boot must still turn it off.
+     */
+    suspend fun setJoinerEnabled(id: String, enabled: Boolean)
+
+    /**
      * Writes a linked row; [alarm].link must be non-null (IllegalArgumentException otherwise).
      * Inserts it if absent. If a row with that id exists, replaces only the owner-copied fields
      * (label, hour, minute, days, enabled, link.ownerSkippedOccurrenceAt) and keeps every joiner-owned

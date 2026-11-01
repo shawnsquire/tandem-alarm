@@ -38,6 +38,10 @@ interface AlarmDao {
     @Query("UPDATE alarms SET soloSkippedOccurrenceAt = :skippedAtMillis WHERE id = :id")
     suspend fun setSoloSkip(id: String, skippedAtMillis: Long?)
 
+    /** Linked rows only (both owner columns set); a missing or own row is left alone. */
+    @Query("UPDATE alarms SET linkJoinerEnabled = :enabled WHERE id = :id AND linkOwnerUid IS NOT NULL AND linkOwnerAlarmId IS NOT NULL")
+    suspend fun setJoinerEnabled(id: String, enabled: Boolean)
+
     /** Read-modify-write of one row in a single transaction; false if the row is missing. */
     @Transaction
     suspend fun modify(id: String, transform: (AlarmEntity) -> AlarmEntity?): Boolean {

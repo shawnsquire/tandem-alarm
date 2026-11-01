@@ -93,6 +93,10 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
         list.map { if (it.id == id) it.copy(soloSkippedOccurrenceAt = occurrence) else it }
     }
 
+    override suspend fun setJoinerEnabled(id: String, enabled: Boolean) = state.update { list ->
+        list.map { a -> if (a.id == id) a.link?.let { a.copy(link = it.copy(joinerEnabled = enabled)) } ?: a else a }
+    }
+
     override suspend fun upsertLinked(alarm: Alarm) {
         val incoming = alarm.link ?: throw IllegalArgumentException("upsertLinked needs a linked alarm")
         state.update { list ->

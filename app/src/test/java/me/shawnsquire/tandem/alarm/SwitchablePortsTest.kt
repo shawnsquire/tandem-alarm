@@ -168,6 +168,19 @@ class SwitchablePortsTest {
     }
 
     @Test
+    fun lockedJoinerEnabledIsQueuedAndReplayedOnAttach() = runTest {
+        val repo = repo(mirrorOf(alarm("a")))
+        repo.setJoinerEnabled("a", false)
+        assertEquals(listOf(DeferredWrite.SetJoinerEnabled("a", false)), queue.all())
+        val link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null)
+        val real = FakeAlarmRepository(listOf(alarm("a").copy(link = link)))
+        repo.attach(real)
+        runCurrent()
+        assertFalse(real.get("a")!!.link!!.joinerEnabled)
+        assertTrue(queue.all().isEmpty())
+    }
+
+    @Test
     fun lockedUpsertLinkedAndUpdateLinkThrow() = runTest {
         val repo = repo(mirrorOf(alarm("a")))
         val link = AlarmLink("o", "oa", LinkMode.RING, null, true, null, null, null, null)

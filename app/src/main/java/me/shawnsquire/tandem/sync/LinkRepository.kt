@@ -38,7 +38,10 @@ interface LinkRepository {
     /** Null means "Use <owner>'s". */
     suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?)
 
-    /** Joiner "just me" on/off (link.joinerEnabled). A "just me" skip is AlarmRepository.setSkip. */
+    /**
+     * Joiner "just me" on/off (link.joinerEnabled). A "just me" skip is AlarmRepository.setSkip.
+     * The real one delegates to AlarmRepository.setJoinerEnabled (deferrable while locked), then reschedules.
+     */
     suspend fun setJoinerEnabled(alarmId: String, enabled: Boolean)
 
     /** Joiner "both of us": records link.pendingBoth (takes effect at once) and sends [type] (SKIP_NEXT, UNSKIP, DISABLE or ENABLE) for the owner's alarm; a rejection clears it and calls CommandNotifier.notifyRejected. */

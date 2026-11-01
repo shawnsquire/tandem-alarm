@@ -123,6 +123,17 @@ class SwitchableAlarmRepository(
     override suspend fun setSoloSkip(id: String, occurrence: Instant?) =
         write(DeferredWrite.SetSoloSkip(id, occurrence), { it.copy(soloSkippedOccurrenceAt = occurrence) }) { it.setSoloSkip(id, occurrence) }
 
+    /**
+     * Deferrable like [setEnabled]: queued and replayed on attach. The mirror doesn't encode the
+     * link yet (L2), so today it holds no linked rows and the locked view shows no change; the
+     * change below applies to a linked mirrored row once the mirror carries the link.
+     */
+    override suspend fun setJoinerEnabled(id: String, enabled: Boolean) =
+        write(
+            DeferredWrite.SetJoinerEnabled(id, enabled),
+            { a -> a.link?.let { a.copy(link = it.copy(joinerEnabled = enabled)) } ?: a },
+        ) { it.setJoinerEnabled(id, enabled) }
+
     /** Not deferrable (link sync needs the CE store and the network): throws locked, like [upsert]. */
     override suspend fun upsertLinked(alarm: Alarm) = (target() ?: throw lockedEdit()).upsertLinked(alarm)
 
@@ -179,6 +190,7 @@ class SwitchableAlarmRepository(
         is DeferredWrite.SetEnabled -> real.setEnabled(w.id, w.enabled)
         is DeferredWrite.SetSkip -> real.setSkip(w.id, w.occurrence)
         is DeferredWrite.SetSoloSkip -> real.setSoloSkip(w.id, w.occurrence)
+        is DeferredWrite.SetJoinerEnabled -> real.setJoinerEnabled(w.id, w.enabled)
     }
 
     private suspend fun write(w: DeferredWrite, change: (Alarm) -> Alarm, forward: suspend (AlarmRepository) -> Unit) {
