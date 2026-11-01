@@ -168,18 +168,20 @@ class LinkRepositoryImpl(
         val id = remote.newId(hh.id)
         val pending = PendingBoth(type, occurrenceAt, id, now)
         var wasJoinerEnabled = link.joinerEnabled
-        alarms.updateLink(alarmId) {
-            wasJoinerEnabled = it.joinerEnabled
-            it.copy(
-                pendingBoth = pending,
-                joinerEnabled = if (type == CommandType.ENABLE) true else it.joinerEnabled,
-            )
-        }
-        scheduler.rescheduleAll()
-        try {
-            remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now, commandId = id)
-        } catch (e: Throwable) {
-            withContext(NonCancellable) {
+        // Not cancellable once the row is written: a stored pendingBoth with no command doc would leave a
+        // DISABLE's copy disarmed while the owner never hears. create() doesn't suspend, and the reschedule
+        // runs last so its failure can't skip the create or the watch.
+        withContext(NonCancellable) {
+            alarms.updateLink(alarmId) {
+                wasJoinerEnabled = it.joinerEnabled
+                it.copy(
+                    pendingBoth = pending,
+                    joinerEnabled = if (type == CommandType.ENABLE) true else it.joinerEnabled,
+                )
+            }
+            try {
+                remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now, commandId = id)
+            } catch (e: Throwable) {
                 alarms.updateLink(alarmId) {
                     if (it.pendingBoth?.commandId != id) it
                     else it.copy(
@@ -188,10 +190,16 @@ class LinkRepositoryImpl(
                     )
                 }
                 scheduler.rescheduleAll()
+                throw e
             }
-            throw e
+            watch(alarmId, pending, expiryOf(pending, now))
+            // The command is out, so a failed reschedule is not a failed send: the caller would report it as one.
+            try {
+                scheduler.rescheduleAll()
+            } catch (e: Exception) {
+                Log.w(TAG, "rescheduling after sending $id failed", e)
+            }
         }
-        watch(alarmId, pending, expiryOf(pending, now))
     }
 
     override fun invite(alarmId: String): Flow<Pair<CommandStatus, String?>> {

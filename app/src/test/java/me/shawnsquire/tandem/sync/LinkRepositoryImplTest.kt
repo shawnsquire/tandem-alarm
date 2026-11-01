@@ -271,7 +271,8 @@ class LinkRepositoryImplTest {
         val l = e.rows().single().link!!
         assertNull(l.pendingBoth)
         assertFalse(l.joinerEnabled)
-        assertEquals(2, e.scheduler.rescheduleCount)
+        // Only the cleanup's: the create runs before the send's own reschedule.
+        assertEquals(1, e.scheduler.rescheduleCount)
     }
 
     @Test
@@ -282,6 +283,42 @@ class LinkRepositoryImplTest {
         e.remote.createFailure = IllegalStateException("boom")
         try { e.repo.sendBoth("row1", CommandType.ENABLE, null); org.junit.Assert.fail() } catch (_: IllegalStateException) {}
         assertEquals(newer, e.rows().single().link!!.pendingBoth)
+    }
+
+    @Test
+    fun sendBothWhoseRescheduleThrowsStillCreatesAndWatches() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.scheduler.rescheduleBlock = { throw IllegalStateException("alarms read failed") }
+        // The command went out, so the caller isn't told the send failed.
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        e.scheduler.rescheduleBlock = null
+        assertEquals(CommandType.DISABLE, e.remote.created.single().type)
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        runCurrent()
+        e.remote.updatesFor("c1").emit(CommandStatus.REJECTED to "no")
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals("no", e.notifier.rejected.single().reason)
+    }
+
+    @Test
+    fun sendBothWhoseCallerIsCancelledMidRescheduleStillCreatesAndWatches() = runTest {
+        val e = env(rows = listOf(linked()))
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        e.scheduler.rescheduleBlock = { gate.await() }
+        val caller = launch { e.repo.sendBoth("row1", CommandType.DISABLE, null) }
+        runCurrent()
+        caller.cancel()
+        e.scheduler.rescheduleBlock = null
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(caller.isCancelled)
+        assertEquals(CommandType.DISABLE, e.remote.created.single().type)
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        e.remote.updatesFor("c1").emit(CommandStatus.REJECTED to "no")
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals("no", e.notifier.rejected.single().reason)
     }
 
     @Test

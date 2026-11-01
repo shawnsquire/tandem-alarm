@@ -152,7 +152,9 @@ class FakeSettingsRepository : SettingsRepository {
 class FakeAlarmScheduler : AlarmScheduler {
     var rescheduleCount = 0
         private set
-    override suspend fun rescheduleAll() { rescheduleCount++ }
+    /** Runs inside [rescheduleAll] after counting it; may suspend or throw. */
+    var rescheduleBlock: (suspend () -> Unit)? = null
+    override suspend fun rescheduleAll() { rescheduleCount++; rescheduleBlock?.invoke() }
 }
 
 class FakeRingingController : RingingController {
