@@ -6,6 +6,8 @@ import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
 import com.google.firebase.functions.functions
+import com.google.firebase.storage.storage
+import java.io.File
 import java.time.Clock
 import me.shawnsquire.tandem.alarm.AlarmScheduler
 import me.shawnsquire.tandem.alarm.RingingController
@@ -57,10 +59,14 @@ import me.shawnsquire.tandem.sync.PreFireCheck
 import me.shawnsquire.tandem.sync.StatePublisher
 import me.shawnsquire.tandem.fakes.FakeLinkRepository
 import me.shawnsquire.tandem.fakes.FakeLinkSync
-import me.shawnsquire.tandem.fakes.FakeLinkedMediaCache
-import me.shawnsquire.tandem.fakes.FakeMediaPublisher
 import me.shawnsquire.tandem.fakes.FakeRingMirror
+import me.shawnsquire.tandem.media.AndroidMediaSource
+import me.shawnsquire.tandem.media.FirebaseMediaStorage
 import me.shawnsquire.tandem.media.LinkedMediaCache
+import me.shawnsquire.tandem.media.LinkedMediaCacheImpl
+import me.shawnsquire.tandem.media.LinkedMediaDownloadWorker
+import me.shawnsquire.tandem.media.MediaPublishStore
+import me.shawnsquire.tandem.media.MediaPublisherImpl
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.LinkSync
 import me.shawnsquire.tandem.sync.MediaPublisher
@@ -114,11 +120,23 @@ class AppContainer private constructor(
     // syncScope, context). They are declared before the consumers below, which take them as inputs,
     // and the init block hands ringMirror and linkedMediaCache to the engine. Their order lets each use
     // the earlier ones: LinkSync feeds linkedMediaCache, MediaPublisher reads linkRepository.openInvites.
-    val linkedMediaCache: LinkedMediaCache = FakeLinkedMediaCache() // L5: swap to real (the engine gets it in init)
+    // L5: real (the engine gets it in init). healthSignalsImpl is declared below; the lambdas run later.
+    val linkedMediaCache: LinkedMediaCache = LinkedMediaCacheImpl(
+        context.filesDir,
+        FirebaseMediaStorage({ Firebase.storage }) { ok -> healthSignalsImpl.recordStorage(ok, LiveZoneClock.instant()) },
+        enqueueDownload = { LinkedMediaDownloadWorker.enqueue(context) },
+        onStatus = { referenced, missing -> syncScope.launch { healthSignalsImpl.recordLinkedMedia(referenced, missing) } },
+    )
     val linkRepository: LinkRepository = FakeLinkRepository() // L4: swap to real
     val linkSync: LinkSync = FakeLinkSync() // L4: swap to real
     val ringMirror: RingMirror = FakeRingMirror() // L4: swap to real (the engine's port gets it in init)
-    val mediaPublisher: MediaPublisher = FakeMediaPublisher() // L5: swap to real
+    // L5: real
+    val mediaPublisher: MediaPublisher = MediaPublisherImpl(
+        alarmRepository, partnerRepository, linkRepository, settingsRepository, householdFlow,
+        FirebaseMediaStorage({ Firebase.storage }) { ok -> healthSignalsImpl.recordStorage(ok, LiveZoneClock.instant()) },
+        AndroidMediaSource(context), MediaPublishStore(File(context.filesDir, "media-publisher.json")),
+        context.cacheDir, syncScope,
+    )
 
     val commandApplierImpl = CommandApplierImpl(
         alarmRepository, ringStateStore, alarmScheduler, ringingController, commandRemote, householdFlow,

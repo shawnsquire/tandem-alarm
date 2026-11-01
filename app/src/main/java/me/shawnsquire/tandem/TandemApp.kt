@@ -138,6 +138,7 @@ class TandemApp : Application() {
         // broken start can't take the others down or make a retry rebuild the container.
         syncStart("auth") { container.authManager.start(container.syncScope) }
         syncStart("state publisher") { container.statePublisher.start() }
+        syncStart("media publisher") { container.mediaPublisher.start() }
         syncStart("initial publish") { container.syncScope.launch { container.statePublisherImpl.publishNow() } }
         syncStart("ringing command listener") { container.ringingCommandListener.start() }
         // WorkManager's provider is only installed at unlock; schedule() catches its absence too.

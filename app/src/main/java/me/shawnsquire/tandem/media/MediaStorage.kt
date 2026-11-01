@@ -23,11 +23,16 @@ interface MediaStorage {
     suspend fun download(hid: String, ownerUid: String, sha: String, dest: File, maxBytes: Long)
 }
 
-/** [MediaStorage] on Firebase Storage. [onResult] hears every call's outcome (the health check's "Storage reachable"). */
+/**
+ * [MediaStorage] on Firebase Storage. [onResult] hears every call's outcome (the health check's "Storage reachable").
+ * [storage] is resolved on first use, so building this touches no Firebase instance (the emulator must be set first).
+ */
 class FirebaseMediaStorage(
-    private val storage: FirebaseStorage,
+    storage: () -> FirebaseStorage,
     private val onResult: suspend (ok: Boolean) -> Unit = {},
 ) : MediaStorage {
+    private val storage by lazy(storage)
+
     private fun ref(hid: String, ownerUid: String, sha: String) =
         storage.reference.child("households/$hid/media/$ownerUid/$sha")
 
