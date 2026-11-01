@@ -58,7 +58,11 @@ class LinkRepositoryImplTest {
         }
     }
 
-    private inner class Env(val scope: TestScope, rows: List<Alarm>, partner: PartnerState?, household: Household?) {
+    private inner class Env(
+        val scope: TestScope, rows: List<Alarm>, partner: PartnerState?, household: Household?,
+        wrap: (FakeCommandRemote) -> CommandRemote = { it },
+        householdFlow: Flow<Household?>? = null,
+    ) {
         val fake = FakeAlarmRepository(rows)
         val partner = MutableStateFlow(partner)
         val household = MutableStateFlow(household)
@@ -73,7 +77,7 @@ class LinkRepositoryImplTest {
         val removals = LinkRemovals(store())
         val processed = ProcessedCommands(store(), Clock.fixed(now, ZoneOffset.UTC))
         val repo = LinkRepositoryImpl(
-            fake, this.partner, this.household, sender, remote, processed, removals,
+            fake, this.partner, householdFlow ?: this.household, sender, wrap(remote), processed, removals,
             { id, r -> removalCalls += id to r }, scheduler, notifier,
             Clock.fixed(now, ZoneOffset.UTC), scope.backgroundScope,
         )
@@ -348,5 +352,58 @@ class LinkRepositoryImplTest {
             listOf(PublishedLink("a", LinkMode.NOTIFY), PublishedLink("b", LinkMode.NOTIFY)),
             e.repo.links.first(),
         )
+    }
+
+    @Test
+    fun neverEmittingHouseholdFailsBounded() = runTest {
+        val silent = MutableSharedFlow<Household?>()
+        val e = Env(this, listOf(linked()), state(ownerAlarm()), null, householdFlow = silent)
+        assertEquals(LinkResult.Failed("not paired"), e.repo.join("o2"))
+        assertEquals(LinkResult.Failed("not paired"), e.repo.acceptInvite("i1", "o2"))
+        assertTrue(e.remote.resolved.isEmpty())
+        e.repo.declineInvite("i1")
+        assertTrue(e.remote.resolved.isEmpty())
+        try { e.repo.sendBoth("row1", CommandType.DISABLE, null); org.junit.Assert.fail() } catch (_: IllegalStateException) {}
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertTrue(e.remote.created.isEmpty())
+        // join lock was not left held
+        assertEquals(LinkResult.Failed("not paired"), e.repo.join("o2"))
+    }
+
+    @Test
+    fun linksDeduplicatesElements() = runTest {
+        val e = env(rows = listOf(linked("r1", ownerAlarmId = "a"), linked("r2", ownerAlarmId = "a")))
+        assertEquals(listOf(PublishedLink("a", LinkMode.NOTIFY)), e.repo.links.first())
+    }
+
+    @Test
+    fun watchResubscribesWhenObserveCompletesEmpty() = runTest {
+        var calls = 0
+        val e = Env(this, listOf(linked()), state(ownerAlarm()), hh, wrap = { f ->
+            object : CommandRemote by f {
+                override fun observe(householdId: String, commandId: String) =
+                    if (calls++ == 0) kotlinx.coroutines.flow.emptyFlow() else f.observe(householdId, commandId)
+            }
+        })
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        runCurrent()
+        advanceTimeBy(10.seconds)
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
+        assertTrue(e.notifier.rejected.isEmpty())
+        e.remote.updatesFor("c1").emit(CommandStatus.REJECTED to "no")
+        runCurrent()
+        assertNull(e.rows().single().link!!.pendingBoth)
+        assertEquals("no", e.notifier.rejected.single().reason)
+    }
+
+    @Test
+    fun watchWaitsForHouseholdWithoutExpiringEarly() = runTest {
+        val hhFlow = MutableStateFlow<Household?>(hh)
+        val e = Env(this, listOf(linked()), state(ownerAlarm()), hh, householdFlow = hhFlow)
+        e.repo.sendBoth("row1", CommandType.DISABLE, null)
+        hhFlow.value = null
+        runCurrent()
+        advanceTimeBy(1.hours)
+        assertEquals("c1", e.rows().single().link!!.pendingBoth?.commandId)
     }
 }

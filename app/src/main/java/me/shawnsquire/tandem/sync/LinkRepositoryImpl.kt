@@ -3,11 +3,13 @@ package me.shawnsquire.tandem.sync
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -63,6 +65,7 @@ class LinkRepositoryImpl(
         combine(alarms.linkedAlarms, removals.pendingIds) { rows, pendingRemoval ->
             rows.filter { it.id !in pendingRemoval }
                 .mapNotNull { r -> r.link?.let { PublishedLink(it.ownerAlarmId, it.mode) } }
+                .distinct()
                 .sortedBy { it.ownerAlarmId }
         }.distinctUntilChanged()
 
@@ -85,7 +88,7 @@ class LinkRepositoryImpl(
 
     override suspend fun acceptInvite(commandId: String, ownerAlarmId: String): LinkResult {
         val result = joinInternal(ownerAlarmId, acceptOpenInvites = false)
-        val hh = household.first()
+        val hh = knownHousehold()
         when {
             result is LinkResult.Joined -> if (hh != null) {
                 resolveCommand(hh, commandId, Outcome.Applied, clock.instant().plus(COMMAND_TTL))
@@ -99,7 +102,7 @@ class LinkRepositoryImpl(
     }
 
     override suspend fun declineInvite(commandId: String) {
-        val hh = household.first()
+        val hh = knownHousehold()
         if (hh == null) {
             Log.w(TAG, "declineInvite $commandId: household unknown")
             return
@@ -132,7 +135,7 @@ class LinkRepositoryImpl(
 
     override suspend fun sendBoth(alarmId: String, type: CommandType, occurrenceAt: Instant?) {
         val link = requireNotNull(alarms.get(alarmId)?.link) { "alarm $alarmId is not linked" }
-        val hh = checkNotNull(household.first()) { "not paired" }
+        val hh = checkNotNull(knownHousehold()) { NOT_PAIRED }
         val now = clock.instant()
         val id = remote.create(hh.id, hh.myUid, hh.partnerUid, type, link.ownerAlarmId, occurrenceAt, null, now)
         val pending = PendingBoth(type, occurrenceAt, id)
@@ -164,7 +167,7 @@ class LinkRepositoryImpl(
 
     private suspend fun joinInternal(ownerAlarmId: String, acceptOpenInvites: Boolean): LinkResult =
         joinLock.withLock {
-            val hh = household.first() ?: return LinkResult.Failed(NOT_PAIRED)
+            val hh = knownHousehold() ?: return LinkResult.Failed(NOT_PAIRED)
             val state = withTimeoutOrNull(PARTNER_WAIT) { partner.first { it != null } }
                 ?: return LinkResult.Failed(NOT_PAIRED)
 
@@ -238,10 +241,16 @@ class LinkRepositoryImpl(
         synchronized(watchLock) { if (!watching.add(pending.commandId)) return }
         scope.launch {
             try {
-                val hh = household.first() ?: return@launch
                 val remaining = Duration.between(clock.instant(), expiresAt).toMillis().coerceAtLeast(0)
+                // Waiting for a household and re-subscribing after a completed observe both count against the deadline.
                 val done = withTimeoutOrNull(remaining) {
-                    remote.observe(hh.id, pending.commandId).firstOrNull { it.first != CommandStatus.PENDING }
+                    val hh = household.filterNotNull().first()
+                    var update: Pair<CommandStatus, String?>? = null
+                    while (update == null) {
+                        update = remote.observe(hh.id, pending.commandId).firstOrNull { it.first != CommandStatus.PENDING }
+                        if (update == null) delay(RESUBSCRIBE_DELAY)
+                    }
+                    update
                 }
                 if (done?.first == CommandStatus.APPLIED) return@launch
                 val reason = done?.second ?: "expired"
@@ -267,6 +276,9 @@ class LinkRepositoryImpl(
         }
     }
 
+    /** The household, or null if none arrives within [HOUSEHOLD_WAIT]. */
+    private suspend fun knownHousehold(): Household? = withTimeoutOrNull(HOUSEHOLD_WAIT) { household.first() }
+
     private suspend fun currentPartnerName(): String =
         nameOf(withTimeoutOrNull(PARTNER_WAIT) { partner.first { it != null } })
 
@@ -279,6 +291,8 @@ class LinkRepositoryImpl(
         const val DELETED_SUFFIX = " deleted this alarm"
         const val FALLBACK_NAME = "Your partner"
         val PARTNER_WAIT = 2.seconds
+        val HOUSEHOLD_WAIT = 2.seconds
+        val RESUBSCRIBE_DELAY = 5.seconds
         val COMMAND_TTL: Duration = Duration.ofHours(24)
     }
 }
