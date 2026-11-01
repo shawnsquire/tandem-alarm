@@ -434,6 +434,20 @@ class CommandApplierImplTest {
         assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
     }
 
+    @Test fun `owner's Partner-tab stop on a ring only the joiner has ends it`() = runTest {
+        // The owner solo-skipped X, so its own copy is silent and the joiner's linked row rings alone.
+        // The joiner publishes the ring under the owner's id, so the owner's Stop names that id plus our ringId.
+        val ring = RingState("L1", "r1", now.minusSeconds(5), null, occurrenceAt = x)
+        val e = env(alarms = listOf(weekly, linkedRow), ring = ring)
+        e.ringing.ringContextResult = liveContext()
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1"))
+        assertEquals(listOf("r1"), e.ringing.dismissed)
+        assertEquals(listOf(RingOrigin.REMOTE), e.ringing.dismissOrigins)
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        assertEquals(Outcome.Applied, e.processed.outcome("c1"))
+    }
+
     @Test fun `ring commands onto a row pending LEFT removal are rejected`() = runTest {
         for (type in listOf(CommandType.STOP_RINGING, CommandType.SNOOZE)) {
             val e = env(alarms = listOf(weekly, linkedRow))

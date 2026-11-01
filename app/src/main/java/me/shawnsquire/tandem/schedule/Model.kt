@@ -76,7 +76,8 @@ data class AlarmLink(
  *
  * [alarmId] is this phone's local row id: on the owner it equals the owner's alarm id; on the joiner
  * it is the linked row's id, which RingMirror and the applier map to `link.ownerAlarmId` when building
- * or matching commands. So the shared key across phones is `(ownerAlarmId, occurrenceAt)`, not [alarmId].
+ * or matching commands, and the device doc's `ringing` publishes as `link.ownerAlarmId`. So the shared
+ * key across phones is `(ownerAlarmId, occurrenceAt)`, not [alarmId].
  */
 data class RingMember(val alarmId: String, val occurrenceAt: Instant)
 

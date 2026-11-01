@@ -242,6 +242,20 @@ class FirestoreMappingTest {
     }
 
     @Test
+    fun ringingPublishesTheOwnerIdForLinkedMembers() {
+        // The partner's Partner tab sends STOP_RINGING{alarmId} back; the joiner maps only the owner's id.
+        val occ = now.plusSeconds(60)
+        val ring = RingState("L1", "r1", now, null, occ, listOf(RingMember("L2", occ), RingMember("a2", occ)))
+        val m = deviceDocMap("P", null, listOf(alarm), ring, now, zone, ringOwnerIds = mapOf("L1" to "o1", "L2" to "o2"))
+        val ringing = m["ringing"] as Map<*, *>
+        assertEquals("o1", ringing["alarmId"])
+        assertEquals(listOf("o2", "a2"), (ringing["merged"] as List<*>).map { (it as Map<*, *>)["alarmId"] })
+        assertEquals("r1", ringing["ringId"])
+        // Linked rows are never published as alarms[].
+        assertEquals(listOf("a1"), (m["alarms"] as List<*>).map { (it as Map<*, *>)["id"] })
+    }
+
+    @Test
     fun deviceDocLinksAndMediaRoundTrip() {
         val solo = now.plusSeconds(7200)
         val wall = MediaRef("w1", 100L)

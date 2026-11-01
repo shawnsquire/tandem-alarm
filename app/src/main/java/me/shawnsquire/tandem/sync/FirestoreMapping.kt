@@ -129,6 +129,9 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
  * non-null (even empty), `defaultWallpaper` when [media] is non-null, `alarms[].media` for alarms
  * with an entry in [PublishedMedia.alarms]. Inside a non-null `ringing` map every key is always
  * written: `snoozedUntil`, `occurrenceAt` (Timestamp or null) and `merged` (possibly empty).
+ * `ringing.alarmId` and `merged[].alarmId` name a linked row by its owner's alarm id, looked up in
+ * [ringOwnerIds] (row id to `link.ownerAlarmId`): the owner knows only that id, and its Partner-tab
+ * STOP_RINGING carries it back for the joiner to map to the row. Other ids are published as they are.
  *
  * The writer merges (SetOptions.merge), which merges nested maps deeply: an omitted key inside
  * `ringing` would keep the previous ring's value, hence the always-written keys above. An omitted
@@ -144,6 +147,7 @@ fun deviceDocMap(
     zone: ZoneId,
     links: List<PublishedLink>? = null,
     media: PublishedMedia? = null,
+    ringOwnerIds: Map<String, String> = emptyMap(),
 ): Map<String, Any?> = buildMap {
     put("displayName", displayName)
     if (fcmToken != null) put("fcmToken", fcmToken)
@@ -171,12 +175,12 @@ fun deviceDocMap(
         "ringing",
         ring?.let {
             buildMap {
-                put("alarmId", it.alarmId)
+                put("alarmId", ringOwnerIds[it.alarmId] ?: it.alarmId)
                 put("ringId", it.ringId)
                 put("startedAt", it.startedAt.toTimestamp())
                 put("snoozedUntil", it.snoozedUntil?.toTimestamp())
                 put("occurrenceAt", it.occurrenceAt?.toTimestamp())
-                put("merged", it.merged.map { m -> mapOf("alarmId" to m.alarmId, "occurrenceAt" to m.occurrenceAt.toTimestamp()) })
+                put("merged", it.merged.map { m -> mapOf("alarmId" to (ringOwnerIds[m.alarmId] ?: m.alarmId), "occurrenceAt" to m.occurrenceAt.toTimestamp()) })
             }
         },
     )
