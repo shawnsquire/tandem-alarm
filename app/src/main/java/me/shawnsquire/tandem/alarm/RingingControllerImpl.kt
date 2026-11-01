@@ -84,7 +84,7 @@ class RingingControllerImpl(
         when {
             state == null || state.ringId != ringId -> dismissNotInSlotLocked(ringId, local, state, withGroup = local)
             local && state.snoozedUntil != null -> {
-                val group = groupLocked(ringId)?.takeIf { it.snoozedSlot(state) != null }
+                val group = groupLocked(ringId, state)?.takeIf { it.snoozedSlot(state) != null }
                 if (group != null) dismissGroupLocked(group, state) else dismissCurrentLocked(state, mirrored = true)
             }
             !local && state.snoozedUntil == null && state.merged.isNotEmpty() -> {
@@ -125,12 +125,14 @@ class RingingControllerImpl(
     private suspend fun dismissNotInSlotLocked(ringId: String, local: Boolean, state: RingState?, withGroup: Boolean) {
         // A snooze parked behind a newer ring (Dismiss on its snoozed notification).
         val parked = ledger.get(ringId)
-        val group = groupLocked(ringId)?.takeIf { it.isLive(state) }
+        val group = groupLocked(ringId, state)?.takeIf { it.isLive(state) }
         when {
             withGroup && group != null -> dismissGroupLocked(group, state)
-            parked != null -> dropParkedLocked(parked, local)
-            // A group's id names no snooze of its own: no command can (a REMOTE one is ignored).
-            group != null -> Unit
+            parked != null -> dropParkedLocked(parked, local, state)
+            // The group's own tag, yet no snooze: its member left while the groups couldn't be read,
+            // so it kept its name. The notification is the other members' only Dismiss: leave it.
+            // (A group is otherwise renamed as that member leaves; any other id's tag is its own.)
+            group?.id == ringId -> Unit
             else -> {
                 // I3: a stop pinned to another (or no) ring is ignored. It stops no ring, but a
                 // snoozed notification whose ledger entry is gone would otherwise stay forever.
@@ -158,7 +160,7 @@ class RingingControllerImpl(
             else -> {
                 val parked = parkedEntryLocked(x, state)
                 when {
-                    parked != null -> dropParkedLocked(parked, local)
+                    parked != null -> dropParkedLocked(parked, local, state)
                     firedLedger.lastRang(alarmId) == occurrenceAt -> Unit // already rang, or resolved in advance
                     else -> dismissInAdvanceLocked(x, local)
                 }
@@ -182,7 +184,7 @@ class RingingControllerImpl(
             val resolved = when {
                 state != null && state.isPrimary(x) && state.snoozedUntil != null -> {
                     val notice = if (remote) RemoteRingEnd(state.ringId, x, MirrorKind.SNOOZE, until, endsRing = true) else null
-                    moveSnoozeLocked(SnoozeEntry(state.ringId, alarmId, state.snoozedUntil, occurrenceAt), until, state, notice)
+                    moveSnoozeLocked(SnoozeEntry(state.ringId, alarmId, state.snoozedUntil, occurrenceAt), until, state, state, notice)
                 }
                 state != null && state.isPrimary(x) && state.merged.isEmpty() -> {
                     snoozeSlotLocked(state, until, origin) // mirrors X itself
@@ -193,7 +195,7 @@ class RingingControllerImpl(
                 else -> {
                     val parked = parkedEntryLocked(x, state)
                     when {
-                        parked != null -> moveSnoozeLocked(parked, until, slot = null, notice = null)
+                        parked != null -> moveSnoozeLocked(parked, until, state, slot = null, notice = null)
                         firedLedger.lastRang(alarmId) == occurrenceAt -> false
                         else -> { snoozeInAdvanceLocked(x, until); true }
                     }
@@ -315,11 +317,12 @@ class RingingControllerImpl(
 
     /**
      * Moves the pending snooze [entry] to [to] (same ringId) only if that is later; true when moved.
-     * [slot] is the snoozed slot ring when [entry] is its snooze, written with the new end, [notice]
-     * (a REMOTE move) just before. Arms first: on a throw the snooze goes back to its old end. Moved,
-     * it leaves its snooze group for a notification of its own: it no longer comes back with them.
+     * [state] is the slot as read; [slot] is it when [entry] is its snooze, written with the new end,
+     * [notice] (a REMOTE move) just before. Arms first: on a throw the snooze goes back to its old
+     * end. Moved, it leaves its snooze group for a notification of its own: it no longer comes back
+     * with them. Not when the groups can't be read: its ringId may tag the group's notification.
      */
-    private suspend fun moveSnoozeLocked(entry: SnoozeEntry, to: Instant, slot: RingState?, notice: RemoteRingEnd?): Boolean {
+    private suspend fun moveSnoozeLocked(entry: SnoozeEntry, to: Instant, state: RingState?, slot: RingState?, notice: RemoteRingEnd?): Boolean {
         if (!to.isAfter(entry.until)) return false
         val before = ledger.get(entry.ringId)
         snoozeArmer.armSnooze(entry.alarmId, entry.ringId, to)
@@ -334,8 +337,11 @@ class RingingControllerImpl(
             throw e
         }
         rescheduleAfterArming()
-        bestEffort("leave snooze group") { leaveGroupLocked(entry.ringId, movedOut = true) }
-        runCatching { notifier.showSnoozed(entry.ringId, to, labelsOf(entry.alarmId)) }
+        // False only when the groups can't be read; any other throw still posts, as before groups.
+        val ownTag = runCatching { leaveGroupLocked(entry.ringId, state, movedOut = true) }
+            .onFailure { log("leave snooze group failed", it) }
+            .getOrDefault(true)
+        if (ownTag) runCatching { notifier.showSnoozed(entry.ringId, to, labelsOf(entry.alarmId)) }
         return true
     }
 
@@ -396,9 +402,13 @@ class RingingControllerImpl(
             // Never merge into or supersede itself: if the slot already holds this ring, just overwrite it.
             if (!sameRing) {
                 // A pre-upgrade entry has no occurrence. It still merges, under its snooze end as a
-                // placeholder X: it is an own alarm from before linked alarms, so no partner command
-                // can target it, and superseding would dismiss a ring nobody stopped. Only the merge
-                // uses it; a ring written below keeps the unknown occurrence.
+                // placeholder X: superseding would dismiss a ring nobody stopped. A ring written
+                // below keeps the unknown occurrence, but a merged X travels: onMerged, the ring's
+                // merged list, the slot primary once promoted, a split-out ledger entry and its
+                // snooze group on a snooze, and the members mirrored on a LOCAL snooze or dismiss.
+                // Acceptable: it is an own alarm from before linked alarms, so no partner command
+                // targets it, RingMirror sends only linked or partner-joined members, and should it
+                // be linked since, the partner's validation rejects an occurrence it never saw.
                 val member = entry?.let { RingMember(it.alarmId, it.occurrenceAt ?: it.until) }
                 if (mergeLocked(current, ringId, member)) {
                     dropFiredSnoozeLocked(ringId)
@@ -422,18 +432,17 @@ class RingingControllerImpl(
      *
      * Its snooze group is over too: the group's notification goes with the first member back, and
      * the members still to come back are their own snoozes (each re-merges as it fires). Kept, the
-     * group's id could be a ring that sounds by now, and a Dismiss posted under it would stop that.
+     * group's id could be a ring that sounds by now, and a Dismiss posted under it would stop that:
+     * so the record goes first, whether or not the notification can be cancelled. Found even when
+     * named after the ring just written, which [groupLocked] would ignore.
      */
     private fun dropFiredSnoozeLocked(ringId: String) {
         bestEffort("ledger remove") { ledger.remove(ringId) }
         bestEffort("cancel fired snooze") { snoozeArmer.cancelSnooze(ringId) }
         bestEffort("cancel snoozed notification") { notifier.cancelSnoozed(ringId) }
-        bestEffort("end snooze group") {
-            groupLocked(ringId)?.let { group ->
-                notifier.cancelSnoozed(group.id)
-                snoozeGroups.remove(group.id)
-            }
-        }
+        val groupId = readGroupsLocked()?.let { groupIn(it, ringId) }?.first ?: return
+        bestEffort("snooze group remove") { snoozeGroups.remove(groupId) }
+        bestEffort("cancel snooze group notification") { notifier.cancelSnoozed(groupId) }
     }
 
     override suspend fun clearStale(isLive: (String) -> Boolean, reschedule: Boolean) = withContext(NonCancellable) {
@@ -499,7 +508,8 @@ class RingingControllerImpl(
         steps.run { disableIfOneShot(state.alarmId) }
         // Merged members have no snooze of their own: the claim that merged them dropped it.
         for (member in state.merged) steps.run { disableIfOneShot(member.alarmId) }
-        steps.run { leaveGroupLocked(state.ringId) }
+        // The slot as it was: a ring that sounded is no member of a group named after it.
+        steps.run { leaveGroupLocked(state.ringId, state) }
         steps.run { alarmScheduler.rescheduleAll() }
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, state.members(), null)
         steps.rethrow()
@@ -545,12 +555,15 @@ class RingingControllerImpl(
     private fun parkedEntryLocked(x: RingMember, state: RingState?): SnoozeEntry? =
         ledger.all().firstOrNull { it.ringId != state?.ringId && it.alarmId == x.alarmId && it.occurrenceAt == x.occurrenceAt }
 
-    /** Dismisses a snooze parked behind another ring, only that one (it leaves its snooze group). RingState is not touched. */
-    private suspend fun dropParkedLocked(entry: SnoozeEntry, mirrored: Boolean) {
+    /**
+     * Dismisses a snooze parked behind another ring, only that one (it leaves its snooze group).
+     * RingState ([state], as read) is not touched.
+     */
+    private suspend fun dropParkedLocked(entry: SnoozeEntry, mirrored: Boolean, state: RingState?) {
         val steps = Steps()
         steps.run { ledger.remove(entry.ringId) }
         steps.run { snoozeArmer.cancelSnooze(entry.ringId) }
-        steps.run { leaveGroupLocked(entry.ringId) }
+        steps.run { leaveGroupLocked(entry.ringId, state) }
         steps.run { disableIfOneShot(entry.alarmId) }
         steps.run { alarmScheduler.rescheduleAll() }
         if (mirrored) mirrorLocal(MirrorKind.DISMISS, listOfNotNull(entry.occurrenceAt?.let { RingMember(entry.alarmId, it) }), null)
@@ -569,19 +582,34 @@ class RingingControllerImpl(
         fun snoozedSlot(state: RingState?): RingState? = state?.takeIf { it.snoozedUntil != null && it.ringId in ids }
     }
 
+    /** Every stored snooze group; null when unreadable: then every snooze is its own (I1). */
+    private fun readGroupsLocked(): Map<String, List<String>>? = try {
+        snoozeGroups.all()
+    } catch (e: Throwable) {
+        log("snooze groups read failed; one snooze per entry", e)
+        null
+    }
+
+    /** The group in [all] that [ringId] names or belongs to, as (id, member ids). */
+    private fun groupIn(all: Map<String, List<String>>, ringId: String): Pair<String, List<String>>? =
+        all[ringId]?.let { ringId to it } ?: all.entries.firstOrNull { ringId in it.value }?.toPair()
+
     /**
      * The group [ringId] names or belongs to; null when there is none, or none readable: then every
      * snooze is its own (I1). Members gone from the ledger (resolved, or dropped by the scheduler)
      * are left out of [SnoozeGroup.entries].
      */
-    private fun groupLocked(ringId: String): SnoozeGroup? {
-        val all = try {
-            snoozeGroups.all()
-        } catch (e: Throwable) {
-            log("snooze groups read failed; one snooze per entry", e)
-            return null
-        }
-        val (id, ids) = all[ringId]?.let { ringId to it } ?: all.entries.firstOrNull { ringId in it.value }?.toPair() ?: return null
+    private fun groupLocked(ringId: String, state: RingState?): SnoozeGroup? =
+        readGroupsLocked()?.let { groupOf(it, ringId, state) }
+
+    /**
+     * [groupLocked] within [all]. A group named after [state], the slot, while it sounds is stale
+     * (its first member fired, and dropping it failed): ignored, so a Dismiss under that id stops
+     * only the ring and nothing is posted under it.
+     */
+    private fun groupOf(all: Map<String, List<String>>, ringId: String, state: RingState?): SnoozeGroup? {
+        val (id, ids) = groupIn(all, ringId) ?: return null
+        if (state != null && state.snoozedUntil == null && state.ringId == id) return null
         return SnoozeGroup(id, ids, ids.mapNotNull { ledger.get(it) })
     }
 
@@ -616,24 +644,33 @@ class RingingControllerImpl(
     /**
      * [ringId]'s snooze is resolved, or [movedOut] to a later end with a notification of its own: it
      * leaves its group, whose notification names the members left or goes with the last of them.
-     * Without a group (or an unreadable one) [ringId]'s own notification goes, unless [movedOut]. A
-     * group under [ringId]'s own id that it moves out of goes under its next member's: [ringId]'s
-     * notification is its own from now on.
+     * Without a group [ringId]'s own notification goes, unless [movedOut]. A group named after
+     * [ringId] goes under its next member's: its id and tag always name a member still snoozed, and
+     * [ringId]'s tag is cancelled, or its own from now on when [movedOut]. [state] is the slot as
+     * read, for [groupOf].
+     *
+     * True when [ringId]'s tag is free for its own notification. False when the groups can't be
+     * read: [ringId] may tag its group's notification, the other members' only Dismiss, so it is
+     * left up and nothing posted over it. A stale notification beats an un-dismissable snooze (I1).
      */
-    private suspend fun leaveGroupLocked(ringId: String, movedOut: Boolean = false) {
-        val group = groupLocked(ringId)
+    private suspend fun leaveGroupLocked(ringId: String, state: RingState?, movedOut: Boolean = false): Boolean {
+        val all = readGroupsLocked() ?: return false
+        val group = groupOf(all, ringId, state)
         if (group == null) {
             if (!movedOut) notifier.cancelSnoozed(ringId)
-            return
+            return true
         }
         val rest = group.entries.filter { it.ringId != ringId }
-        val renamed = movedOut && group.id == ringId
+        val renamed = group.id == ringId
         if (rest.isEmpty()) {
             bestEffort("snooze group remove") { snoozeGroups.remove(group.id) }
-            if (!renamed) notifier.cancelSnoozed(group.id)
-            return
+            if (!(renamed && movedOut)) notifier.cancelSnoozed(group.id)
+            return true
         }
         showGroupLocked(if (renamed) rest.first().ringId else group.id, rest, replacing = group.id)
+        // Posted under the new tag first: no moment without the group's notification.
+        if (renamed && !movedOut) notifier.cancelSnoozed(ringId)
+        return true
     }
 
     /**

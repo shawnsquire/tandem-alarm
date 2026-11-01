@@ -5,10 +5,11 @@ import android.content.Context
 /**
  * The snoozes one snoozed merged ring split into, keyed by groupId: each member's ringId, primary
  * first. The group shares one snoozed notification, tagged with its groupId (the primary's ringId
- * until the primary moves out), whose Dismiss resolves every member still snoozed. A ringId in no
- * group is a group of one. Only the controller writes it, under its lock, and only after the
- * [SnoozeLedger] writes: the ledger alone keeps a snooze armed, so a group that can't be read or
- * written falls back to one snooze per entry (I1). A member no longer in the ledger is ignored.
+ * until the primary leaves, then the next member's: always a member still snoozed), whose Dismiss
+ * resolves every member still snoozed. A ringId in no group is a group of one. Only the controller
+ * writes it, under its lock, and only after the [SnoozeLedger] writes: the ledger alone keeps a
+ * snooze armed, so a group that can't be read or written falls back to one snooze per entry (I1).
+ * A member no longer in the ledger is ignored.
  */
 interface SnoozeGroups {
     fun put(groupId: String, members: List<String>)

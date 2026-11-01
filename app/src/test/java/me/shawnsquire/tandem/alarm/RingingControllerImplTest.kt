@@ -107,6 +107,7 @@ class RingingControllerImplTest {
         ledger: SnoozeLedger = this.ledger,
         fired: FiredLedger = this.fired,
         groups: SnoozeGroups = this.groups,
+        notifier: RingingNotifier = this.notifier,
     ): RingingControllerImpl {
         var splits = 0
         return RingingControllerImpl(
@@ -1833,19 +1834,23 @@ class RingingControllerImplTest {
         assertTrue(h.groups.all().isEmpty())
     }
 
-    @Test fun groupDismissStillResolvesTheRestAfterThePrimaryWasStoppedRemotely() = runTest {
+    @Test fun aRemoteStopOfThePrimaryRenamesTheGroupAfterItsNextMember() = runTest {
+        // Nobody fires under ring-1 any more: the group's notification moves to split-1's tag.
         val mirror = RecordingMirror()
         val (h, c) = snoozedGroup(mirror)
         c.dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
         assertNull(h.store.state.first())
-        assertEquals("ring-1" to tenOhFive, h.notifier.snoozed.last()) // the group's notification, relabelled
+        assertEquals(mapOf("split-1" to listOf("split-1", "split-2")), h.groups.all())
+        assertEquals("split-1" to tenOhFive, h.notifier.snoozed.last()) // the group's notification, relabelled
         assertEquals(listOf("b", "c"), h.notifier.snoozedLabels.last())
+        assertEquals("ring-1", h.notifier.cancelledSnoozed.last()) // the old tag
         assertEquals(1, mirror.calls.size) // REMOTE: nothing
-        c.dismiss("ring-1", RingOrigin.LOCAL)
+        c.dismiss("split-1", RingOrigin.LOCAL)
         assertTrue(h.ledger.all().isEmpty())
         assertFalse(h.repo.get("b")!!.link!!.joinerEnabled)
         assertEquals(Triple(MirrorKind.DISMISS, listOf(bMember, cMember), null as Instant?), mirror.calls.last())
-        assertEquals("ring-1", h.notifier.cancelledSnoozed.last())
+        assertEquals(2, mirror.calls.size) // the snooze, then this one dismiss
+        assertEquals("split-1", h.notifier.cancelledSnoozed.last())
         assertTrue(h.groups.all().isEmpty())
     }
 
@@ -1855,6 +1860,8 @@ class RingingControllerImplTest {
         c.dismiss("ring-1", RingOrigin.REMOTE)
         assertNull(h.store.state.first())
         assertEquals(setOf("split-1", "split-2"), h.ledger.all().map { it.ringId }.toSet())
+        assertEquals(mapOf("split-1" to listOf("split-1", "split-2")), h.groups.all())
+        assertEquals("split-1" to tenOhFive, h.notifier.snoozed.last())
         assertEquals(listOf("b", "c"), h.notifier.snoozedLabels.last())
         assertEquals(1, mirror.calls.size)
     }
@@ -1871,11 +1878,13 @@ class RingingControllerImplTest {
         assertEquals(listOf("a", "c"), h.notifier.snoozedLabels.last())
         assertFalse("ring-1" in h.notifier.cancelledSnoozed)
         assertEquals(1, mirror.calls.size) // REMOTE never mirrors
-        c.dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        c.dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE) // the group goes under split-2
+        assertEquals("split-2" to tenOhFive, h.notifier.snoozed.last())
         assertEquals(listOf("c"), h.notifier.snoozedLabels.last())
+        assertEquals("ring-1", h.notifier.cancelledSnoozed.last())
         c.dismissOccurrence("c", occurrenceZ, RingOrigin.REMOTE) // the last one: the notification goes
         assertTrue(h.ledger.all().isEmpty())
-        assertEquals("ring-1", h.notifier.cancelledSnoozed.last())
+        assertEquals("split-2", h.notifier.cancelledSnoozed.last())
         assertTrue(h.groups.all().isEmpty())
         assertEquals(1, mirror.calls.size)
     }
@@ -1974,5 +1983,85 @@ class RingingControllerImplTest {
         c.clearStale(notLive)
         assertTrue(h.groups.all().isEmpty())
         assertEquals("ring-old", h.notifier.cancelledSnoozed.last())
+    }
+    @Test fun aFiredGroupLosesItsRecordEvenWhenItsNotificationCannotBeCancelled() = runTest {
+        // Kept, the record would name ring-1, sounding by now: a Dismiss posted under it would stop that ring.
+        val mirror = RecordingMirror()
+        val h = mergedH()
+        var failCancel = false
+        val notifier = object : RingingNotifier by h.notifier {
+            override fun cancelSnoozed(ringId: String) {
+                if (failCancel) throw IllegalStateException("notification manager")
+                h.notifier.cancelSnoozed(ringId)
+            }
+        }
+        val c = h.controller(mirror, notifier = notifier)
+        c.snooze(RingOrigin.LOCAL, until = tenOhFive)
+        failCancel = true
+        assertEquals(SlotClaim.Claimed, c.claimSnoozeResume("ring-1", "a"))
+        failCancel = false
+        assertTrue(h.groups.all().isEmpty())
+        val posted = h.notifier.snoozed.size
+        c.dismissOccurrence("b", occurrenceY, RingOrigin.REMOTE) // split-1 leaves: no group to relabel under ring-1
+        assertTrue(h.notifier.snoozed.drop(posted).none { it.first == "ring-1" })
+        c.dismiss("ring-1", RingOrigin.LOCAL) // the ring's own Dismiss: split-2 stays snoozed
+        assertNull(h.store.state.first())
+        assertEquals(listOf("split-2"), h.ledger.all().map { it.ringId })
+        assertEquals(Triple(MirrorKind.DISMISS, listOf(RingMember("a", occurrenceX)), null as Instant?), mirror.calls.last())
+    }
+
+    @Test fun aGroupNamedAfterTheSoundingRingIsIgnored() = runTest {
+        // A stale record: ring-1 fired and sounds, but dropping its group failed.
+        val mirror = RecordingMirror()
+        val h = H(listOf(alarm("a", emptySet()), linkedAlarm("b"), alarm("c", setOf(DayOfWeek.MONDAY))), soundingX)
+        h.ledger.put("split-1", "b", tenOhFive, occurrenceY)
+        h.ledger.put("split-2", "c", tenOhFive, occurrenceZ)
+        h.groups.put("ring-1", listOf("ring-1", "split-1", "split-2"))
+        val c = h.controller(mirror)
+        c.dismiss("split-1", RingOrigin.LOCAL) // only its own snooze, and nothing posted under ring-1
+        assertEquals(soundingX, h.store.state.first())
+        assertEquals(listOf("split-2"), h.ledger.all().map { it.ringId })
+        assertEquals(Triple(MirrorKind.DISMISS, listOf(bMember), null as Instant?), mirror.calls.last())
+        assertTrue(h.notifier.snoozed.none { it.first == "ring-1" })
+        c.dismiss("ring-1", RingOrigin.LOCAL) // the ring's own Dismiss, not the group's
+        assertNull(h.store.state.first())
+        assertEquals(listOf("split-2"), h.ledger.all().map { it.ringId })
+        assertEquals(Triple(MirrorKind.DISMISS, listOf(RingMember("a", occurrenceX)), null as Instant?), mirror.calls.last())
+    }
+
+    /** [InMemorySnoozeGroups] whose reads throw while [failReads]. */
+    private class FlakyGroups(private val inner: SnoozeGroups = InMemorySnoozeGroups()) : SnoozeGroups by inner {
+        var failReads = false
+        override fun all(): Map<String, List<String>> = if (failReads) throw IllegalStateException("prefs") else inner.all()
+    }
+
+    @Test fun anUnreadableGroupStoreLeavesTheGroupNotificationUp() = runTest {
+        // I1: ring-1 may tag the other members' only notification; a stale one beats an un-dismissable snooze.
+        val mirror = RecordingMirror()
+        val groups = FlakyGroups()
+        val (h, c) = snoozedGroup(mirror, groups)
+        groups.failReads = true
+        c.dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertNull(h.store.state.first())
+        assertFalse("ring-1" in h.notifier.cancelledSnoozed)
+        groups.failReads = false
+        c.dismiss("ring-1", RingOrigin.REMOTE) // a repeat names the group's tag, no snooze of its own: ignored
+        assertFalse("ring-1" in h.notifier.cancelledSnoozed)
+        c.dismiss("ring-1", RingOrigin.LOCAL) // the notification's Dismiss still ends the rest
+        assertTrue(h.ledger.all().isEmpty())
+        assertEquals(Triple(MirrorKind.DISMISS, listOf(bMember, cMember), null as Instant?), mirror.calls.last())
+        assertEquals(2, mirror.calls.size)
+        assertEquals("ring-1", h.notifier.cancelledSnoozed.last())
+    }
+
+    @Test fun aMoveWithAnUnreadableGroupStorePostsNothingOverTheGroupTag() = runTest {
+        val groups = FlakyGroups()
+        val (h, c) = snoozedGroup(groups = groups)
+        groups.failReads = true
+        val posted = h.notifier.snoozed.size
+        c.snoozeOccurrence("a", occurrenceX, laterT, RingOrigin.REMOTE)
+        assertEquals(laterT, h.store.state.first()!!.snoozedUntil) // moved all the same
+        assertEquals(posted, h.notifier.snoozed.size) // the group's notification under ring-1 stays
+        assertFalse("ring-1" in h.notifier.cancelledSnoozed)
     }
 }
