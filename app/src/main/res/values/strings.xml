@@ -1,3 +1,13 @@
 <resources>
     <string name="app_name">Tandem Alarm</string>
+
+    <!-- Linked alarms UI (L6) -->
+    <string name="link_partner_possessive">%1$s\'s</string>
+    <string name="link_icon_description">Joined alarm</string>
+    <string name="link_mode_ring">Ring</string>
+    <string name="link_mode_notify">Notify</string>
+    <string name="link_state_owner_skipped">%1$s skipped</string>
+    <string name="link_state_skipped_for_you">Skipped for you</string>
+    <string name="link_state_owner_skipping_solo">%1$s\'s skipping, you\'re still on</string>
+    <string name="link_waiting_for_partner">Waiting for %1$s…</string>
 </resources>

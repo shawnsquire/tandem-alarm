@@ -5,7 +5,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
+import me.shawnsquire.tandem.fakes.FakePairingRepository
+import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.sync.PartnerAlarm
+import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.ui.MainDispatcherRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,9 +44,11 @@ class AlarmsViewModelTest {
     private class Env(initial: List<Alarm>, clock: Clock) {
         val repo = FakeAlarmRepository(initial)
         val scheduler = FakeAlarmScheduler()
+        val pairing = FakePairingRepository()
+        val partner = FakePartnerRepository(null)
         val purged = mutableListOf<Alarm>()
         val ticker = MutableStateFlow(Unit)
-        val vm = AlarmsViewModel(repo, AlarmEdits(repo, scheduler), clock, ticker) { purged += it }
+        val vm = AlarmsViewModel(repo, AlarmEdits(repo, scheduler), pairing, partner, clock, ticker) { purged += it }
     }
 
     private fun env(vararg alarms: Alarm) = Env(alarms.toList(), clock)
@@ -194,5 +204,141 @@ class AlarmsViewModelTest {
         e.vm.undoDelete("a")
         e.vm.onDeleteSnackbarDismissed("a")
         assertEquals("b", e.vm.pendingDeleteId.value)
+    }
+
+    // Joined rows.
+
+    private fun linkedAlarm(
+        id: String, hour: Int = 6, minute: Int = 30, label: String = id, enabled: Boolean = true,
+        skip: Instant? = null, mode: LinkMode = LinkMode.RING, ownerSkip: Instant? = null,
+        joinerEnabled: Boolean = true, pending: PendingBoth? = null, overrideLabel: String? = null,
+        ownerAlarmId: String = "o-$id",
+    ) = Alarm(
+        id, label, hour, minute, weekdays, enabled, skip, null, null,
+        link = AlarmLink("uid", ownerAlarmId, mode, ownerSkip, joinerEnabled, pending, overrideLabel, null, null),
+    )
+
+    private fun partnerWith(vararg alarms: PartnerAlarm) = PartnerState("Sam", alarms.toList(), null, null)
+
+    private fun partnerAlarm(id: String, solo: Instant? = null) = PartnerAlarm(
+        id, "x", 6, 30, weekdays, true, null, null, soloSkippedOccurrenceAt = solo,
+    )
+
+    private val future = Instant.parse("2026-11-02T06:30:00Z")
+    private val past = Instant.parse("2026-11-02T04:00:00Z")
+
+    @Test fun joinedRowCarriesModeAndPartnerName() {
+        val rows = buildAlarmsState(
+            listOf(linkedAlarm("j", mode = LinkMode.NOTIFY), alarm("own", hour = 7)), now, ZoneOffset.UTC, "Sam",
+        ).rows
+        val j = rows.first { it.id == "j" }.linked!!
+        assertEquals("Sam", j.partnerName)
+        assertEquals(LinkMode.NOTIFY, j.mode)
+        assertFalse(j.ownerSkipped || j.skippedForYou || j.ownerSkippingSolo || j.pendingBoth)
+        assertNull(rows.first { it.id == "own" }.linked)
+    }
+
+    @Test fun joinedAndOwnRowsSortTogetherByTime() {
+        val rows = buildAlarmsState(
+            listOf(alarm("late", hour = 9), linkedAlarm("j", hour = 7), alarm("early", hour = 6)), now, ZoneOffset.UTC,
+        ).rows
+        assertEquals(listOf("early", "j", "late"), rows.map { it.id })
+    }
+
+    @Test fun overrideLabelWinsOverCopiedLabel() {
+        val rows = buildAlarmsState(
+            listOf(linkedAlarm("a", label = "Owner", overrideLabel = "Mine"), linkedAlarm("b", label = "Owner")),
+            now, ZoneOffset.UTC,
+        ).rows
+        assertEquals("Mine", rows.first { it.id == "a" }.label)
+        assertEquals("Owner", rows.first { it.id == "b" }.label)
+    }
+
+    @Test fun ownerSkipShowsOnlyWhileInTheFuture() {
+        val on = buildAlarmsState(listOf(linkedAlarm("j", ownerSkip = future)), now, ZoneOffset.UTC).rows.single()
+        assertTrue(on.linked!!.ownerSkipped)
+        assertTrue(on.skipped)
+        val stale = buildAlarmsState(listOf(linkedAlarm("j", ownerSkip = past)), now, ZoneOffset.UTC).rows.single()
+        assertFalse(stale.linked!!.ownerSkipped)
+        assertFalse(stale.skipped)
+    }
+
+    @Test fun joinerOwnSkipIsSkippedForYou() {
+        val row = buildAlarmsState(listOf(linkedAlarm("j", skip = future)), now, ZoneOffset.UTC).rows.single()
+        assertTrue(row.linked!!.skippedForYou)
+        assertFalse(row.linked!!.ownerSkipped)
+        assertTrue(row.skipped)
+    }
+
+    @Test fun ownerSoloSkipComesFromMatchingPartnerAlarm() {
+        val partnerAlarms = mapOf("o-j" to partnerAlarm("o-j", solo = future), "o-k" to partnerAlarm("o-k", solo = past))
+        val rows = buildAlarmsState(
+            listOf(linkedAlarm("j"), linkedAlarm("k"), linkedAlarm("m", ownerAlarmId = "other")),
+            now, ZoneOffset.UTC, partnerAlarms = partnerAlarms,
+        ).rows
+        assertTrue(rows.first { it.id == "j" }.linked!!.ownerSkippingSolo)
+        assertFalse(rows.first { it.id == "k" }.linked!!.ownerSkippingSolo)
+        assertFalse(rows.first { it.id == "m" }.linked!!.ownerSkippingSolo)
+        // The joiner still rings, so the row is neither skipped nor off.
+        assertFalse(rows.first { it.id == "j" }.skipped)
+        assertTrue(rows.first { it.id == "j" }.enabled)
+    }
+
+    @Test fun enabledComesFromIsArmedNotTheCopiedField() {
+        val rows = buildAlarmsState(
+            listOf(
+                linkedAlarm("mine-off", joinerEnabled = false),
+                linkedAlarm("owner-off", enabled = false),
+                linkedAlarm("owner-off-pending-on", enabled = false, pending = PendingBoth(CommandType.ENABLE, null, "c")),
+                linkedAlarm("pending-off", pending = PendingBoth(CommandType.DISABLE, null, "c")),
+                linkedAlarm("on"),
+            ),
+            now, ZoneOffset.UTC,
+        ).rows.associateBy { it.id }
+        assertFalse(rows.getValue("mine-off").enabled)
+        assertNull(rows.getValue("mine-off").nextRing)
+        assertFalse(rows.getValue("owner-off").enabled)
+        assertTrue(rows.getValue("owner-off-pending-on").enabled)
+        assertFalse(rows.getValue("pending-off").enabled)
+        assertTrue(rows.getValue("on").enabled)
+    }
+
+    @Test fun skipStatesAreHiddenWhileNotArmed() {
+        val row = buildAlarmsState(
+            listOf(linkedAlarm("j", joinerEnabled = false, skip = future, ownerSkip = future)), now, ZoneOffset.UTC,
+        ).rows.single()
+        assertFalse(row.skipped)
+        assertFalse(row.linked!!.ownerSkipped || row.linked!!.skippedForYou)
+    }
+
+    @Test fun pendingBothIsExposed() {
+        val row = buildAlarmsState(
+            listOf(linkedAlarm("j", pending = PendingBoth(CommandType.SKIP_NEXT, future, "c"))), now, ZoneOffset.UTC,
+        ).rows.single()
+        assertTrue(row.linked!!.pendingBoth)
+    }
+
+    @Test fun viewModelResolvesPartnerNameAndSolo() = runTest {
+        val e = env(linkedAlarm("j"))
+        e.partner.set(partnerWith(partnerAlarm("o-j", solo = future)))
+        e.vm.state.test {
+            // Unpaired: the published display name is used.
+            var linked = expectMostRecentItem().rows.single().linked!!
+            assertEquals("Sam", linked.partnerName)
+            assertTrue(linked.ownerSkippingSolo)
+            e.pairing.join("ABC123") // paired with partnerName "Alex"
+            linked = expectMostRecentItem().rows.single().linked!!
+            assertEquals("Alex", linked.partnerName)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test fun linkedRowsIgnoreSetEnabledSkipAndUnskip() = runTest {
+        val e = env(linkedAlarm("j", skip = future))
+        e.vm.setEnabled("j", false)
+        e.vm.skipNext("j")
+        e.vm.unskip("j")
+        assertEquals(linkedAlarm("j", skip = future), e.repo.get("j"))
+        assertEquals(0, e.scheduler.rescheduleCount)
     }
 }

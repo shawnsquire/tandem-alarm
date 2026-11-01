@@ -35,6 +35,8 @@ val alarmsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
         AlarmsViewModel(
             repository = container.alarmRepository,
             edits = AlarmEdits(container.alarmRepository, container.alarmScheduler),
+            pairing = container.pairingRepository,
+            partnerRepository = container.partnerRepository,
             clock = LiveZoneClock,
             ticker = tickerFlow(),
             // Both importers refuse paths outside app-local storage, so this is safe for any alarm.

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -43,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -54,6 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
+import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.ui.alarmsViewModelFactory
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
@@ -72,6 +75,8 @@ fun AlarmsRoute(
     deletedAlarmId: String? = null,
     onDeletedConsumed: () -> Unit = {},
     onOpenHealth: () -> Unit = {},
+    /** Opens the Linked alarm sheet for a joined row. */
+    onOpenLinked: (String) -> Unit = {},
     viewModel: AlarmsViewModel = viewModel(factory = alarmsViewModelFactory),
     bannerViewModel: HealthBannerViewModel = viewModel(factory = healthBannerViewModelFactory),
 ) {
@@ -114,6 +119,7 @@ fun AlarmsRoute(
         snackbarHostState = snackbarHostState,
         onAddAlarm = onAddAlarm,
         onEditAlarm = onEditAlarm,
+        onOpenLinked = onOpenLinked,
         onToggleEnabled = viewModel::setEnabled,
         onSkipNext = viewModel::skipNext,
         onUnskip = viewModel::unskip,
@@ -137,6 +143,7 @@ fun AlarmsScreen(
     onSkipNext: (String) -> Unit,
     onUnskip: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onOpenLinked: (String) -> Unit = {},
     showSetupBanner: Boolean = false,
     onSetupBannerClick: () -> Unit = {},
     onSetupBannerDismiss: () -> Unit = {},
@@ -175,8 +182,10 @@ fun AlarmsScreen(
                             row = row,
                             zone = state.zone,
                             is24Hour = is24Hour,
-                            onClick = { onEditAlarm(row.id) },
-                            onToggleEnabled = { onToggleEnabled(row.id, it) },
+                            // A joined row's time belongs to the owner, so it never opens the editor.
+                            onClick = { if (row.linked != null) onOpenLinked(row.id) else onEditAlarm(row.id) },
+                            // Its on/off and skip are "just me or both of us?" questions, answered in the sheet.
+                            onToggleEnabled = { if (row.linked != null) onOpenLinked(row.id) else onToggleEnabled(row.id, it) },
                             onSkipNext = { onSkipNext(row.id) },
                             onUnskip = { onUnskip(row.id) },
                         )
@@ -257,13 +266,15 @@ private fun AlarmRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            row.linked?.let { LinkedChips(it) }
             SuggestionChip(onClick = onClick, label = { Text(row.daysText) })
             Text(
                 row.ringsInText ?: stringResource(R.string.alarm_off),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (row.skipped) {
+            row.linked?.let { LinkedState(it) }
+            if (row.skipped && row.linked == null) {
                 val next = row.nextRing
                 AssistChip(
                     onClick = onUnskip,
@@ -285,7 +296,7 @@ private fun AlarmRow(
             onCheckedChange = onToggleEnabled,
             modifier = Modifier.semantics { contentDescription = switchDescription },
         )
-        val hasMenu = row.skipped || row.enabled
+        val hasMenu = row.linked == null && (row.skipped || row.enabled)
         if (hasMenu) Box {
             IconButton(onClick = { menuOpen = true }) {
                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.alarm_more_options))
@@ -304,6 +315,56 @@ private fun AlarmRow(
                 }
             }
         }
+    }
+}
+
+/** The partner chip, link icon and Ring/Notify tag of a joined row. */
+@Composable
+private fun LinkedChips(linked: LinkedRowState) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            painterResource(R.drawable.ic_link),
+            contentDescription = stringResource(R.string.link_icon_description),
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        AssistChip(
+            onClick = {},
+            enabled = false,
+            label = { Text(stringResource(R.string.link_partner_possessive, linked.partnerName)) },
+        )
+        SuggestionChip(
+            onClick = {},
+            enabled = false,
+            label = {
+                Text(
+                    stringResource(
+                        if (linked.mode == LinkMode.RING) R.string.link_mode_ring else R.string.link_mode_notify,
+                    ),
+                )
+            },
+        )
+    }
+}
+
+/** The one skip state a joined row shows, plus the "Waiting for ..." line while a both-of-us command is out. */
+@Composable
+private fun LinkedState(linked: LinkedRowState) {
+    val text = when {
+        linked.ownerSkipped -> stringResource(R.string.link_state_owner_skipped, linked.partnerName)
+        linked.skippedForYou -> stringResource(R.string.link_state_skipped_for_you)
+        linked.ownerSkippingSolo -> stringResource(R.string.link_state_owner_skipping_solo, linked.partnerName)
+        else -> null
+    }
+    text?.let {
+        Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary)
+    }
+    if (linked.pendingBoth) {
+        Text(
+            stringResource(R.string.link_waiting_for_partner, linked.partnerName),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -351,5 +412,45 @@ private fun AlarmsScreenFromFakesPreview() {
     val state = buildAlarmsState(SAMPLE_ALARMS, Instant.now(), ZoneId.systemDefault())
     TandemTheme {
         AlarmsScreen(state, remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {})
+    }
+}
+
+private fun joinedPreviewRow(id: String, mode: LinkMode, linked: LinkedRowState.() -> LinkedRowState) = AlarmRowState(
+    id, 7, 15, "Gym", "Mon–Fri", true, Instant.parse("2026-11-03T07:15:00Z"), "Rings in 1 d 2 h", false, false,
+    linked = LinkedRowState("Shawn", mode, false, false, false, false).linked(),
+)
+
+private fun joinedPreviewState(row: AlarmRowState) = AlarmsUiState(loaded = true, zone = ZoneId.of("UTC"), rows = listOf(row))
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinedRingOwnerSkippedPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(joinedPreviewRow("j1", LinkMode.RING) { copy(ownerSkipped = true) }.copy(skipped = true)),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinedNotifySkippedForYouPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(joinedPreviewRow("j2", LinkMode.NOTIFY) { copy(skippedForYou = true) }.copy(skipped = true)),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun JoinedOwnerSkippingSoloPreview() {
+    TandemTheme {
+        AlarmsScreen(
+            joinedPreviewState(joinedPreviewRow("j3", LinkMode.RING) { copy(ownerSkippingSolo = true) }),
+            remember { SnackbarHostState() }, {}, {}, { _, _ -> }, {}, {},
+        )
     }
 }

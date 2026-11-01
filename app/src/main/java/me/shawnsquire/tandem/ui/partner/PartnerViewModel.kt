@@ -22,6 +22,7 @@ import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.ui.formatDays
+import me.shawnsquire.tandem.ui.resolvePartnerName
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -192,9 +193,7 @@ class PartnerViewModel(
             )
         }
         val now = clock.instant()
-        val name = status.partnerName?.takeIf { it.isNotBlank() }
-            ?: partner?.displayName?.takeIf { it.isNotBlank() }
-            ?: FALLBACK_NAME
+        val name = resolvePartnerName(status, partner)
         val lastSeen = partner?.lastSeen
         val age = lastSeen?.let { Duration.between(it, now) }
         val ringing = partner?.ringing?.let { r ->
