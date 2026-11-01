@@ -5,7 +5,10 @@ import java.time.Instant
 
 /**
  * An alarm owned by this phone. Per I2 the local Room DB is the single source of truth
- * and the partner never writes alarm data.
+ * and the partner never writes alarm data. A row with [link] is the joiner's copy of a
+ * partner's alarm: it is still this phone's own row (its joiner-owned data is written only
+ * here, per I2), but its copied fields (label, hour, minute, days, enabled) are written only
+ * by LinkSync.
  *
  * Empty [days] means a one-shot alarm. [skippedOccurrenceAt] skips exactly that occurrence;
  * a skip whose instant has passed is ignored.
@@ -63,6 +66,10 @@ data class AlarmLink(
 /**
  * One alarm folded into a merged ring: [alarmId] at its scheduled [occurrenceAt]. Per I3
  * `(ownerAlarmId, occurrenceAt)` is the shared ring key that identifies the same ring on both phones.
+ *
+ * [alarmId] is this phone's local row id: on the owner it equals the owner's alarm id; on the joiner
+ * it is the linked row's id, which RingMirror and the applier map to `link.ownerAlarmId` when building
+ * or matching commands. So the shared key across phones is `(ownerAlarmId, occurrenceAt)`, not [alarmId].
  */
 data class RingMember(val alarmId: String, val occurrenceAt: Instant)
 
