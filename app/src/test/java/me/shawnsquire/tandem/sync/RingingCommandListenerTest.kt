@@ -55,17 +55,21 @@ class RingingCommandListenerTest {
     }
 
     @Test
-    fun `unsubscribes when snoozed and resubscribes on the next ring`() = runTest {
+    fun `stays attached while snoozed and detaches when the ring ends`() = runTest {
         listener().start()
         ringState.value = ring
         runCurrent()
         ringState.value = ring.copy(snoozedUntil = t0.plusSeconds(540))
         runCurrent()
-        assertEquals(0, remote.activePendingSubscriptions)
+        assertEquals(1, remote.activePendingSubscriptions)
         ringState.value = ring.copy(snoozedUntil = null, ringId = "r2")
         runCurrent()
         assertEquals(1, remote.activePendingSubscriptions)
-        assertEquals(2, remote.pendingSubscriptions)
+        assertEquals(1, remote.pendingSubscriptions)
+        ringState.value = ring.copy(snoozedUntil = t0.plusSeconds(540))
+        ringState.value = null
+        runCurrent()
+        assertEquals(0, remote.activePendingSubscriptions)
     }
 
     @Test
