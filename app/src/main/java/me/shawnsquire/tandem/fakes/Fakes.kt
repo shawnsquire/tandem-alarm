@@ -234,6 +234,10 @@ class FakePartnerRepository(initial: PartnerState? = sampleState()) : PartnerRep
     override val partner: Flow<PartnerState?> = flow
     fun set(state: PartnerState?) { flow.value = state }
 
+    /** What [readFromServer] returns; null simulates a failed or offline read. */
+    var serverState: PartnerState? = null
+    override suspend fun readFromServer(): PartnerState? = serverState
+
     companion object {
         fun sampleState(): PartnerState {
             val now = Instant.now()

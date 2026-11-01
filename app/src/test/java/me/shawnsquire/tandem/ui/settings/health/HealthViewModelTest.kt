@@ -52,6 +52,7 @@ private class TestSignals(
 private class TestPartner(lastSeen: Instant?, present: Boolean = true) : PartnerRepository {
     override val partner: Flow<PartnerState?> =
         flowOf(if (present) PartnerState("P", emptyList(), null, lastSeen) else null)
+    override suspend fun readFromServer(): PartnerState? = null
 }
 
 private val NOW = Instant.parse("2026-11-01T12:00:00Z")

@@ -57,6 +57,7 @@ private class FakePairing : PairingRepository {
 private class FakePartnerRepo(initial: PartnerState?) : PartnerRepository {
     val flow = MutableStateFlow(initial)
     override val partner: Flow<PartnerState?> = flow
+    override suspend fun readFromServer(): PartnerState? = null
 }
 
 class PartnerViewModelTest {

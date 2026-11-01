@@ -34,4 +34,7 @@ data class PartnerState(
 interface PartnerRepository {
     /** Null when unpaired or nothing has been received yet. */
     val partner: Flow<PartnerState?>
+
+    /** Source.SERVER, never the cache; null on any failure, so the caller rings (I1). L4 implements. */
+    suspend fun readFromServer(): PartnerState?
 }
