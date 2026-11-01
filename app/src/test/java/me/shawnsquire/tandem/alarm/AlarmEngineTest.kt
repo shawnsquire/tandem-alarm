@@ -189,7 +189,8 @@ class AlarmEngineTest {
 
         ring.engine.controller.dismiss(ringId)
 
-        withTimeout(5.seconds) { ring.finished.await() }
+        // Real-time budget: the dismiss does real DataStore and SharedPreferences IO on other threads, so virtual time can't drive it.
+        withTimeout(30.seconds) { ring.finished.await() }
         assertNull(ring.engine.ringStateStore.state.first())
         assertFalse(mirrored.getValue("once").enabled)
         assertEquals(listOf<DeferredWrite>(DeferredWrite.SetEnabled("once", false)), queued)
