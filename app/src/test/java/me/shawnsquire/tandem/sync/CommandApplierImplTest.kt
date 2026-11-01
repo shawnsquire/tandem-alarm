@@ -24,6 +24,7 @@ import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.nextOccurrence
@@ -434,18 +435,20 @@ class CommandApplierImplTest {
         assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
     }
 
-    @Test fun `owner's Partner-tab stop on a ring only the joiner has ends it`() = runTest {
-        // The owner solo-skipped X, so its own copy is silent and the joiner's linked row rings alone.
-        // The joiner publishes the ring under the owner's id, so the owner's Stop names that id plus our ringId.
-        val ring = RingState("L1", "r1", now.minusSeconds(5), null, occurrenceAt = x)
+    @Test fun `owner's Partner-tab stop on its alarm merged into our ring stops only that member`() = runTest {
+        // Our own a1 rings with the linked row L1 merged in, published under the owner's id. The owner's
+        // copy is silent, so its Stop names its own id at X (PartnerViewModel): never our ringId.
+        val ring = RingState("a1", "r1", now.minusSeconds(5), null, occurrenceAt = x, merged = listOf(RingMember("L1", x)))
         val e = env(alarms = listOf(weekly, linkedRow), ring = ring)
-        e.ringing.ringContextResult = liveContext()
-        e.applier.apply(fromOwner(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1"))
-        assertEquals(listOf("r1"), e.ringing.dismissed)
-        assertEquals(listOf(RingOrigin.REMOTE), e.ringing.dismissOrigins)
-        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        e.ringing.ringContextResult = RingContext(ring = ring, merged = emptyList(), snoozes = emptyList(), lastRang = null)
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+        // Only L1's occurrence (the controller then keeps a1 sounding: RingingControllerImplTest).
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("L1", x, RingOrigin.REMOTE)), e.ringing.dismissedOccurrences)
+        assertTrue(e.ringing.dismissed.isEmpty())
         assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
         assertEquals(Outcome.Applied, e.processed.outcome("c1"))
+        // A STOP by occurrence posts no notice.
+        assertTrue(e.notifier.calls.isEmpty())
     }
 
     @Test fun `ring commands onto a row pending LEFT removal are rejected`() = runTest {
