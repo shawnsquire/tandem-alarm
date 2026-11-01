@@ -269,7 +269,7 @@ class SwitchablePreFireCheck : PreFireCheck {
     @VisibleForTesting
     internal fun target(): PreFireCheck? = provider.get()?.invoke()
 
-    override suspend fun pullAndApply(timeout: Duration): Boolean {
+    override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean {
         val provide = provider.get() ?: return false
         val check = try {
             provide()
@@ -277,7 +277,7 @@ class SwitchablePreFireCheck : PreFireCheck {
             log("pre-fire check unavailable", e)
             return false
         }
-        return check.pullAndApply(timeout)
+        return check.pullAndApply(timeout, linkedOwnerAlarmId)
     }
 }
 

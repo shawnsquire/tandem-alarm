@@ -61,7 +61,7 @@ class RecordingVibration : AlarmVibration {
 }
 
 private class LambdaPreFire(val block: suspend () -> Boolean) : PreFireCheck {
-    override suspend fun pullAndApply(timeout: Duration): Boolean = block()
+    override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean = block()
 }
 
 private class ThrowingSetStore(private val inner: FakeRingStateStore) : RingStateStore {

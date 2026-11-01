@@ -9,5 +9,12 @@ import kotlin.time.Duration
  * command or a check that actually succeeded.
  */
 interface PreFireCheck {
-    suspend fun pullAndApply(timeout: Duration): Boolean
+    /**
+     * For a linked row ([linkedOwnerAlarmId] non-null) it also fetches the owner's device doc with
+     * `Source.SERVER`, never the cache, inside the same timeout: a cached read can "succeed" while
+     * still showing a skip the owner has since cleared, and suppressing on it would break I1. It
+     * applies the doc through LinkSync, and the caller then re-reads local state, as today. The
+     * owner's solo skip never suppresses. (L4)
+     */
+    suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String? = null): Boolean
 }

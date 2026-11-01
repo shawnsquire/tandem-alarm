@@ -2,11 +2,16 @@ package me.shawnsquire.tandem.fakes
 
 import app.cash.turbine.test
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.alarm.MirrorKind
+import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.sync.PairingStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.time.Instant
+import kotlin.time.Duration.Companion.seconds
 
 class FakesTest {
     @Test
@@ -52,5 +57,40 @@ class FakesTest {
             assertEquals(PairingStatus.Unpaired, awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun linkedMediaCacheResolveReproducesTodaysRing() = runTest {
+        val base = FakeAlarmRepository().get("alarm-work")!!.copy(
+            label = "Owner", ringtoneUri = "content://own", wallpaperPath = "/own.jpg", link = null,
+        )
+        val cache = FakeLinkedMediaCache()
+        assertEquals(
+            RingMedia("Owner", listOf("content://own", "content://def"), listOf("/own.jpg", "/def.jpg")),
+            cache.resolve(base, "content://def", "/def.jpg"),
+        )
+        val linked = base.copy(
+            ringtoneUri = null, wallpaperPath = null,
+            link = AlarmLink("u", "o", LinkMode.RING, null, true, null, "Mine", null, null),
+        )
+        assertEquals(RingMedia("Mine", listOf("content://def"), listOf("/def.jpg")), cache.resolve(linked, "content://def", "/def.jpg"))
+    }
+
+    @Test
+    fun ringMirrorRecordsOnLocalAndFlushes() = runTest {
+        val mirror = FakeRingMirror()
+        val at = Instant.parse("2030-01-01T06:30:00Z")
+        mirror.onLocal(MirrorKind.SNOOZE, emptyList(), at)
+        mirror.flushOutbox()
+        assertEquals(listOf(FakeRingMirror.Local(MirrorKind.SNOOZE, emptyList(), at)), mirror.locals)
+        assertEquals(1, mirror.flushes)
+    }
+
+    @Test
+    fun preFireCheckRecordsLinkedOwnerAlarmId() = runTest {
+        val check = FakePreFireCheck()
+        check.pullAndApply(3.seconds)
+        check.pullAndApply(3.seconds, "owner-1")
+        assertEquals(listOf(null, "owner-1"), check.linkedOwnerAlarmIds)
     }
 }

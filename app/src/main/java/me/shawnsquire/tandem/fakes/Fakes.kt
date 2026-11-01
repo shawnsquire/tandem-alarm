@@ -6,26 +6,41 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import me.shawnsquire.tandem.alarm.AlarmScheduler
+import me.shawnsquire.tandem.alarm.MirrorKind
+import me.shawnsquire.tandem.alarm.chooseWallpaperPaths
 import me.shawnsquire.tandem.alarm.RingingController
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.media.LinkedMediaCache
+import me.shawnsquire.tandem.media.RingMedia
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.sync.CommandApplier
+import me.shawnsquire.tandem.sync.AlarmMedia
 import me.shawnsquire.tandem.sync.CommandSender
 import me.shawnsquire.tandem.sync.HealthSignals
+import me.shawnsquire.tandem.sync.LinkRepository
+import me.shawnsquire.tandem.sync.LinkResult
+import me.shawnsquire.tandem.sync.LinkSync
+import me.shawnsquire.tandem.sync.MediaPublisher
+import me.shawnsquire.tandem.sync.MediaRef
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PairingStatus
 import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.sync.PreFireCheck
+import me.shawnsquire.tandem.sync.PublishedLink
+import me.shawnsquire.tandem.sync.PublishedMedia
+import me.shawnsquire.tandem.sync.RingMirror
 import me.shawnsquire.tandem.sync.StatePublisher
 import java.time.DayOfWeek
 import java.time.Instant
@@ -171,7 +186,13 @@ class FakeRingingController : RingingController {
 }
 
 class FakePreFireCheck(var result: Boolean = true) : PreFireCheck {
-    override suspend fun pullAndApply(timeout: Duration): Boolean = result
+    /** The [linkedOwnerAlarmId] of each call, in order (null for non-linked rows). */
+    val linkedOwnerAlarmIds = mutableListOf<String?>()
+
+    override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean {
+        linkedOwnerAlarmIds += linkedOwnerAlarmId
+        return result
+    }
 }
 
 class FakeCommandApplier : CommandApplier {
@@ -252,4 +273,114 @@ class FakeStatePublisher : StatePublisher {
 class FakeHealthSignals : HealthSignals {
     override val lastFcmAt: Flow<Instant?> = MutableStateFlow(null)
     override val fcmTokenPresent: Flow<Boolean> = MutableStateFlow(true)
+}
+
+class FakeLinkRepository : LinkRepository {
+    sealed interface Call {
+        data class Join(val ownerAlarmId: String) : Call
+        data class AcceptInvite(val commandId: String, val ownerAlarmId: String) : Call
+        data class DeclineInvite(val commandId: String) : Call
+        data class Leave(val alarmId: String) : Call
+        data class SetMode(val alarmId: String, val mode: LinkMode) : Call
+        data class SetOverrides(
+            val alarmId: String,
+            val label: String?,
+            val ringtoneUri: String?,
+            val wallpaperPath: String?,
+        ) : Call
+        data class SetJoinerEnabled(val alarmId: String, val enabled: Boolean) : Call
+        data class SendBoth(val alarmId: String, val type: CommandType, val occurrenceAt: Instant?) : Call
+        data class Invite(val alarmId: String) : Call
+    }
+
+    val calls = mutableListOf<Call>()
+
+    /** Result of [join]; null derives `Joined("linked-<ownerAlarmId>")`. */
+    var joinResult: LinkResult? = null
+
+    /** Result of [acceptInvite]; null derives `Joined("linked-<ownerAlarmId>")`. */
+    var acceptResult: LinkResult? = null
+
+    override val openInvites = MutableStateFlow<Set<String>>(emptySet())
+    override val links = MutableStateFlow<List<PublishedLink>>(emptyList())
+
+    override suspend fun join(ownerAlarmId: String): LinkResult {
+        calls += Call.Join(ownerAlarmId)
+        return joinResult ?: LinkResult.Joined("linked-$ownerAlarmId")
+    }
+
+    override suspend fun acceptInvite(commandId: String, ownerAlarmId: String): LinkResult {
+        calls += Call.AcceptInvite(commandId, ownerAlarmId)
+        return acceptResult ?: LinkResult.Joined("linked-$ownerAlarmId")
+    }
+
+    override suspend fun declineInvite(commandId: String) { calls += Call.DeclineInvite(commandId) }
+    override suspend fun leave(alarmId: String) { calls += Call.Leave(alarmId) }
+    override suspend fun setMode(alarmId: String, mode: LinkMode) { calls += Call.SetMode(alarmId, mode) }
+
+    override suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?) {
+        calls += Call.SetOverrides(alarmId, label, ringtoneUri, wallpaperPath)
+    }
+
+    override suspend fun setJoinerEnabled(alarmId: String, enabled: Boolean) {
+        calls += Call.SetJoinerEnabled(alarmId, enabled)
+    }
+
+    override suspend fun sendBoth(alarmId: String, type: CommandType, occurrenceAt: Instant?) {
+        calls += Call.SendBoth(alarmId, type, occurrenceAt)
+    }
+
+    override fun invite(alarmId: String): Flow<Pair<CommandStatus, String?>> {
+        calls += Call.Invite(alarmId)
+        return flowOf(CommandStatus.PENDING to null, CommandStatus.APPLIED to null)
+    }
+}
+
+class FakeLinkSync : LinkSync {
+    var started = 0
+    val applied = mutableListOf<PartnerState>()
+    var removedAll = 0
+
+    override fun start() { started++ }
+    override suspend fun apply(owner: PartnerState) { applied += owner }
+    override suspend fun removeAll() { removedAll++ }
+}
+
+class FakeRingMirror : RingMirror {
+    data class Local(val kind: MirrorKind, val members: List<RingMember>, val snoozedUntil: Instant?)
+
+    val locals = mutableListOf<Local>()
+    var flushes = 0
+
+    override fun onLocal(kind: MirrorKind, members: List<RingMember>, snoozedUntil: Instant?) {
+        locals += Local(kind, members, snoozedUntil)
+    }
+
+    override suspend fun flushOutbox() { flushes++ }
+}
+
+class FakeMediaPublisher : MediaPublisher {
+    var started = 0
+    override val published = MutableStateFlow<PublishedMedia?>(null)
+    override fun start() { started++ }
+}
+
+/** Reproduces today's ring choice (no owner media), so L2 can call it before L5 exists. */
+class FakeLinkedMediaCache : LinkedMediaCache {
+    data class Update(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val defaultWallpaper: MediaRef?)
+
+    val updates = mutableListOf<Update>()
+
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) {
+        updates += Update(ownerUid, alarms, defaultWallpaper)
+    }
+
+    override fun pathFor(sha: String): String? = null
+    override fun inUse(): Set<String> = emptySet()
+
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) = RingMedia(
+        label = alarm.link?.overrideLabel ?: alarm.label,
+        soundCandidates = listOfNotNull(alarm.ringtoneUri, joinerDefaultRingtone),
+        wallpaperPaths = chooseWallpaperPaths(alarm.wallpaperPath, joinerDefaultWallpaper),
+    )
 }

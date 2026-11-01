@@ -90,4 +90,29 @@ class FakeCommandNotifier(var failure: Throwable? = null) : CommandNotifier {
         calls += Call(cmd, alarm, partnerName, turnedOff)
         failure?.let { throw it }
     }
+
+    data class Invite(val cmd: Command, val alarm: PartnerAlarm?, val partnerName: String)
+    data class AlarmNote(val alarm: Alarm, val partnerName: String)
+    data class Rejected(val alarm: Alarm, val type: CommandType, val reason: String?, val partnerName: String)
+
+    val invites = mutableListOf<Invite>()
+    val ownerDeleted = mutableListOf<AlarmNote>()
+    val ownerTurnedOff = mutableListOf<AlarmNote>()
+    val rejected = mutableListOf<Rejected>()
+
+    override fun notifyInvite(cmd: Command, alarm: PartnerAlarm?, partnerName: String) {
+        invites += Invite(cmd, alarm, partnerName)
+    }
+
+    override fun notifyOwnerDeleted(alarm: Alarm, partnerName: String) {
+        ownerDeleted += AlarmNote(alarm, partnerName)
+    }
+
+    override fun notifyOwnerTurnedOff(alarm: Alarm, partnerName: String) {
+        ownerTurnedOff += AlarmNote(alarm, partnerName)
+    }
+
+    override fun notifyRejected(alarm: Alarm, type: CommandType, reason: String?, partnerName: String) {
+        rejected += Rejected(alarm, type, reason, partnerName)
+    }
 }

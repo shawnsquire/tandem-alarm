@@ -277,6 +277,10 @@ private class SmokeDevice(context: Context, name: String, displayName: String) {
         override fun notifyApplied(cmd: Command, alarm: Alarm?, partnerName: String, turnedOff: Boolean) {
             notified += cmd
         }
+        override fun notifyInvite(cmd: Command, alarm: PartnerAlarm?, partnerName: String) = Unit
+        override fun notifyOwnerDeleted(alarm: Alarm, partnerName: String) = Unit
+        override fun notifyOwnerTurnedOff(alarm: Alarm, partnerName: String) = Unit
+        override fun notifyRejected(alarm: Alarm, type: CommandType, reason: String?, partnerName: String) = Unit
     }
 
     // Same construction order as AppContainer.

@@ -54,6 +54,16 @@ import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PreFireCheck
 import me.shawnsquire.tandem.sync.StatePublisher
+import me.shawnsquire.tandem.fakes.FakeLinkRepository
+import me.shawnsquire.tandem.fakes.FakeLinkSync
+import me.shawnsquire.tandem.fakes.FakeLinkedMediaCache
+import me.shawnsquire.tandem.fakes.FakeMediaPublisher
+import me.shawnsquire.tandem.fakes.FakeRingMirror
+import me.shawnsquire.tandem.media.LinkedMediaCache
+import me.shawnsquire.tandem.sync.LinkRepository
+import me.shawnsquire.tandem.sync.LinkSync
+import me.shawnsquire.tandem.sync.MediaPublisher
+import me.shawnsquire.tandem.sync.RingMirror
 
 @Suppress("unused")
 class AppContainer private constructor(
@@ -117,6 +127,11 @@ class AppContainer private constructor(
         RingingCommandListener(ringStateStore.state, householdFlow, commandRemote, commandApplierImpl::applyPending, syncScope)
     val healthSignalsImpl = HealthSignalsImpl(context.syncDataStore, fcmTokenStore)
     val healthSignals: HealthSignals = healthSignalsImpl
+    val linkRepository: LinkRepository = FakeLinkRepository() // L4: swap to real
+    val linkSync: LinkSync = FakeLinkSync() // L4: swap to real
+    val ringMirror: RingMirror = FakeRingMirror() // L4: swap to real; then set alarmEngine.ringMirrorPort.delegate = ringMirror
+    val mediaPublisher: MediaPublisher = FakeMediaPublisher() // L5: swap to real
+    val linkedMediaCache: LinkedMediaCache = FakeLinkedMediaCache() // L5: swap to real
     val fcmCommandHandler = FcmCommandHandler(
         commandApplier, householdFlow, healthSignalsImpl::recordFcm, LiveZoneClock, { SyncWorker.runNow(context) },
     )

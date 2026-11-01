@@ -128,7 +128,7 @@ class AlarmEngineTest {
 
     private class CountingPreFire(private val inner: PreFireCheck) : PreFireCheck {
         val results: MutableList<Boolean> = java.util.concurrent.CopyOnWriteArrayList()
-        override suspend fun pullAndApply(timeout: Duration): Boolean = inner.pullAndApply(timeout).also { results += it }
+        override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean = inner.pullAndApply(timeout, linkedOwnerAlarmId).also { results += it }
     }
 
     private class LockedRing(val engine: AlarmEngine, scope: CoroutineScope, preFire: PreFireCheck = engine.preFireCheck) {
@@ -309,7 +309,7 @@ class AlarmEngineTest {
         }
         val checks = AtomicInteger()
         val check = object : PreFireCheck {
-            override suspend fun pullAndApply(timeout: Duration): Boolean { checks.incrementAndGet(); return true }
+            override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean { checks.incrementAndGet(); return true }
         }
         engine.attach(repo, settings) { check }
         // Its alarms flow waits for the drain, so the mirror update sees the attached repository.

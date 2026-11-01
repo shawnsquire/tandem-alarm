@@ -23,7 +23,7 @@ class PreFireCheckImpl(
     private val onSuccess: () -> Unit = {},
 ) : PreFireCheck {
 
-    override suspend fun pullAndApply(timeout: Duration): Boolean {
+    override suspend fun pullAndApply(timeout: Duration, linkedOwnerAlarmId: String?): Boolean {
         val ok = pull(minOf(timeout, MAX_TIMEOUT))
         if (ok) {
             try {
