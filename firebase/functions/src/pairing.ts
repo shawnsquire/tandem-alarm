@@ -7,6 +7,7 @@ import {
   Timestamp,
   Transaction,
 } from "firebase-admin/firestore";
+import { getStorage } from "firebase-admin/storage";
 import { logger } from "firebase-functions";
 import { CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 
@@ -165,6 +166,12 @@ export async function unpairFor(uid: string): Promise<void> {
     } catch (e) {
       // Swallowed: the pairing is already gone and a retry would no-op; leftovers are unreadable orphans.
       logger.error("unpair cleanup failed", { householdId: householdRef.id, error: e });
+    }
+    // Linked media lives in Storage, outside the Firestore delete; same swallow-and-log rationale.
+    try {
+      await getStorage().bucket().deleteFiles({ prefix: `households/${householdRef.id}/media/` });
+    } catch (e) {
+      logger.error("unpair media cleanup failed", { householdId: householdRef.id, error: e });
     }
   }
 }

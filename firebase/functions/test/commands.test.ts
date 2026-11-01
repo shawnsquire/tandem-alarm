@@ -16,6 +16,7 @@ const send = sendMessage as jest.MockedFunction<typeof sendMessage>;
 const CREATED_MS = 1_700_000_000_000;
 const EXPIRES_MS = CREATED_MS + 60_000;
 const OCCURRENCE_MS = CREATED_MS + 3_600_000;
+const SNOOZED_UNTIL_MS = CREATED_MS + 600_000;
 
 beforeEach(async () => {
   jest.resetAllMocks();
@@ -78,6 +79,27 @@ describe("notifyCommandTarget", () => {
     });
   });
 
+  it("carries snoozedUntil as a millis string for SNOOZE", async () => {
+    await seedDevice({ fcmToken: TOKEN });
+    const data = await seedCommand({
+      type: "SNOOZE",
+      occurrenceAt: Timestamp.fromMillis(OCCURRENCE_MS),
+      snoozedUntil: Timestamp.fromMillis(SNOOZED_UNTIL_MS),
+    });
+
+    const now = jest.spyOn(Date, "now").mockReturnValue(CREATED_MS);
+    try {
+      await notifyCommandTarget(HID, CID, data);
+    } finally {
+      now.mockRestore();
+    }
+
+    const { data: payload } = send.mock.calls[0][0] as { data: Record<string, string> };
+    expect(payload.type).toBe("SNOOZE");
+    expect(payload.occurrenceAt).toBe(String(OCCURRENCE_MS));
+    expect(payload.snoozedUntil).toBe(String(SNOOZED_UNTIL_MS));
+  });
+
   it("clamps the FCM ttl to zero once the command has expired", async () => {
     await seedDevice({ fcmToken: TOKEN });
     const data = await seedCommand({ type: "ENABLE" });
@@ -101,17 +123,19 @@ describe("notifyCommandTarget", () => {
     const { data: payload } = send.mock.calls[0][0] as { data: Record<string, string> };
     expect(payload.ringId).toBe("ring1");
     expect(payload).not.toHaveProperty("occurrenceAt");
+    expect(payload).not.toHaveProperty("snoozedUntil");
     expect(payload).not.toHaveProperty("reason");
   });
 
-  it("omits null occurrenceAt and ringId from the payload", async () => {
+  it("omits null occurrenceAt, snoozedUntil and ringId from the payload", async () => {
     await seedDevice({ fcmToken: TOKEN });
-    const data = await seedCommand({ type: "ENABLE", occurrenceAt: null, ringId: null });
+    const data = await seedCommand({ type: "ENABLE", occurrenceAt: null, snoozedUntil: null, ringId: null });
 
     await notifyCommandTarget(HID, CID, data);
 
     const { data: payload } = send.mock.calls[0][0] as { data: Record<string, string> };
     expect(payload).not.toHaveProperty("occurrenceAt");
+    expect(payload).not.toHaveProperty("snoozedUntil");
     expect(payload).not.toHaveProperty("ringId");
   });
 

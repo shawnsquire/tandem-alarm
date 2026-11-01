@@ -1,19 +1,22 @@
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
+import { getStorage } from "firebase-admin/storage";
 import { createPairCodeFor, joinHouseholdFor, requireUid, unpairFor } from "../src/pairing";
 
-if (getApps().length === 0) initializeApp({ projectId: "demo-tandem" });
+if (getApps().length === 0) initializeApp({ projectId: "demo-tandem", storageBucket: "demo-tandem" });
 
 const A = "uidA";
 const B = "uidB";
 const C = "uidC";
 const db = () => getFirestore();
+const bucket = () => getStorage().bucket();
 
 beforeEach(async () => {
   const host = process.env.FIRESTORE_EMULATOR_HOST;
   await fetch(`http://${host}/emulator/v1/projects/demo-tandem/databases/(default)/documents`, {
     method: "DELETE",
   });
+  await bucket().deleteFiles({ force: true });
 });
 
 const rejects = (p: Promise<unknown>, code: string, message: string) =>
@@ -246,6 +249,19 @@ describe("unpair", () => {
     expect(newHid).not.toBe(oldHid);
     expect((await db().doc(`households/${newHid}`).get()).get("members")).toEqual([B]);
     expect((await db().doc(`households/${oldHid}`).get()).exists).toBe(false);
+  });
+
+  it("deletes the household's media and leaves other households' media alone", async () => {
+    const hid = await pairedHousehold();
+    const mine = [`households/${hid}/media/${A}/aaa`, `households/${hid}/media/${B}/bbb`];
+    const theirs = "households/otherHousehold/media/uidX/ccc";
+    for (const name of [...mine, theirs]) await bucket().file(name).save("data", { resumable: false });
+
+    await unpairFor(A);
+
+    const [left] = await bucket().getFiles({ prefix: `households/${hid}/media/` });
+    expect(left.map((f) => f.name)).toEqual([]);
+    expect((await bucket().file(theirs).exists())[0]).toBe(true);
   });
 
   it("does not throw for a user with no household", async () => {

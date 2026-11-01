@@ -1,0 +1,33 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Content-addressed media: households/{hid}/media/{ownerUid}/{sha256}.
+    match /households/{hid}/media/{ownerUid}/{sha} {
+      function members() {
+        return firestore.get(/databases/(default)/documents/households/$(hid)).data.members;
+      }
+
+      function isMember() {
+        return request.auth != null && request.auth.uid in members();
+      }
+
+      allow read: if isMember();
+
+      // Size and type checks live on create only: delete has no request.resource.
+      // Media only exists for linked alarms, which need a partner, so a solo household
+      // (anyone can make one) cannot use Storage as free hosting.
+      allow create: if isMember()
+        && members().size() == 2
+        && request.auth.uid == ownerUid
+        && request.resource.size <= 15 * 1024 * 1024
+        && (request.resource.contentType.matches('audio/.*')
+            || request.resource.contentType.matches('image/.*'));
+
+      // Update covers metadata-only changes (denied). Overwriting content is evaluated as
+      // create, so it passes the same owner, size and type checks.
+      allow update: if false;
+
+      allow delete: if isMember() && request.auth.uid == ownerUid;
+    }
+  }
+}

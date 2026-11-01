@@ -52,13 +52,14 @@ service cloud.firestore {
         allow create: if isMember(hid)
           && request.resource.data.keys().hasOnly(
                ['from', 'to', 'type', 'alarmId', 'createdAt', 'expiresAt', 'status',
-                'occurrenceAt', 'ringId'])
+                'occurrenceAt', 'ringId', 'snoozedUntil'])
           && request.resource.data.from == request.auth.uid
           && request.resource.data.to != request.auth.uid
           && request.resource.data.to in householdMembers(hid)
           && request.resource.data.status == 'pending'
           && request.resource.data.type in
-               ['SKIP_NEXT', 'UNSKIP', 'DISABLE', 'ENABLE', 'STOP_RINGING']
+               ['SKIP_NEXT', 'UNSKIP', 'DISABLE', 'ENABLE', 'STOP_RINGING',
+                'SNOOZE', 'INVITE_LINK']
           && request.resource.data.createdAt is timestamp
           && request.resource.data.alarmId is string
           && request.resource.data.expiresAt is timestamp
@@ -66,6 +67,7 @@ service cloud.firestore {
           // 24 h lifetime plus 10 minutes of allowance for client clock skew.
           && request.resource.data.expiresAt <= request.time + duration.value(1450, 'm')
           && optionalTimestamp(request.resource.data, 'occurrenceAt')
+          && optionalTimestamp(request.resource.data, 'snoozedUntil')
           && optionalString(request.resource.data, 'ringId');
 
         // Only the recipient may resolve a pending command, touching nothing else.
