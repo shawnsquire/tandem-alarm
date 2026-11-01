@@ -18,8 +18,15 @@ import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.RingState
 
 /**
- * While a ring is active (state present, not snoozed), keeps a live listener on pending commands to
- * this device so a partner's STOP_RINGING lands instantly. Detaches when the ring ends or snoozes.
+ * While a ring exists (state present, sounding OR snoozed), keeps a live listener on pending commands
+ * to this device so a partner's STOP_RINGING lands instantly. Detaches only when the ring ends.
+ *
+ * Stays attached through a snooze on both phones: crossing snoozes (both phones snooze within
+ * seconds; validation rule 4 settles on the later T) and a partner's STOP during a snooze must land
+ * within seconds rather than at the next FCM or pull, and the owner needs it too because the
+ * joiner's SNOOZE/STOP target the owner's ring. The cost is one Firestore listener for the snooze
+ * length. Parked snoozes (SnoozeLedger entries with no RingState) are not covered and still rely on
+ * FCM and the pull.
  */
 class RingingCommandListener(
     private val ringState: Flow<RingState?>,
@@ -37,7 +44,7 @@ class RingingCommandListener(
         scope.launch {
             // A failure upstream must not end the listener for good: resubscribe (retryWhen never retries cancellation).
             ringState
-                .map { it != null && it.snoozedUntil == null }
+                .map { it != null }
                 .distinctUntilChanged()
                 .flatMapLatest { active ->
                     if (!active) {

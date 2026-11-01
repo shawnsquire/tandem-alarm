@@ -3,6 +3,8 @@ package me.shawnsquire.tandem.sync
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
@@ -68,4 +70,43 @@ internal fun householdFrom(id: String, myUid: String, members: Any?): Household?
     val list = (members as? List<*>)?.filterIsInstance<String>() ?: return null
     if (list.size != 2 || myUid !in list || list[0] == list[1]) return null
     return Household(id, myUid, list.first { it != myUid })
+}
+
+/** What the server says about the signed-in user's household (see [householdOnServer]). */
+sealed interface HouseholdCheck {
+    /** Confirmed by the server: no household, or one that is not a valid two-member household with this user. */
+    data object Unpaired : HouseholdCheck
+
+    data class Paired(val household: Household) : HouseholdCheck
+
+    /** Offline, denied, timed out or answered from cache: says nothing about pairing. */
+    data object Unknown : HouseholdCheck
+}
+
+/**
+ * Reads `users/{uid}` and `households/{hid}` with Source.SERVER, never the cache. The household flow is
+ * null on any listener error, so only this check may call a household gone. Any failure is
+ * [HouseholdCheck.Unknown].
+ */
+suspend fun householdOnServer(db: FirebaseFirestore, uid: String): HouseholdCheck = try {
+    val user = db.collection("users").document(uid).get(Source.SERVER).await()
+    if (user.metadata.isFromCache) {
+        HouseholdCheck.Unknown
+    } else {
+        val hid = user.getString("householdId")?.takeIf(String::isNotEmpty)
+        if (hid == null) {
+            HouseholdCheck.Unpaired
+        } else {
+            val doc = db.collection("households").document(hid).get(Source.SERVER).await()
+            if (doc.metadata.isFromCache) {
+                HouseholdCheck.Unknown
+            } else {
+                householdFrom(hid, uid, doc.get("members"))?.let { HouseholdCheck.Paired(it) } ?: HouseholdCheck.Unpaired
+            }
+        }
+    }
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    HouseholdCheck.Unknown
 }

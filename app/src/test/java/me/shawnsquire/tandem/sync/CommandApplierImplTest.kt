@@ -18,6 +18,9 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeRingingController
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.AlarmLink
+import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
@@ -71,6 +74,7 @@ class CommandApplierImplTest {
         household: Flow<Household?> = flowOf(hh),
         name: String? = "Sam",
         wrapAlarms: (AlarmRepository) -> AlarmRepository = { it },
+        partner: Flow<PartnerState?> = flowOf(null),
     ): Env {
         val a = FakeAlarmRepository(alarms)
         val r = FakeRingStateStore(ring)
@@ -84,7 +88,7 @@ class CommandApplierImplTest {
         )
         val p = ProcessedCommands(ds, clock)
         val applier = CommandApplierImpl(
-            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), flowOf(null), p, n, clock, backgroundScope,
+            wrapAlarms(a), r, s, rc, remote, household, MutableStateFlow(name), partner, p, n, clock, backgroundScope,
         )
         return Env(a, r, s, rc, remote, n, p, applier)
     }
@@ -363,5 +367,272 @@ class CommandApplierImplTest {
         e.applier.apply(c)
         assertEquals(c.occurrenceAt, e.alarms.get("a1")!!.skippedOccurrenceAt)
         e.assertApplied(c)
+    }
+
+    // ---- Linked alarms (L4) ----
+
+    private val ownerId = "o9"
+    private val linkedRow = Alarm(
+        "L1", "Work", 6, 30, setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY), true, null, null, null,
+        link = AlarmLink("them", ownerId, LinkMode.RING, null, true, null, null, null, null),
+    )
+    private val x = nextOccurrence(linkedRow, now, zone)!!
+
+    private fun fromOwner(
+        type: CommandType,
+        alarmId: String = ownerId,
+        occurrenceAt: Instant? = x,
+        ringId: String? = null,
+        snoozedUntil: Instant? = null,
+        id: String = "c1",
+    ) = Command(id, "them", "me", type, alarmId, occurrenceAt, ringId, now.minusSeconds(60), now.plusSeconds(3600), snoozedUntil)
+
+    private fun liveContext() = RingContext(
+        ring = RingState("L1", "r1", now.minusSeconds(5), null, occurrenceAt = x),
+        merged = emptyList(), snoozes = emptyList(), lastRang = null,
+    )
+
+    private fun rejection(e: Env, reason: String) =
+        assertEquals(listOf(FakeCommandRemote.Resolved("h1", "c1", CommandStatus.REJECTED, reason)), e.remote.resolved)
+
+    @Test fun `snooze from owner maps to the linked row`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.ringing.ringContextResult = liveContext()
+        val until = now.plusSeconds(600)
+        e.applier.apply(fromOwner(CommandType.SNOOZE, snoozedUntil = until))
+        assertEquals(
+            listOf(FakeRingingController.SnoozeOccurrenceCall("L1", x, until, RingOrigin.REMOTE)),
+            e.ringing.snoozedOccurrences,
+        )
+        assertEquals(listOf("L1"), e.ringing.ringContextAlarmIds)
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+        assertEquals(Outcome.Applied, e.processed.outcome("c1"))
+        // The generic "turned on" text is for enable; a snooze posts nothing.
+        assertTrue(e.notifier.calls.isEmpty())
+    }
+
+    @Test fun `stop by occurrence from owner dismisses the linked row's occurrence`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.ringing.ringContextResult = liveContext()
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("L1", x, RingOrigin.REMOTE)), e.ringing.dismissedOccurrences)
+        assertTrue(e.ringing.dismissed.isEmpty())
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+    }
+
+    @Test fun `stop by ringId from owner maps to the linked row id`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow), ring = RingState("L1", "r1", now.minusSeconds(5), null))
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1"))
+        assertEquals(listOf("r1"), e.ringing.dismissed)
+        assertEquals(listOf(RingOrigin.REMOTE), e.ringing.dismissOrigins)
+        assertEquals(CommandStatus.APPLIED, e.remote.resolved.single().status)
+    }
+
+    @Test fun `stop by ringId for a ring on another alarm is rejected`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow), ring = RingState("a1", "r1", now.minusSeconds(5), null))
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING, occurrenceAt = null, ringId = "r1"))
+        assertTrue(e.ringing.dismissed.isEmpty())
+        rejection(e, "not ringing")
+    }
+
+    @Test fun `ring command aimed at a linked row's own id is rejected`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.ringing.ringContextResult = liveContext()
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING, alarmId = "L1"))
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        assertEquals(CommandStatus.REJECTED, e.remote.resolved.single().status)
+        val e2 = env(alarms = listOf(weekly, linkedRow))
+        e2.ringing.ringContextResult = liveContext()
+        e2.applier.apply(fromOwner(CommandType.SNOOZE, alarmId = "L1", snoozedUntil = now.plusSeconds(60)))
+        assertTrue(e2.ringing.snoozedOccurrences.isEmpty())
+        assertEquals(CommandStatus.REJECTED, e2.remote.resolved.single().status)
+    }
+
+    @Test fun `ring command from someone other than the link owner is not mapped`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.ringing.ringContextResult = liveContext()
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING).copy(from = "stranger"))
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        rejection(e, "alarm not found")
+    }
+
+    @Test fun `skip and disable aimed at a linked row's owner id are not mapped`() = runTest {
+        for (type in listOf(CommandType.SKIP_NEXT, CommandType.DISABLE, CommandType.UNSKIP, CommandType.ENABLE)) {
+            val e = env(alarms = listOf(weekly, linkedRow))
+            e.applier.apply(fromOwner(type))
+            assertEquals(linkedRow, e.alarms.get("L1"))
+            rejection(e, "alarm not found")
+        }
+    }
+
+    @Test fun `skip aimed at a linked row's own id is rejected`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.applier.apply(fromOwner(CommandType.SKIP_NEXT, alarmId = "L1"))
+        assertEquals(linkedRow, e.alarms.get("L1"))
+        rejection(e, "alarm not found")
+    }
+
+    @Test fun `validate gets the ring context`() = runTest {
+        // Without a live ring in the context the early-window rule rejects; with one it applies.
+        val e = env(alarms = listOf(weekly, linkedRow))
+        e.applier.apply(fromOwner(CommandType.STOP_RINGING))
+        assertEquals(listOf("L1"), e.ringing.ringContextAlarmIds)
+        assertTrue(e.ringing.dismissedOccurrences.isEmpty())
+        rejection(e, "already rang or changed")
+    }
+
+    @Test fun `own alarm ring command also builds a context`() = runTest {
+        val ownX = nextOccurrence(weekly, now, zone)!!
+        val e = env()
+        e.ringing.ringContextResult = RingContext(
+            RingState("a1", "r1", now.minusSeconds(5), null, occurrenceAt = ownX), emptyList(), emptyList(), null,
+        )
+        e.applier.apply(cmd(CommandType.STOP_RINGING, occurrenceAt = ownX))
+        assertEquals(listOf("a1"), e.ringing.ringContextAlarmIds)
+        assertEquals(listOf(FakeRingingController.OccurrenceCall("a1", ownX, RingOrigin.REMOTE)), e.ringing.dismissedOccurrences)
+        assertEquals(1, e.notifier.calls.size)
+    }
+
+    @Test fun `skip on a solo skipped occurrence upgrades it to a shared skip`() = runTest {
+        val e = env(alarms = listOf(weekly.copy(soloSkippedOccurrenceAt = nextOccurrence(weekly, now, zone))))
+        val c = cmd(CommandType.SKIP_NEXT, occurrenceAt = nextOccurrence(weekly, now, zone))
+        e.applier.apply(c)
+        val a = e.alarms.get("a1")!!
+        assertEquals(c.occurrenceAt, a.skippedOccurrenceAt)
+        assertNull(a.soloSkippedOccurrenceAt)
+        e.assertApplied(c)
+    }
+
+    @Test fun `skip for a different occurrence leaves the solo skip`() = runTest {
+        val solo = nextOccurrence(weekly, now, zone)!!
+        val later = nextOccurrence(weekly, solo.plusSeconds(1), zone)!!
+        val e = env(alarms = listOf(weekly.copy(soloSkippedOccurrenceAt = solo)))
+        // Full-view next occurrence (the Partner tab's X') is accepted by validate and isn't the solo one.
+        e.applier.apply(cmd(CommandType.SKIP_NEXT, occurrenceAt = later))
+        val a = e.alarms.get("a1")!!
+        assertEquals(later, a.skippedOccurrenceAt)
+        assertEquals(solo, a.soloSkippedOccurrenceAt)
+    }
+
+    @Test fun `one shot skip clears a solo skip`() = runTest {
+        val ox = nextOccurrence(oneShot, now, zone)!!
+        val e = env(alarms = listOf(oneShot.copy(soloSkippedOccurrenceAt = ox)))
+        e.applier.apply(cmd(CommandType.SKIP_NEXT, oneShot, occurrenceAt = ox))
+        val a = e.alarms.get("a2")!!
+        assertFalse(a.enabled)
+        assertNull(a.soloSkippedOccurrenceAt)
+    }
+
+    @Test fun `unskip clears only the shared skip`() = runTest {
+        val shared = nextOccurrence(weekly, now, zone)!!
+        val solo = nextOccurrence(weekly, shared.plusSeconds(1), zone)!!
+        val e = env(alarms = listOf(weekly.copy(skippedOccurrenceAt = shared, soloSkippedOccurrenceAt = solo)))
+        e.applier.apply(cmd(CommandType.UNSKIP, occurrenceAt = shared))
+        val a = e.alarms.get("a1")!!
+        assertNull(a.skippedOccurrenceAt)
+        assertEquals(solo, a.soloSkippedOccurrenceAt)
+    }
+
+    private fun partnerWith(vararg ids: String) = PartnerState(
+        "Sam",
+        ids.map { PartnerAlarm(it, "Gym", 7, 15, setOf(DayOfWeek.MONDAY), true, null, null) },
+        null, null,
+    )
+
+    private fun invite() = fromOwner(CommandType.INVITE_LINK, occurrenceAt = null)
+
+    @Test fun `invite posts a notification and stays pending`() = runTest {
+        val ps = partnerWith(ownerId)
+        val e = env(partner = flowOf(ps))
+        val c = invite()
+        e.applier.apply(c)
+        assertEquals(listOf(FakeCommandNotifier.Invite(c, ps.alarms.single(), "Sam")), e.notifier.invites)
+        assertTrue(e.remote.resolved.isEmpty())
+        assertNull(e.processed.outcome("c1"))
+        assertEquals(0, e.scheduler.rescheduleCount)
+        assertTrue(e.notifier.calls.isEmpty())
+        // Re-delivery doesn't post again and still resolves nothing.
+        e.applier.apply(c)
+        assertEquals(1, e.notifier.invites.size)
+        assertTrue(e.remote.resolved.isEmpty())
+    }
+
+    @Test fun `an already answered invite resolves from the record`() = runTest {
+        val e = env(partner = flowOf(partnerWith(ownerId)))
+        e.processed.record("c1", Outcome.Rejected("declined"), now.plusSeconds(60))
+        e.applier.apply(invite())
+        assertTrue(e.notifier.invites.isEmpty())
+        assertEquals(CommandStatus.REJECTED, e.remote.resolved.single().status)
+    }
+
+    @Test fun `invite for an alarm not yet in the partner state stays pending`() = runTest {
+        val e = env(partner = flowOf(partnerWith("other")))
+        e.applier.apply(invite())
+        assertTrue(e.notifier.invites.isEmpty())
+        assertTrue(e.remote.resolved.isEmpty())
+        assertNull(e.processed.outcome("c1"))
+        assertEquals(0, e.scheduler.rescheduleCount)
+    }
+
+    @Test fun `invite notifies once the alarm shows up on a later delivery`() = runTest {
+        val partner = MutableStateFlow<PartnerState?>(partnerWith("other"))
+        val e = env(partner = partner)
+        val c = invite()
+        e.applier.apply(c)
+        assertTrue(e.notifier.invites.isEmpty())
+        partner.value = partnerWith("other", ownerId)
+        e.applier.apply(c)
+        assertEquals(1, e.notifier.invites.size)
+        assertTrue(e.remote.resolved.isEmpty())
+        assertNull(e.processed.outcome("c1"))
+    }
+
+    @Test fun `invite for one alarm posts when a different alarm is already joined`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow), partner = flowOf(partnerWith(ownerId, "o10")))
+        e.applier.apply(fromOwner(CommandType.INVITE_LINK, alarmId = "o10", occurrenceAt = null))
+        assertEquals(1, e.notifier.invites.size)
+        assertTrue(e.remote.resolved.isEmpty())
+    }
+
+    @Test fun `invite for an alarm already joined from this owner resolves applied`() = runTest {
+        val e = env(alarms = listOf(weekly, linkedRow), partner = flowOf(partnerWith(ownerId)))
+        e.applier.apply(invite())
+        assertTrue(e.notifier.invites.isEmpty())
+        assertTrue(e.notifier.calls.isEmpty())
+        assertEquals(0, e.scheduler.rescheduleCount)
+        assertEquals(listOf(FakeCommandRemote.Resolved("h1", "c1", CommandStatus.APPLIED, null)), e.remote.resolved)
+        assertEquals(Outcome.Applied, e.processed.outcome("c1"))
+    }
+
+    @Test fun `invite for an alarm joined from someone else is rejected`() = runTest {
+        val other = linkedRow.copy(link = linkedRow.link!!.copy(ownerUid = "stranger"))
+        val e = env(alarms = listOf(weekly, other), partner = flowOf(partnerWith(ownerId)))
+        e.applier.apply(invite())
+        assertTrue(e.notifier.invites.isEmpty())
+        rejection(e, "already joined")
+    }
+
+    @Test fun `a pending invite is notified once per process`() = runTest {
+        val e = env(partner = flowOf(partnerWith(ownerId)))
+        val c = invite()
+        e.applier.apply(c)
+        e.applier.apply(c)
+        assertEquals(1, e.notifier.invites.size)
+        assertTrue(e.remote.resolved.isEmpty())
+    }
+
+    @Test fun `invite with unknown partner state stays pending`() = runTest {
+        val e = env(partner = flowOf(null))
+        e.applier.apply(invite())
+        assertTrue(e.notifier.invites.isEmpty())
+        assertTrue(e.remote.resolved.isEmpty())
+        assertNull(e.processed.outcome("c1"))
+    }
+
+    @Test fun `expired invite is rejected and not posted`() = runTest {
+        val e = env(partner = flowOf(partnerWith(ownerId)))
+        e.applier.apply(invite().copy(expiresAt = now))
+        assertTrue(e.notifier.invites.isEmpty())
+        rejection(e, "expired")
     }
 }

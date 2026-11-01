@@ -42,7 +42,11 @@ import me.shawnsquire.tandem.sync.SyncWorker
 import me.shawnsquire.tandem.sync.FirestoreCommandRemote
 import me.shawnsquire.tandem.sync.FirestoreDeviceDocWriter
 import me.shawnsquire.tandem.sync.Household
+import me.shawnsquire.tandem.sync.HouseholdCheck
 import me.shawnsquire.tandem.sync.HouseholdSource
+import me.shawnsquire.tandem.sync.householdOnServer
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.seconds
 import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.sync.PairingRepositoryImpl
 import me.shawnsquire.tandem.sync.PartnerRepositoryImpl
@@ -57,9 +61,6 @@ import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.sync.PreFireCheck
 import me.shawnsquire.tandem.sync.StatePublisher
-import me.shawnsquire.tandem.fakes.FakeLinkRepository
-import me.shawnsquire.tandem.fakes.FakeLinkSync
-import me.shawnsquire.tandem.fakes.FakeRingMirror
 import me.shawnsquire.tandem.media.AndroidMediaSource
 import me.shawnsquire.tandem.media.FirebaseMediaStorage
 import me.shawnsquire.tandem.media.LinkedMediaCache
@@ -68,7 +69,11 @@ import me.shawnsquire.tandem.media.LinkedMediaDownloadWorker
 import me.shawnsquire.tandem.media.MediaPublishStore
 import me.shawnsquire.tandem.media.MediaPublisherImpl
 import me.shawnsquire.tandem.sync.LinkRepository
+import me.shawnsquire.tandem.sync.LinkRemovals
+import me.shawnsquire.tandem.sync.LinkRepositoryImpl
 import me.shawnsquire.tandem.sync.LinkSync
+import me.shawnsquire.tandem.sync.LinkSyncImpl
+import me.shawnsquire.tandem.sync.RingMirrorImpl
 import me.shawnsquire.tandem.sync.MediaPublisher
 import me.shawnsquire.tandem.sync.RingMirror
 
@@ -127,9 +132,30 @@ class AppContainer private constructor(
         enqueueDownload = { LinkedMediaDownloadWorker.enqueue(context) },
         onStatus = { referenced, missing -> syncScope.launch { healthSignalsImpl.recordLinkedMedia(referenced, missing) } },
     )
-    val linkRepository: LinkRepository = FakeLinkRepository() // L4: swap to real
-    val linkSync: LinkSync = FakeLinkSync() // L4: swap to real
-    val ringMirror: RingMirror = FakeRingMirror() // L4: swap to real (the engine's port gets it in init)
+    private val linkRemovals = LinkRemovals(context.syncDataStore) // L4: one instance shared by the three below
+    // L4: linkSyncImpl is declared below; the lambda runs later.
+    val linkRepositoryImpl = LinkRepositoryImpl(
+        alarmRepository, partnerRepository.partner, householdFlow, commandSender, commandRemote,
+        ProcessedCommands(context.syncDataStore, LiveZoneClock), linkRemovals,
+        { id, reason -> linkSyncImpl.requestRemoval(id, reason) },
+        { id -> linkSyncImpl.cancelRemoval(id) },
+        { row, cmd -> linkSyncImpl.noteApplied(row, cmd) },
+        { cmd -> linkSyncImpl.appliedSettled(cmd) },
+        alarmScheduler, commandNotifier, LiveZoneClock, syncScope,
+    )
+    val linkRepository: LinkRepository = linkRepositoryImpl
+    val linkSyncImpl = LinkSyncImpl(
+        partnerRepository.partner, householdFlow, alarmRepository, ringingController, ringStateStore.state,
+        alarmScheduler, linkedMediaCache, commandNotifier, linkRemovals, LiveZoneClock, syncScope,
+        confirmHousehold = {
+            val uid = authManager.uid.value
+            if (uid == null) HouseholdCheck.Unknown
+            else withTimeoutOrNull(15.seconds) { householdOnServer(firestore, uid) } ?: HouseholdCheck.Unknown
+        },
+    ) // L4
+    val linkSync: LinkSync = linkSyncImpl
+    val ringMirror: RingMirror = // L4 (the engine's port gets it in init)
+        RingMirrorImpl(alarmRepository, partnerRepository.partner, household, commandSender, linkRemovals, syncScope)
     // L5: real
     val mediaPublisher: MediaPublisher = MediaPublisherImpl(
         alarmRepository, partnerRepository, linkRepository, settingsRepository, householdFlow,
@@ -171,8 +197,8 @@ class AppContainer private constructor(
     // retry builds another. The provider runs when a fire pulls, not here.
     // The delegates come after attach, so they too are set only by a container that fully built:
     // assigning the mirror delegate replays the locked-boot outbox into it, and a failed attempt's
-    // mirror must never receive that. Both are fakes today (FakeRingMirror records;
-    // FakeLinkedMediaCache.resolve is today's behavior), so this changes nothing yet.
+    // mirror must never receive that. ringMirror and linkedMediaCache are the
+    // real implementations.
     init {
         alarmEngine.attach(roomAlarmRepository, roomSettings) { preFireCheck }
         alarmEngine.ringMirrorPort.delegate = ringMirror

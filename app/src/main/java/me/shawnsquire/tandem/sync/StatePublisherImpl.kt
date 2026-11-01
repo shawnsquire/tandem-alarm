@@ -6,6 +6,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.toJavaDuration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -18,12 +19,16 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.data.RingStateStore
+import me.shawnsquire.tandem.data.withoutExpiredSkip
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.nextOccurrence
 
@@ -38,14 +43,13 @@ class StatePublisherImpl(
     private val household: Flow<Household?>,
     private val displayName: Flow<String>,
     private val fcmToken: Flow<String?>,
-    /**
-     * This phone's links (LinkRepository.links). Unused until L4, which passes them to deviceDocMap
-     * (the device doc's `links`) and switches the published alarms to ownAlarms.
-     */
+    /** This phone's links (LinkRepository.links), published as the device doc's `links`. */
     private val links: Flow<List<PublishedLink>>,
     /**
-     * The uploaded media refs (MediaPublisher.published). Unused until L4, which passes them to
-     * deviceDocMap (`alarms[].media` and the default wallpaper); null means none published yet.
+     * The uploaded media refs (MediaPublisher.published), published as `alarms[].media` and the default
+     * wallpaper; null means none published yet. May emit one transient value with a previous household's
+     * refs right after a re-pair: the 1 s debounce below collapses it into the following value, so it is
+     * never written (see StatePublisherImplTest).
      */
     private val media: Flow<PublishedMedia?>,
     private val writer: DeviceDocWriter,
@@ -58,6 +62,8 @@ class StatePublisherImpl(
         val household: Household?,
         val displayName: String,
         val fcmToken: String?,
+        val links: List<PublishedLink>,
+        val media: PublishedMedia?,
     )
 
     private class Publish(val household: Household, val data: Map<String, Any?>)
@@ -69,14 +75,30 @@ class StatePublisherImpl(
         if (started) return
         started = true
         scope.launch {
-            combine(alarms.alarms, ringState.state, household, displayName, fcmToken, ::Inputs)
+            // Own alarms only: linked rows reach the partner through `links`, never as alarms[].
+            combine(
+                listOf(alarms.ownAlarms, ringState.state, household, displayName, fcmToken, links, media),
+            ) { v ->
+                @Suppress("UNCHECKED_CAST")
+                Inputs(
+                    v[0] as List<Alarm>, v[1] as RingState?, v[2] as Household?, v[3] as String,
+                    v[4] as String?, v[5] as List<PublishedLink>, v[6] as PublishedMedia?,
+                )
+            }
                 .transformLatest { i ->
                     // Unpaired emits null so it replaces (cancels) any write pending in the debounce.
                     val h = i.household ?: return@transformLatest emit(null)
                     while (true) {
                         val now = clock.instant()
-                        emit(Publish(h, deviceDocMap(i.displayName, i.fcmToken, i.alarms, i.ring, now, clock.zone)))
-                        val boundary = nextPublishBoundary(i.alarms, now, clock.zone) ?: awaitCancellation()
+                        // Room applies skip expiry only when it emits, so apply it here on the clock.
+                        val current = i.alarms.map { it.withoutExpiredSkip(now) }
+                        emit(
+                            Publish(
+                                h,
+                                deviceDocMap(i.displayName, i.fcmToken, current, i.ring, now, clock.zone, i.links, i.media),
+                            ),
+                        )
+                        val boundary = nextPublishBoundary(current, now, clock.zone) ?: awaitCancellation()
                         delay(Duration.between(now, boundary.plusSeconds(1)).toMillis().coerceAtLeast(0))
                     }
                 }
@@ -118,8 +140,17 @@ class StatePublisherImpl(
             false
         } else {
             val now = clock.instant()
+            // links/media must ride along: the merge write replaces `alarms` whole and would otherwise
+            // drop alarms[].media. Bounded wait; on timeout null leaves the stored top-level field alone.
+            val publishedLinks = withTimeoutOrNull(INPUT_WAIT_MS) { links.firstOrNull() }
+            // media's first value can be the previous household's refs; like the pipeline's 1 s debounce,
+            // let it settle and use the last value received (adds at most MEDIA_SETTLE_MS to a heartbeat).
+            var publishedMedia: PublishedMedia? = null
+            withTimeoutOrNull(MEDIA_SETTLE_MS) { media.collect { publishedMedia = it } }
             val data = deviceDocMap(
-                displayName.first(), fcmToken.first(), alarms.alarms.first(), ringState.state.first(), now, clock.zone,
+                displayName.first(), fcmToken.first(),
+                alarms.ownAlarms.first().map { it.withoutExpiredSkip(now) },
+                ringState.state.first(), now, clock.zone, publishedLinks, publishedMedia,
             )
             writer.writeAndAwait(h, data)
             true
@@ -134,13 +165,23 @@ class StatePublisherImpl(
     private companion object {
         const val TAG = "StatePublisher"
         const val UPDATED_AT = "updatedAt"
+        const val INPUT_WAIT_MS = 2_000L
+        const val MEDIA_SETTLE_MS = 1_000L
     }
 }
 
 /**
- * Earliest moment the published state changes by itself: the soonest next occurrence over [alarms]
- * or a skip still in the future. Null when nothing is upcoming.
+ * Earliest moment the published state changes by itself: the soonest next occurrence over [alarms],
+ * a skip still in the future, or a solo skip's X (the published field drops) and X + [FIRE_GRACE]
+ * (an own one-shot reads as off). Null when nothing is upcoming.
  */
 internal fun nextPublishBoundary(alarms: List<Alarm>, now: Instant, zone: ZoneId): Instant? =
-    alarms.flatMap { a -> listOfNotNull(nextOccurrence(a, now, zone), a.skippedOccurrenceAt?.takeIf { it > now }) }
-        .minOrNull()
+    alarms.flatMap { a ->
+        val solo = a.soloSkippedOccurrenceAt
+        listOfNotNull(
+            nextOccurrence(a, now, zone),
+            a.skippedOccurrenceAt?.takeIf { it > now },
+            solo?.takeIf { it > now },
+            solo?.plus(FIRE_GRACE.toJavaDuration())?.takeIf { it > now },
+        )
+    }.minOrNull()
