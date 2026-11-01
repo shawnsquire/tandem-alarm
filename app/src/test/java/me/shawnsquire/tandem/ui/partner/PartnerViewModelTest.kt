@@ -591,6 +591,42 @@ class PartnerViewModelTest {
         assertEquals(1, e.sender.sent.size)
     }
 
+    private val applying get() = RecordingSender { flowOf(CommandStatus.PENDING to null, CommandStatus.APPLIED to null) }
+
+    @Test fun ownerRetapAfterAppliedStopSendsNothingAndStaysApplied() = runTest {
+        val e = ownerEnv(ctx(), ring = mergedRing, sender = applying)
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+        // The joiner hasn't republished yet: a resend would be rejected as already resolved.
+        e.vm.stopRinging()
+        assertEquals(listOf(Sent(CommandType.STOP_RINGING, "A", ringAt, null)), e.sender.sent)
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+        assertEquals(listOf("A"), e.ringing.ringContextAlarmIds)
+    }
+
+    @Test fun retapAfterAppliedRingIdStopSendsNothingUntilAPromotedMemberShows() = runTest {
+        val e = env(partner(alarm("a"), ringing = partnerRing), sender = applying)
+        val state = e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.vm.stopRinging()
+        assertEquals(listOf(Sent(CommandType.STOP_RINGING, "a", null, "ring-1")), e.sender.sent)
+        assertEquals(CommandUiStatus.Applied, state().ringing!!.stopStatus)
+        // The partner promoted a merged member under the same ringId: that is a new target.
+        e.repo.flow.value = partner(alarm("a"), ringing = partnerRing.copy(alarmId = "k"))
+        e.vm.stopRinging()
+        assertEquals(Sent(CommandType.STOP_RINGING, "k", null, "ring-1"), e.sender.sent.last())
+        assertEquals(2, e.sender.sent.size)
+    }
+
+    @Test fun retapAfterRejectedStopSendsAgain() = runTest {
+        val e = ownerEnv(ctx(), ring = mergedRing, sender = RecordingSender { flowOf(CommandStatus.PENDING to null, CommandStatus.REJECTED to "offline") })
+        e.collect(backgroundScope)
+        e.vm.stopRinging()
+        e.vm.stopRinging()
+        assertEquals(2, e.sender.sent.size)
+    }
+
     @Test fun ownerTapAfterLocalDismissOfMergedAlarm() = runTest {
         val e = ownerEnv(ctx(ring = RingState("A", "own-ring", now, null, occurrenceAt = ringAt)), ring = mergedRing)
         e.collect(backgroundScope)
