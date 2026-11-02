@@ -164,7 +164,8 @@ Grow, Store presence, Main store listing.
 - **Website:** `https://tandem.kautiontape.com/`
 - **Assets** live in `docs/play-assets/`:
   - Phone screenshots, 1080 × 1920, in `docs/play-assets/screenshots/`: `1-alarms.png`, `2-editor.png`, `3-ringing.png`, `4-partner.png`.
-  - The 512 px icon and the 1024 × 500 feature graphic come later, with the icon change.
+  - App icon, 512 × 512 32-bit PNG, full-bleed Night background (Play applies its own mask): `docs/play-assets/icon-512.png`.
+  - Feature graphic, 1024 × 500 24-bit PNG, no alpha: `docs/play-assets/feature-graphic-1024x500.png`.
 
 ### 5. Testers
 
