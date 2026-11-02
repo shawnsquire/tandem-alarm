@@ -6,6 +6,7 @@ import me.shawnsquire.tandem.data.AlarmEntity
 import me.shawnsquire.tandem.data.toAlarm
 import me.shawnsquire.tandem.data.toEntity
 import me.shawnsquire.tandem.data.toVibrationPattern
+import me.shawnsquire.tandem.data.toVibrationPatternOrNull
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
@@ -186,7 +187,7 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
         overrideLabel = o.stringOrNull("overrideLabel"),
         overrideRingtoneUri = o.stringOrNull("overrideRingtoneUri"),
         overrideWallpaperPath = null,
-        overrideVibration = o.stringOrNull("overrideVibration")?.toVibrationPattern(),
+        overrideVibration = o.stringOrNull("overrideVibration")?.toVibrationPatternOrNull(),
         overrideVibrationOn = o.booleanOrNull("overrideVibrationOn"),
         overrideSoundOn = o.booleanOrNull("overrideSoundOn"),
     )

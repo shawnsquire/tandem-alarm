@@ -61,7 +61,10 @@ data class AlarmEntity(
 )
 
 /** An unknown name (a newer build's pattern, or bad data) reads as the default pattern. */
-fun String.toVibrationPattern(): VibrationPattern = VibrationPattern.entries.firstOrNull { it.name == this } ?: VibrationPattern.PULSE
+fun String.toVibrationPattern(): VibrationPattern = toVibrationPatternOrNull() ?: VibrationPattern.PULSE
+
+/** Null for an unknown name, which a link override reads as "use the owner's". */
+fun String.toVibrationPatternOrNull(): VibrationPattern? = VibrationPattern.entries.firstOrNull { it.name == this }
 
 fun AlarmEntity.toAlarm(): Alarm = Alarm(
     id = id,
@@ -110,7 +113,7 @@ private fun AlarmEntity.toLink(): AlarmLink? {
         overrideLabel = linkOverrideLabel,
         overrideRingtoneUri = linkOverrideRingtoneUri,
         overrideWallpaperPath = linkOverrideWallpaperPath,
-        overrideVibration = linkOverrideVibration?.toVibrationPattern(),
+        overrideVibration = linkOverrideVibration?.toVibrationPatternOrNull(),
         overrideVibrationOn = linkOverrideVibrationOn,
         overrideSoundOn = linkOverrideSoundOn,
     )

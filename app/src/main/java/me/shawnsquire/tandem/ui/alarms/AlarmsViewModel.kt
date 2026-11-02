@@ -125,7 +125,8 @@ internal fun buildAlarmsState(
                 linked = linked,
                 partnerJoined = partnerName.takeIf { link == null && a.id in joinedIds },
                 skippedSolo = soloSkip && !ownSkip,
-                vibrateOnly = !a.effectiveOutputs().soundOn,
+                // A Notify row never rings, so it has nothing to vibrate.
+                vibrateOnly = link?.mode != LinkMode.NOTIFY && !a.effectiveOutputs().soundOn,
             )
         }
     return AlarmsUiState(loaded = true, rows = rows, zone = zone)

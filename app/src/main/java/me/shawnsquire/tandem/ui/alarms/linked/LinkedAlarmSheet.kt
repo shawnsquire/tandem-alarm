@@ -348,7 +348,8 @@ private fun VibrationRow(state: LinkedSheetState, locked: Boolean, cb: LinkedShe
         modifier = Modifier.clickable(enabled = !locked) { list = true },
     )
     if (list) {
-        val overridden = state.overrideVibration != null || state.overrideVibrationOn != null
+        // Like the Sound row's menu item, not offered while an import or save is in flight.
+        val overridden = !locked && (state.overrideVibration != null || state.overrideVibrationOn != null)
         VibrationPatternDialog(
             selected = state.vibration,
             onSelect = cb.onSelectVibration,

@@ -245,6 +245,13 @@ class AlarmsViewModelTest {
         )
     }
 
+    @Test fun notifyRowsNeverShowVibrateOnly() {
+        val notifySilenced = linkedAlarm("n", mode = LinkMode.NOTIFY).copy(soundOn = false)
+        val ringSilenced = linkedAlarm("r", mode = LinkMode.RING).copy(soundOn = false)
+        val rows = buildAlarmsState(listOf(notifySilenced, ringSilenced), now, ZoneOffset.UTC).rows.associate { it.id to it.vibrateOnly }
+        assertEquals(mapOf("n" to false, "r" to true), rows)
+    }
+
     @Test fun joinedRowCarriesModeAndPartnerName() {
         val rows = buildAlarmsState(
             listOf(linkedAlarm("j", mode = LinkMode.NOTIFY), alarm("own", hour = 7)), now, ZoneOffset.UTC, "Sam",

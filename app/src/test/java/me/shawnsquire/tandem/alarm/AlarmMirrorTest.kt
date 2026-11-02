@@ -122,7 +122,7 @@ class AlarmMirrorTest {
         assertNull(alarm.link!!.overrideSoundOn)
     }
 
-    @Test fun unknownPatternNamesDecodeAsPulse() {
+    @Test fun unknownPatternNamesDecodeAsPulseButAnUnknownOverrideAsNull() {
         val link = plainLink.copy(overrideVibration = VibrationPattern.RAPID)
         SharedPrefsAlarmMirror(context).write(MirrorSnapshot(listOf(MirroredAlarm(full.alarm.copy(vibration = VibrationPattern.RAPID, link = link), null)), null, null))
         val root = org.json.JSONObject(raw()!!)
@@ -133,7 +133,7 @@ class AlarmMirrorTest {
 
         val alarm = SharedPrefsAlarmMirror(context).readOrNull()!!.alarms.single().alarm
         assertEquals(VibrationPattern.PULSE, alarm.vibration)
-        assertEquals(VibrationPattern.PULSE, alarm.link!!.overrideVibration)
+        assertNull(alarm.link!!.overrideVibration)
     }
 
     @Test fun linkOverrideWallpaperIsNeverMirrored() {
