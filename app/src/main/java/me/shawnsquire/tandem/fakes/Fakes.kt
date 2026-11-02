@@ -461,7 +461,11 @@ class FakeLinkedMediaCache : LinkedMediaCache {
 
     val updates = mutableListOf<Update>()
 
+    /** Makes [update] throw, recording nothing, while set. */
+    var updateFailure: Throwable? = null
+
     override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) {
+        updateFailure?.let { throw it }
         updates += Update(ownerUid, alarms, defaultWallpaper, defaultWallpaperFrame)
     }
 

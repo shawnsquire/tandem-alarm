@@ -265,12 +265,14 @@ class LinkSyncImpl(
         val live = rows.filter { it.id !in pending }
         val held = rows.mapNotNull { it.link?.pendingBoth?.commandId }.toSet()
         applied.keys.retainAll(held)
+        // Before the copies: a row takes the owner's new frame only once the images it frames are cached.
+        val mediaCurrent = updateMedia(owner, hh, live)
         for (row in live) {
             try {
                 val doc = owner.alarms.firstOrNull { it.id == row.link?.ownerAlarmId }
                 if (doc == null) {
                     removals.add(row.id, RemovalReason.OWNER_DELETED)
-                } else if (syncRow(row, doc, owner.displayName.ifBlank { FALLBACK_NAME }, owner.lastSeen)) {
+                } else if (syncRow(row, doc, owner.displayName.ifBlank { FALLBACK_NAME }, owner.lastSeen, mediaCurrent)) {
                     changed = true
                 }
             } catch (e: CancellationException) {
@@ -279,11 +281,10 @@ class LinkSyncImpl(
                 Log.w(TAG, "syncing ${row.id} failed", e)
             }
         }
-        updateMedia(owner, hh, live)
         return changed
     }
 
-    private suspend fun syncRow(row: Alarm, doc: PartnerAlarm, name: String, seen: Instant?): Boolean {
+    private suspend fun syncRow(row: Alarm, doc: PartnerAlarm, name: String, seen: Instant?, mediaCurrent: Boolean): Boolean {
         val link = checkNotNull(row.link)
         val oneShot = doc.days.isEmpty()
         val pb = link.pendingBoth
@@ -300,7 +301,8 @@ class LinkSyncImpl(
             label = doc.label, hour = doc.hour, minute = doc.minute, days = doc.days, enabled = doc.enabled,
             lateRing = doc.lateRing,
             vibration = doc.vibration, vibrationOn = doc.vibrationOn, soundOn = doc.soundOn,
-            wallpaperFrame = doc.wallpaperFrame, textPosition = doc.textPosition,
+            // A failed media update holds only the frame (I1: the schedule still copies); the next pass retries.
+            wallpaperFrame = if (mediaCurrent) doc.wallpaperFrame else row.wallpaperFrame, textPosition = doc.textPosition,
             link = link.copy(ownerSkippedOccurrenceAt = doc.skippedOccurrenceAt),
         )
         var changed = false
@@ -462,20 +464,23 @@ class LinkSyncImpl(
         }
     }
 
-    private fun updateMedia(owner: PartnerState, hh: Household, rows: List<Alarm>) {
-        if (rows.isEmpty()) return
+    /** Hands the cache the owner's refs for [rows]; false when it could not, so it still holds the earlier ones. */
+    private fun updateMedia(owner: PartnerState, hh: Household, rows: List<Alarm>): Boolean {
+        if (rows.isEmpty()) return true
         val byOwnerId = rows.mapNotNull { it.link?.ownerAlarmId }.toSet()
         val media = owner.alarms.filter { it.id in byOwnerId }
             .mapNotNull { a -> a.media?.let { a.id to it } }.toMap()
         val args = MediaArgs(hh.partnerUid, media, owner.defaultWallpaper, owner.defaultWallpaperFrame)
-        if (args == lastMedia) return
+        if (args == lastMedia) return true
         try {
             mediaCache.update(args.ownerUid, args.alarms, args.wallpaper, args.wallpaperFrame)
             lastMedia = args
+            return true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "media cache update failed", e)
+            return false
         }
     }
 

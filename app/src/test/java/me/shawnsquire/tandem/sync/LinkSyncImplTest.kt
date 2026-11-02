@@ -641,6 +641,27 @@ class LinkSyncImplTest {
         assertEquals(2, e.media.updates.size)
     }
 
+    @Test fun `a failing media update keeps the row's frame but still copies its schedule, and the next pass catches up`() = runTest {
+        val e = started(env(partner = null))
+        val old = WallpaperFrame(2f, 0.3f, 0.7f)
+        val m1 = AlarmMedia(MediaRef("sha1", 10), null)
+        e.partner.value = state(owner(media = m1).copy(wallpaperFrame = old))
+        runCurrent()
+        assertEquals(old, e.row()!!.wallpaperFrame)
+        e.media.updateFailure = IllegalStateException("disk")
+        val next = WallpaperFrame(1.5f, 0.6f, 0.4f)
+        val m2 = AlarmMedia(MediaRef("sha2", 20), null)
+        e.partner.value = state(owner(media = m2, hour = 7).copy(wallpaperFrame = next))
+        runCurrent()
+        assertEquals(7, e.row()!!.hour) // I1: the schedule is never held back
+        assertEquals(old, e.row()!!.wallpaperFrame) // the new frame would sit over the old cached image
+        e.media.updateFailure = null
+        e.partner.value = state(owner(media = m2, hour = 7).copy(wallpaperFrame = next), seen = Instant.parse("2026-03-02T05:01:00Z"))
+        runCurrent()
+        assertEquals(next, e.row()!!.wallpaperFrame)
+        assertEquals(m2, e.media.updates.last().alarms["o1"])
+    }
+
     @Test fun `no media update while the partner state is unknown`() = runTest {
         val e = started(env())
         runCurrent()
