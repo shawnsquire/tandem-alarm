@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.flow.flowOf
 import me.shawnsquire.tandem.fakes.FakeAlarmRepository
 import me.shawnsquire.tandem.fakes.FakeRingStateStore
+import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.media.MediaRef
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
@@ -75,6 +76,7 @@ class StatePublisherImplTest {
         links: kotlinx.coroutines.flow.Flow<List<PublishedLink>> = flowOf(emptyList()),
         media: kotlinx.coroutines.flow.Flow<PublishedMedia?> = flowOf(null),
         defaultFrame: kotlinx.coroutines.flow.Flow<me.shawnsquire.tandem.schedule.WallpaperFrame?> = flowOf(null),
+        defaultPath: kotlinx.coroutines.flow.Flow<String?> = flowOf(null),
         initial: List<Alarm> = listOf(weekly),
         pairedHousehold: MutableStateFlow<Household?>? = null,
     ): Env {
@@ -87,7 +89,7 @@ class StatePublisherImplTest {
         val ring = FakeRingStateStore()
         val household = pairedHousehold ?: MutableStateFlow(if (paired) hh else null)
         val publisher = StatePublisherImpl(
-            alarms, ring, household, MutableStateFlow("Pixel"), fcmToken, links, media, defaultFrame, writer, clock, backgroundScope,
+            alarms, ring, household, MutableStateFlow("Pixel"), fcmToken, links, media, defaultFrame, defaultPath, writer, clock, backgroundScope,
         )
         return Env(alarms, ring, household, writer, publisher)
     }
@@ -391,26 +393,64 @@ class StatePublisherImplTest {
 
     private fun media(hash: String) = PublishedMedia(MediaRef(hash, 10), emptyMap())
 
+    private val frameA = me.shawnsquire.tandem.schedule.WallpaperFrame(2f, 0.2f, 0.8f)
+    private fun frameMap(f: me.shawnsquire.tandem.schedule.WallpaperFrame) =
+        mapOf("zoom" to f.zoom.toDouble(), "x" to f.focusX.toDouble(), "y" to f.focusY.toDouble())
+
     @Test
     fun `a frame or text position edit alone republishes the alarm`() = runTest {
-        val e = env()
+        // The published ref is from the alarm's current path, so its frame rides along.
+        val published = PublishedMedia(null, mapOf("a1" to AlarmMedia(MediaRef("w1", 10), null)), mapOf("a1" to weekly.wallpaperPath!!))
+        val e = env(media = flowOf(published))
         e.publisher.start()
         advance(2_000)
         assertEquals(1, e.writer.writes.size)
-        e.alarms.upsert(weekly.copy(wallpaperFrame = me.shawnsquire.tandem.schedule.WallpaperFrame(2f, 0.2f, 0.8f)))
+        e.alarms.upsert(weekly.copy(wallpaperFrame = frameA))
         advance(2_000)
         assertEquals(2, e.writer.writes.size)
-        assertEquals(mapOf("zoom" to 2.0, "x" to 0.2f.toDouble(), "y" to 0.8f.toDouble()), e.writer.writes.last().second.firstAlarm()["wallpaperFrame"])
-        e.alarms.upsert(weekly.copy(textPosition = me.shawnsquire.tandem.schedule.TextPosition.TOP))
+        assertEquals(frameMap(frameA), e.writer.writes.last().second.firstAlarm()["wallpaperFrame"])
+        e.alarms.upsert(weekly.copy(wallpaperFrame = frameA, textPosition = me.shawnsquire.tandem.schedule.TextPosition.TOP))
         advance(2_000)
         assertEquals(3, e.writer.writes.size)
         assertEquals("TOP", e.writer.writes.last().second.firstAlarm()["textPosition"])
+        assertEquals(frameMap(frameA), e.writer.writes.last().second.firstAlarm()["wallpaperFrame"])
+    }
+
+    @Test
+    fun `an alarm's frame waits for the ref made from its new wallpaper and arrives with it`() = runTest {
+        val mediaFlow = MutableStateFlow<PublishedMedia?>(
+            PublishedMedia(null, mapOf("a1" to AlarmMedia(MediaRef("imgA", 10), null)), mapOf("a1" to "/old.jpg")),
+        )
+        val e = env(media = mediaFlow)
+        e.publisher.start()
+        advance(2_000)
+        // The owner picks image B and frames it; the published ref is still A's.
+        e.alarms.upsert(weekly.copy(wallpaperPath = "/new.jpg", wallpaperFrame = frameA))
+        advance(2_000)
+        val during = e.writer.writes.last().second.firstAlarm()
+        assertFalse(during.containsKey("wallpaperFrame"))
+        assertEquals("imgA", ((during["media"] as Map<*, *>)["wallpaper"] as Map<*, *>)["sha"])
+        // The upload finishes: the new ref and the frame land in one write.
+        val before = e.writer.writes.size
+        mediaFlow.value = PublishedMedia(null, mapOf("a1" to AlarmMedia(MediaRef("imgB", 10), null)), mapOf("a1" to "/new.jpg"))
+        advance(2_000)
+        assertEquals(before + 1, e.writer.writes.size)
+        val after = e.writer.writes.last().second.firstAlarm()
+        assertEquals("imgB", ((after["media"] as Map<*, *>)["wallpaper"] as Map<*, *>)["sha"])
+        assertEquals(frameMap(frameA), after["wallpaperFrame"])
+        // A fallback to the old ref (upload failing) keeps its old source, so the frame stays withheld.
+        e.alarms.upsert(weekly.copy(wallpaperPath = "/newer.jpg", wallpaperFrame = frameA))
+        advance(2_000)
+        assertFalse(e.writer.writes.last().second.firstAlarm().containsKey("wallpaperFrame"))
     }
 
     @Test
     fun `a default frame change alone republishes beside the default wallpaper and rides the heartbeat`() = runTest {
         val frame = MutableStateFlow<me.shawnsquire.tandem.schedule.WallpaperFrame?>(null)
-        val e = env(media = flowOf(media("m1")), defaultFrame = frame)
+        val e = env(
+            media = flowOf(PublishedMedia(MediaRef("m1", 10), emptyMap(), defaultWallpaperSource = "/def.jpg")),
+            defaultFrame = frame, defaultPath = flowOf("/def.jpg"),
+        )
         e.publisher.start()
         advance(2_000)
         assertNull(e.writer.writes.single().second["defaultWallpaperFrame"])
@@ -422,6 +462,27 @@ class StatePublisherImplTest {
         assertEquals(mapOf("zoom" to 3.0, "x" to 0.1f.toDouble(), "y" to 0.9f.toDouble()), written["defaultWallpaperFrame"])
         assertTrue(e.publisher.publishNow())
         assertEquals(0.1f.toDouble(), (e.writer.awaited.single().second["defaultWallpaperFrame"] as Map<*, *>)["x"])
+    }
+
+    @Test
+    fun `the default frame is an explicit null until the default ref is from the current default path`() = runTest {
+        val path = MutableStateFlow<String?>("/def.jpg")
+        val mediaFlow = MutableStateFlow<PublishedMedia?>(PublishedMedia(MediaRef("old", 10), emptyMap(), defaultWallpaperSource = "/def.jpg"))
+        val e = env(media = mediaFlow, defaultFrame = flowOf(frameA), defaultPath = path)
+        e.publisher.start()
+        advance(2_000)
+        assertEquals(frameMap(frameA), e.writer.writes.last().second["defaultWallpaperFrame"])
+        // The default changes to a new picture whose ref is not published yet.
+        path.value = "/def2.jpg"
+        advance(2_000)
+        val held = e.writer.writes.last().second
+        assertTrue(held.containsKey("defaultWallpaperFrame") && held["defaultWallpaperFrame"] == null)
+        assertEquals("old", (held["defaultWallpaper"] as Map<*, *>)["sha"])
+        mediaFlow.value = PublishedMedia(MediaRef("new", 10), emptyMap(), defaultWallpaperSource = "/def2.jpg")
+        advance(2_000)
+        val shown = e.writer.writes.last().second
+        assertEquals("new", (shown["defaultWallpaper"] as Map<*, *>)["sha"])
+        assertEquals(frameMap(frameA), shown["defaultWallpaperFrame"])
     }
 
     @Test

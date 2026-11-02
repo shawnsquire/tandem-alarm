@@ -56,6 +56,8 @@ class StatePublisherImpl(
     private val media: Flow<PublishedMedia?>,
     /** The settings' default wallpaper frame, published as `defaultWallpaperFrame` beside `defaultWallpaper`. */
     private val defaultWallpaperFrame: Flow<WallpaperFrame?>,
+    /** The settings' default wallpaper path; the frame is published only once the default ref was made from it. */
+    private val defaultWallpaperPath: Flow<String?>,
     private val writer: DeviceDocWriter,
     private val clock: Clock,
     private val scope: CoroutineScope,
@@ -70,6 +72,7 @@ class StatePublisherImpl(
         val media: PublishedMedia?,
         val ringOwnerIds: Map<String, String>,
         val defaultFrame: WallpaperFrame?,
+        val defaultPath: String?,
     )
 
     private class Publish(val household: Household, val data: Map<String, Any?>)
@@ -87,13 +90,14 @@ class StatePublisherImpl(
                 listOf(
                     alarms.ownAlarms, ringState.state, household, displayName, fcmToken, links, media,
                     alarms.linkedAlarms.map(::ringOwnerIds), defaultWallpaperFrame,
+                    defaultWallpaperPath,
                 ),
             ) { v ->
                 @Suppress("UNCHECKED_CAST")
                 Inputs(
                     v[0] as List<Alarm>, v[1] as RingState?, v[2] as Household?, v[3] as String,
                     v[4] as String?, v[5] as List<PublishedLink>, v[6] as PublishedMedia?, v[7] as Map<String, String>,
-                    v[8] as WallpaperFrame?,
+                    v[8] as WallpaperFrame?, v[9] as String?,
                 )
             }
                 .transformLatest { i ->
@@ -108,7 +112,7 @@ class StatePublisherImpl(
                                 h,
                                 deviceDocMap(
                                     i.displayName, i.fcmToken, current, i.ring, now, clock.zone, i.links, i.media,
-                                    i.ringOwnerIds, i.defaultFrame,
+                                    i.ringOwnerIds, i.defaultFrame, i.defaultPath,
                                 ),
                             ),
                         )
@@ -165,7 +169,7 @@ class StatePublisherImpl(
                 displayName.first(), fcmToken.first(),
                 alarms.ownAlarms.first().map { it.withoutExpiredSkip(now) },
                 ringState.state.first(), now, clock.zone, publishedLinks, publishedMedia,
-                ringOwnerIds(alarms.linkedAlarms.first()), defaultWallpaperFrame.first(),
+                ringOwnerIds(alarms.linkedAlarms.first()), defaultWallpaperFrame.first(), defaultWallpaperPath.first(),
             )
             writer.writeAndAwait(h, data)
             true

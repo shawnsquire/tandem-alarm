@@ -354,6 +354,56 @@ class MediaPublisherImplTest {
     }
 
     @Test
+    fun theSourcePathOfARefIsRecordedAndNotKeptForAFallback() = runTest {
+        source.put("/w/a.jpg", photo)
+        source.put("/w/def.jpg", "default".toByteArray())
+        alarms.upsert(alarm("a", wallpaper = "/w/a.jpg"))
+        settings.setDefaultWallpaperPath("/w/def.jpg")
+        partner.set(link("a"))
+        val p = publisher()
+        p.start()
+        advanceUntilIdle()
+        val first = p.published.first()!!
+        assertEquals(mapOf("a" to "/w/a.jpg"), first.wallpaperSources)
+        assertEquals("/w/def.jpg", first.defaultWallpaperSource)
+
+        // A new path whose upload fails keeps the old ref and the old path, so a frame for the new path stays withheld.
+        source.put("/w/a2.jpg", "changed".toByteArray())
+        storage.failUploads = true
+        alarms.upsert(alarm("a", wallpaper = "/w/a2.jpg"))
+        runCurrent()
+        val fallback = p.published.first()!!
+        assertEquals(first.alarms, fallback.alarms)
+        assertEquals(mapOf("a" to "/w/a.jpg"), fallback.wallpaperSources)
+
+        storage.failUploads = false
+        advanceTimeBy(61_000)
+        advanceUntilIdle()
+        assertEquals(mapOf("a" to "/w/a2.jpg"), p.published.first()!!.wallpaperSources)
+    }
+
+    @Test
+    fun sourcesSurviveARestartAndAnOlderStoreReadsThemEmpty() = runTest {
+        val st = MediaPublishState(
+            published = PublishedMedia(
+                MediaRef("d".repeat(64), 1), mapOf("a" to AlarmMedia(MediaRef(sha(bytesA), 3), null)),
+                mapOf("a" to "/w/a.jpg"), "/w/def.jpg",
+            ),
+            publishedHid = "hid-1",
+        )
+        val store = MediaPublishStore(stateFile)
+        store.save(st)
+        assertEquals(st, store.load())
+        stateFile.writeText(
+            """{"published":{"alarms":{"a":{"wallpaper":{"sha":"${sha(bytesA)}","size":3}}}},"publishedHid":"hid-1"}""",
+        )
+        val old = store.load().published!!
+        assertEquals(emptyMap<String, String>(), old.wallpaperSources)
+        assertNull(old.defaultWallpaperSource)
+        assertEquals(setOf("a"), old.alarms.keys)
+    }
+
+    @Test
     fun ringtoneContentTypeFallsBackToAudio() = runTest {
         source.put("file:///r/a", tone, null, null)
         source.put("file:///r/b", "b".toByteArray(), "application/octet-stream", "B")

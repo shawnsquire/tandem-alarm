@@ -133,7 +133,9 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
  * A solo skip that is not after [now] is omitted likewise. `alarms[].lateRing` (`occurrenceAt` Timestamp,
  * `ring` Boolean) is written only while its `occurrenceAt` is within [FIRE_GRACE] of [now] or later.
  * `alarms[].vibration` (the pattern's name), `vibrationOn` and `soundOn` are always written, and so is
- * `alarms[].textPosition` (its name); `alarms[].wallpaperFrame` (`{zoom, x, y}`) only when the alarm has a frame.
+ * `alarms[].textPosition` (its name); `alarms[].wallpaperFrame` (`{zoom, x, y}`) only when the alarm has a frame
+ * and [media] says its wallpaper ref was made from the alarm's current `wallpaperPath`, so a frame never
+ * reaches the partner before the image it frames (likewise `defaultWallpaperFrame` against [defaultWallpaperPath]).
  * The frame and position sit beside `media`, never inside it, so they never touch a media hash.
  * A link's `hour`, `minute` and `days` are written only when its schedule is known.
  *
@@ -162,6 +164,7 @@ fun deviceDocMap(
     media: PublishedMedia? = null,
     ringOwnerIds: Map<String, String> = emptyMap(),
     defaultWallpaperFrame: WallpaperFrame? = null,
+    defaultWallpaperPath: String? = null,
 ): Map<String, Any?> = buildMap {
     put("displayName", displayName)
     if (fcmToken != null) put("fcmToken", fcmToken)
@@ -186,7 +189,10 @@ fun deviceDocMap(
                 put("vibrationOn", a.vibrationOn)
                 put("soundOn", a.soundOn)
                 put("textPosition", a.textPosition.name)
-                a.wallpaperFrame?.let { put("wallpaperFrame", it.toMap()) }
+                // Only once the published wallpaper ref is the one made from this alarm's current path: the new
+                // ref and the frame then arrive in one write, and until then the partner shows the old image centred.
+                a.wallpaperFrame?.takeIf { a.wallpaperPath != null && media?.wallpaperSources?.get(a.id) == a.wallpaperPath }
+                    ?.let { put("wallpaperFrame", it.toMap()) }
                 media?.alarms?.get(a.id)?.let { m ->
                     put("media", mapOf("wallpaper" to m.wallpaper?.toMap(), "ringtone" to m.ringtone?.toMap(withTitle = true)))
                 }
@@ -209,7 +215,11 @@ fun deviceDocMap(
     if (links != null) put("links", links.map { it.toMap() })
     if (media != null) {
         put("defaultWallpaper", media.defaultWallpaper?.toMap())
-        put("defaultWallpaperFrame", defaultWallpaperFrame?.toMap())
+        // Withheld (explicit null, the doc write merges) until the default ref was made from the current default path.
+        put(
+            "defaultWallpaperFrame",
+            defaultWallpaperFrame?.takeIf { defaultWallpaperPath != null && media.defaultWallpaperSource == defaultWallpaperPath }?.toMap(),
+        )
     }
 }
 

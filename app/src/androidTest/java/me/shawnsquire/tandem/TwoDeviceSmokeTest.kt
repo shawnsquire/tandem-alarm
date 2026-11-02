@@ -702,6 +702,7 @@ private class SmokeDevice(context: Context, val name: String, displayName: Strin
     val statePublisher = StatePublisherImpl(
         alarms, ringState, householdFlow, authManager.displayName, fcmTokenStore.token,
         linkRepository.links, mediaPublisher.published, settings.defaultWallpaperFrame,
+        settings.defaultWallpaperPath,
         FirestoreDeviceDocWriter(firestore), LiveZoneClock, scope,
     )
 
