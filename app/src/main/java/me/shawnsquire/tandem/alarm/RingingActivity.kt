@@ -137,17 +137,18 @@ class RingingActivity : ComponentActivity() {
                 val early by produceState<EarlyPosition?>(null, current?.ringId, current?.alarmId) {
                     val r = current ?: return@produceState
                     val position = try {
-                        engine.alarmRepository.get(r.alarmId)?.effectiveTextPosition()
+                        withContext(Dispatchers.IO) { engine.alarmRepository.get(r.alarmId)?.effectiveTextPosition() }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
                         null
                     }
-                    value = EarlyPosition(r.ringId, position)
+                    value = EarlyPosition(r.ringId, r.alarmId, position)
                 }
-                val earlyRead = early?.takeIf { it.ringId == current?.ringId }
+                val earlyRead = early?.takeIf { it.ringId == current?.ringId && it.alarmId == current?.alarmId }
                 // Hidden (not removed, so the layout holds still) until the read returns; the cap keeps it from staying hidden.
                 val capped by produceState(false, current?.ringId) {
+                    value = false // produceState keeps its last value across keys: a later ring hides again
                     delay(TEXT_POSITION_WAIT_MS)
                     value = true
                 }
@@ -277,7 +278,7 @@ internal fun <T : Any> firstDecoded(candidates: List<RingWallpaper>, decode: (St
     candidates.firstNotNullOfOrNull { c -> decode(c.path)?.let { it to c.frame } }
 
 /** [position] is null when the primary's row could not be read; the text is then placed by the resolved content. */
-private class EarlyPosition(val ringId: String, val position: TextPosition?)
+private class EarlyPosition(val ringId: String, val alarmId: String, val position: TextPosition?)
 
 /** How long the text stays invisible waiting for its position before it shows where the content says. */
 private const val TEXT_POSITION_WAIT_MS = 300L

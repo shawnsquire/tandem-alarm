@@ -146,7 +146,7 @@ fun ColumnScope.RingScreenText(
     }
 }
 
-/** Snooze and Stop at the size and place the ringing screen has them; the preview passes no-op handlers. */
+/** Snooze and Stop at the size and place the ringing screen has them; the preview passes no-op handlers and canAct = true. */
 @Composable
 fun ColumnScope.RingScreenButtons(canAct: Boolean, onSnooze: () -> Unit, onStop: () -> Unit) {
     Column(

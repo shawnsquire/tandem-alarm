@@ -36,6 +36,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
@@ -160,7 +161,8 @@ private fun RingPreviewContent(
             frame = frame,
             textPosition = position,
             text = { RingScreenText(formatter.format(clock), alarmLine, listOfNotNull(label.ifBlank { null }), null, null) },
-            buttons = { RingScreenButtons(canAct = false, onSnooze = {}, onStop = {}) },
+            // Drawn as on a live ring but inert: the overlay below sits above them, and they are hidden from TalkBack.
+            buttons = { Column(Modifier.clearAndSetSemantics {}) { RingScreenButtons(canAct = true, onSnooze = {}, onStop = {}) } },
         )
         // Above the layout so its text scroll never sees the pointer: a drag anywhere moves the image.
         Box(
