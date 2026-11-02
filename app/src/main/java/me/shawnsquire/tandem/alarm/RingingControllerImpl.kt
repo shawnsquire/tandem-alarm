@@ -184,14 +184,14 @@ class RingingControllerImpl(
             val resolved = when {
                 state != null && state.isPrimary(x) && state.snoozedUntil != null -> {
                     val notice = if (remote) RemoteRingEnd(state.ringId, x, MirrorKind.SNOOZE, until, endsRing = true) else null
-                    moveSnoozeLocked(SnoozeEntry(state.ringId, alarmId, state.snoozedUntil, occurrenceAt), until, state, state, notice)
+                    moveSnoozeLocked(SnoozeEntry(state.ringId, alarmId, state.snoozedUntil, occurrenceAt, state.snoozeCount), until, state, state, notice)
                 }
                 state != null && state.isPrimary(x) && state.merged.isEmpty() -> {
                     snoozeSlotLocked(state, until, origin) // mirrors X itself
                     false
                 }
-                state != null && state.isPrimary(x) -> { splitOutLocked(x, state.promoteFirstMember(), until, splitNotice()); true }
-                state != null && x in state.merged -> { splitOutLocked(x, state.copy(merged = state.merged - x), until, splitNotice()); true }
+                state != null && state.isPrimary(x) -> { splitOutLocked(x, state.promoteFirstMember(), until, splitNotice(), state.snoozeCount + 1); true }
+                state != null && x in state.merged -> { splitOutLocked(x, state.copy(merged = state.merged - x), until, splitNotice(), state.snoozeCount + 1); true }
                 else -> {
                     val parked = parkedEntryLocked(x, state)
                     when {
@@ -247,14 +247,16 @@ class RingingControllerImpl(
 
     /** Snoozes [state], the sounding ring in the slot, until [end]; see [snooze]. */
     private suspend fun snoozeSlotLocked(state: RingState, end: Instant, origin: RingOrigin) {
+        // This snooze counts for the primary and for every member split out with it.
+        val count = state.snoozeCount + 1
         val split = state.merged.map { newRingId() to it }
         // Arm first: if anything throws nothing stays written and the ring continues with all its members.
         val armed = mutableListOf<String>()
         try {
-            armSnoozeLocked(state.ringId, state.alarmId, end, state.occurrenceAt, armed)
-            for ((id, member) in split) armSnoozeLocked(id, member.alarmId, end, member.occurrenceAt, armed)
+            armSnoozeLocked(state.ringId, state.alarmId, end, state.occurrenceAt, count, armed)
+            for ((id, member) in split) armSnoozeLocked(id, member.alarmId, end, member.occurrenceAt, count, armed)
             val notice = if (origin == RingOrigin.REMOTE) RemoteRingEnd(state.ringId, state.primaryMember(), MirrorKind.SNOOZE, end, endsRing = true) else null
-            writeNoticed(notice) { ringStateStore.set(state.copy(snoozedUntil = end, merged = emptyList())) }
+            writeNoticed(notice) { ringStateStore.set(state.copy(snoozedUntil = end, merged = emptyList(), snoozeCount = count)) }
         } catch (e: Throwable) {
             // Not snoozed after all: the ring keeps sounding, so take every snooze back.
             takeBackLocked(armed)
@@ -265,8 +267,8 @@ class RingingControllerImpl(
             runCatching { notifier.showSnoozed(state.ringId, end, labelsOf(state.alarmId)) }
         } else {
             // One snooze group under the primary's ringId: one notification, one Dismiss for them all.
-            val entries = listOf(SnoozeEntry(state.ringId, state.alarmId, end, state.occurrenceAt)) +
-                split.map { (id, member) -> SnoozeEntry(id, member.alarmId, end, member.occurrenceAt) }
+            val entries = listOf(SnoozeEntry(state.ringId, state.alarmId, end, state.occurrenceAt, count)) +
+                split.map { (id, member) -> SnoozeEntry(id, member.alarmId, end, member.occurrenceAt, count) }
             showGroupLocked(state.ringId, entries, replacing = null)
         }
         if (origin == RingOrigin.LOCAL) mirrorLocal(MirrorKind.SNOOZE, state.members(), end)
@@ -281,11 +283,11 @@ class RingingControllerImpl(
         }
     }
 
-    /** Arms [ringId]'s snooze, then writes its ledger entry; [armed] gets [ringId] once there is anything to take back. */
-    private fun armSnoozeLocked(ringId: String, alarmId: String, end: Instant, occurrenceAt: Instant?, armed: MutableList<String>) {
+    /** Arms [ringId]'s snooze, then writes its ledger entry with [snoozeCount]; [armed] gets [ringId] once there is anything to take back. */
+    private fun armSnoozeLocked(ringId: String, alarmId: String, end: Instant, occurrenceAt: Instant?, snoozeCount: Int, armed: MutableList<String>) {
         snoozeArmer.armSnooze(alarmId, ringId, end)
         armed += ringId
-        ledger.put(ringId, alarmId, end, occurrenceAt)
+        ledger.put(ringId, alarmId, end, occurrenceAt, snoozeCount)
     }
 
     /** Takes back every snooze [armSnoozeLocked] armed; never throws. */
@@ -300,12 +302,13 @@ class RingingControllerImpl(
      * Parks [member] of the sounding ring as its own snooze until [until] (fresh ringId) and writes
      * [rest], the ring left sounding. Arms first: on a throw the ring keeps sounding with every member.
      * [notice] (a REMOTE split) is emitted just before the write.
+     * [snoozeCount] is the ring's snooze count after this one, written with the member's entry.
      */
-    private suspend fun splitOutLocked(member: RingMember, rest: RingState, until: Instant, notice: RemoteRingEnd?) {
+    private suspend fun splitOutLocked(member: RingMember, rest: RingState, until: Instant, notice: RemoteRingEnd?, snoozeCount: Int) {
         val id = newRingId()
         val armed = mutableListOf<String>()
         try {
-            armSnoozeLocked(id, member.alarmId, until, member.occurrenceAt, armed)
+            armSnoozeLocked(id, member.alarmId, until, member.occurrenceAt, snoozeCount, armed)
             writeNoticed(notice) { ringStateStore.set(rest) }
         } catch (e: Throwable) {
             takeBackLocked(armed)
@@ -327,12 +330,12 @@ class RingingControllerImpl(
         val before = ledger.get(entry.ringId)
         snoozeArmer.armSnooze(entry.alarmId, entry.ringId, to)
         try {
-            ledger.put(entry.ringId, entry.alarmId, to, entry.occurrenceAt)
+            ledger.put(entry.ringId, entry.alarmId, to, entry.occurrenceAt, entry.snoozeCount)
             if (slot != null) {
                 writeNoticed(notice) { ringStateStore.set(slot.copy(snoozedUntil = to)) }
             }
         } catch (e: Throwable) {
-            runCatching { if (before != null) ledger.put(before.ringId, before.alarmId, before.until, before.occurrenceAt) else ledger.remove(entry.ringId) }
+            runCatching { if (before != null) ledger.put(before.ringId, before.alarmId, before.until, before.occurrenceAt, before.snoozeCount) else ledger.remove(entry.ringId) }
             runCatching { snoozeArmer.armSnooze(entry.alarmId, entry.ringId, entry.until) }
             throw e
         }
@@ -353,7 +356,7 @@ class RingingControllerImpl(
         val id = newRingId()
         val armed = mutableListOf<String>()
         try {
-            armSnoozeLocked(id, x.alarmId, until, x.occurrenceAt, armed)
+            armSnoozeLocked(id, x.alarmId, until, x.occurrenceAt, 1, armed)
             markRangForwardLocked(x)
         } catch (e: Throwable) {
             takeBackLocked(armed)
@@ -420,7 +423,9 @@ class RingingControllerImpl(
             val startedAt = if (sameRing) current.startedAt else now()
             val occurrenceAt = entry?.occurrenceAt ?: current?.takeIf { sameRing }?.occurrenceAt
             val merged = if (sameRing) current.merged else emptyList()
-            ringStateStore.set(RingState(alarmId, ringId, startedAt, null, occurrenceAt, merged))
+            // The ring's own count: the slot's when it holds this ring, else the one its ledger entry carries.
+            val snoozeCount = if (sameRing) current.snoozeCount else entry?.snoozeCount ?: 0
+            ringStateStore.set(RingState(alarmId, ringId, startedAt, null, occurrenceAt, merged, snoozeCount))
             dropFiredSnoozeLocked(ringId)
             SlotClaim.Claimed
         } }

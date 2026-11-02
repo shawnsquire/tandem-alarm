@@ -208,7 +208,8 @@ data class RingMember(val alarmId: String, val occurrenceAt: Instant)
 
 /** The currently ringing (or snoozed) alarm. [ringId] pins stop-ringing commands (I3).
  * [occurrenceAt] is the scheduled occurrence this ring belongs to; [merged] lists other alarms
- * folded into this ring. */
+ * folded into this ring. [snoozeCount] is how many times this ring has been snoozed (LOCAL or
+ * REMOTE, so both phones agree); 0 for a fresh ring. */
 data class RingState(
     val alarmId: String,
     val ringId: String,
@@ -216,6 +217,7 @@ data class RingState(
     val snoozedUntil: Instant?,
     val occurrenceAt: Instant? = null,
     val merged: List<RingMember> = emptyList(),
+    val snoozeCount: Int = 0,
 )
 
 /** Partner-to-owner command kinds (I2: the partner only sends commands). */

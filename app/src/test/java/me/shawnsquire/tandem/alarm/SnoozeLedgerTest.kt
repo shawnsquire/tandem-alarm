@@ -70,4 +70,37 @@ class SnoozeLedgerTest {
         deviceProtectedPrefs(context, "alarm_snoozes").edit().putString("ring-old", "${t1.toEpochMilli()}|a|weird").commit()
         assertEquals(SnoozeEntry("ring-old", "a|weird", t1, null), SharedPrefsSnoozeLedger(context).get("ring-old"))
     }
+
+    private fun roundTripWithCount(ledger: SnoozeLedger, fresh: () -> SnoozeLedger = { ledger }) {
+        ledger.put("ring-C", "a|weird", t1, t2, 2)
+        assertEquals(SnoozeEntry("ring-C", "a|weird", t1, t2, 2), fresh().get("ring-C"))
+        ledger.put("ring-D", "b", t1, null, 3) // a count without an occurrence
+        assertEquals(SnoozeEntry("ring-D", "b", t1, null, 3), fresh().get("ring-D"))
+        ledger.put("ring-E", "b", t1)
+        assertEquals(0, fresh().get("ring-E")!!.snoozeCount)
+    }
+
+    @Test fun sharedPrefsRoundTripsCount() =
+        roundTripWithCount(SharedPrefsSnoozeLedger(context)) { SharedPrefsSnoozeLedger(context) }
+
+    @Test fun inMemoryRoundTripsCount() = roundTripWithCount(InMemorySnoozeLedger())
+
+    @Test fun entriesWrittenBeforeTheCountReadZero() {
+        val prefs = deviceProtectedPrefs(context, "alarm_snoozes")
+        prefs.edit().putString("ring-old", "${t1.toEpochMilli()}|a|weird").commit()
+        prefs.edit().putString("ring-occ", "${t1.toEpochMilli()};${t2.toEpochMilli()}|a").commit()
+        assertEquals(SnoozeEntry("ring-old", "a|weird", t1, null, 0), SharedPrefsSnoozeLedger(context).get("ring-old"))
+        assertEquals(SnoozeEntry("ring-occ", "a", t1, t2, 0), SharedPrefsSnoozeLedger(context).get("ring-occ"))
+    }
+
+    @Test fun badCountPartKeepsTheEntry() {
+        val prefs = deviceProtectedPrefs(context, "alarm_snoozes")
+        prefs.edit().putString("ring-bad", "${t1.toEpochMilli()};${t2.toEpochMilli()};oops|a").commit()
+        prefs.edit().putString("ring-neg", "${t1.toEpochMilli()};${t2.toEpochMilli()};-3|a").commit()
+        prefs.edit().putString("ring-noocc", "${t1.toEpochMilli()};oops;4|a").commit()
+        assertEquals(SnoozeEntry("ring-bad", "a", t1, t2, 0), SharedPrefsSnoozeLedger(context).get("ring-bad"))
+        assertEquals(SnoozeEntry("ring-neg", "a", t1, t2, 0), SharedPrefsSnoozeLedger(context).get("ring-neg"))
+        // A bad occurrence does not lose the count behind it.
+        assertEquals(SnoozeEntry("ring-noocc", "a", t1, null, 4), SharedPrefsSnoozeLedger(context).get("ring-noocc"))
+    }
 }

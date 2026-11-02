@@ -2062,7 +2062,7 @@ class RingingSessionTest {
         slotSession(h, h.controller).start("a", snoozeEnd, true, entry.ringId)
         runCurrent()
         assertEquals(1, h.sound.starts.size)
-        assertEquals(RingState("a", entry.ringId, snoozeEnd, null, occurrence), h.rawStore.state.first())
+        assertEquals(RingState("a", entry.ringId, snoozeEnd, null, occurrence, snoozeCount = 1), h.rawStore.state.first())
     }
 
     private val bOccurrence = occurrence.plusSeconds(60)
@@ -2101,7 +2101,7 @@ class RingingSessionTest {
         assertEquals(0, h.sound.stops)
         assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
         val entry = h.ledger.all().single()
-        assertEquals(SnoozeEntry(entry.ringId, "b", snoozeEnd, bOccurrence), entry)
+        assertEquals(SnoozeEntry(entry.ringId, "b", snoozeEnd, bOccurrence, 1), entry)
     }
 
     /** X fired here at 11:30:00 and sits in its pre-fire check; the partner's command lands at 11:30:01. */
@@ -2129,7 +2129,7 @@ class RingingSessionTest {
         assertQuiet(h)
         assertEquals(occurrence, h.fired.lastRang("a"))
         val entry = h.ledger.all().single()
-        assertEquals(SnoozeEntry(entry.ringId, "a", snoozeEnd, occurrence), entry)
+        assertEquals(SnoozeEntry(entry.ringId, "a", snoozeEnd, occurrence, 1), entry)
         assertEquals(listOf(Triple("a", entry.ringId, snoozeEnd)), h.armer.armed)
     }
 
@@ -2233,7 +2233,7 @@ class RingingSessionTest {
         assertTrue(h.notifier.ringing.isEmpty())
         assertTrue(h.sound.starts.isEmpty())
         assertEquals(0, h.vibration.starts)
-        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence, snoozeCount = 1), h.rawStore.state.first())
     }
 
     @Test fun ringFireMergingIntoANotifyRingUpgradesItToTheFullSurface() = runTest {
