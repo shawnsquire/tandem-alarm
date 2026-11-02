@@ -114,7 +114,7 @@ some of it can stay behind. Email me (below) and I will delete it.
 **Uninstalling the app without unpairing deletes nothing on the server.** Unpair first.
 
 **To have anything that is left deleted,** email
-[shawn@shawnsquire.me](mailto:shawn@shawnsquire.me). Tell me what you want removed, and,
+[kautiontape@gmail.com](mailto:kautiontape@gmail.com). Tell me what you want removed, and,
 if you can, the display name or pairing details that identify it. The anonymous ID is
 not shown in the app, so I may not be able to find a record without them.
 
@@ -131,4 +131,4 @@ date at the top is updated.
 
 ## Contact
 
-Kautiontape — [shawn@shawnsquire.me](mailto:shawn@shawnsquire.me)
+Kautiontape — [kautiontape@gmail.com](mailto:kautiontape@gmail.com)

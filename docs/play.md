@@ -127,7 +127,7 @@ Why "not shared": Play doesn't count transfers to a service provider (Firebase),
 
 Play: "If your app allows users to create an account from within your app, our User data policy requires that it must also allow users to request for their account to be deleted" ([Play help](https://support.google.com/googleplay/android-developer/answer/13327111)). Its FAQ describes an account as "a unique user identity that developers provide as a user-facing feature", which generally has "a mechanism to verify an identity, such as password, phone number OTP". Tandem's anonymous sign-in has no user-facing identity, nothing to log in with and nothing to verify, so the requirement doesn't apply. This is a judgment call.
 
-The Data safety form still asks about deletion requests. Acceptable mechanisms include "in-app features, contact forms, or a dedicated email alias" ([Play help](https://support.google.com/googleplay/android-developer/answer/10787469)). Here: Unpair in the app, plus the email `shawn@shawnsquire.me` in the privacy policy's "Deleting your data" section. No separate deletion page.
+The Data safety form still asks about deletion requests. Acceptable mechanisms include "in-app features, contact forms, or a dedicated email alias" ([Play help](https://support.google.com/googleplay/android-developer/answer/10787469)). Here: Unpair in the app, plus the email `kautiontape@gmail.com` in the privacy policy's "Deleting your data" section. No separate deletion page.
 
 #### Permission declarations
 
@@ -161,7 +161,7 @@ Grow, Store presence, Main store listing.
   > No account and no ads. Sign-in is anonymous. Unpair at any time to delete the shared data.
 
 - **App category:** Tools.
-- **Contact email:** `<contact email>` (shown publicly on the listing). The privacy policy uses `shawn@shawnsquire.me`.
+- **Contact email:** `kautiontape@gmail.com` (shown publicly on the listing; the privacy policy uses the same address).
 - **Website:** `https://tandem.kautiontape.com/`
 - **Assets** live in `docs/play-assets/`:
   - Phone screenshots, 1080 × 1920, in `docs/play-assets/screenshots/`: `1-alarms.png`, `2-editor.png`, `3-ringing.png`, `4-partner.png`.
