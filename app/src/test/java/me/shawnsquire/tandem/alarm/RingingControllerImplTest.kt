@@ -2141,6 +2141,24 @@ class RingingControllerImplTest {
         assertEquals(2, h.ledger.get("ring-1")!!.snoozeCount)
     }
 
+    @Test fun aMergedMembersSnoozeCountRaisesTheSoundingRingsAndTheNextSnoozeCountsOn() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(occurrenceAt = sevenOhFive))
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX, 2)
+        val c = h.controller()
+        assertEquals(SlotClaim.Merged, c.claimSnoozeResume("ring-A", "a"))
+        assertEquals(2, h.store.state.first()!!.snoozeCount) // the line still reads snoozed
+        c.snooze()
+        assertEquals(3, h.store.state.first()!!.snoozeCount)
+        assertEquals(3, h.ledger.get("ring-B")!!.snoozeCount)
+    }
+
+    @Test fun aMergedMemberWithAFewerSnoozesLeavesTheSoundingRingsCount() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(occurrenceAt = sevenOhFive, snoozeCount = 3))
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX, 1)
+        assertEquals(SlotClaim.Merged, h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(3, h.store.state.first()!!.snoozeCount)
+    }
+
     @Test fun remoteSnoozeCountsToo() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         h.controller().snooze(RingOrigin.REMOTE)

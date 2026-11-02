@@ -413,7 +413,7 @@ class RingingControllerImpl(
                 // targets it, RingMirror sends only linked or partner-joined members, and should it
                 // be linked since, the partner's validation rejects an occurrence it never saw.
                 val member = entry?.let { RingMember(it.alarmId, it.occurrenceAt ?: it.until) }
-                if (mergeLocked(current, ringId, member)) {
+                if (mergeLocked(current, ringId, member, entry?.snoozeCount ?: 0)) {
                     dropFiredSnoozeLocked(ringId)
                     member?.let(onMerged)
                     return@withLock SlotClaim.Merged
@@ -478,11 +478,16 @@ class RingingControllerImpl(
     /**
      * Adds [member] to [current] if it is a different ring that is actively sounding; true when the
      * member is now part of it (already being one counts). The write may throw. False, and nothing
-     * written, for a snoozed or empty slot, the same ring, or no [member].
+     * written, for a snoozed or empty slot, the same ring, or no [member]. The ring's snooze count
+     * rises to the member's [snoozeCount] if that is more (a fresh fire carries 0): the line keeps
+     * "snoozed" and the next snooze counts on from the higher one.
      */
-    private suspend fun mergeLocked(current: RingState?, newRingId: String, member: RingMember?): Boolean {
+    private suspend fun mergeLocked(current: RingState?, newRingId: String, member: RingMember?, snoozeCount: Int = 0): Boolean {
         if (member == null || current == null || current.ringId == newRingId || current.snoozedUntil != null) return false
-        if (!current.isPrimary(member) && member !in current.merged) ringStateStore.set(current.copy(merged = current.merged + member))
+        val joins = !current.isPrimary(member) && member !in current.merged
+        if (joins || snoozeCount > current.snoozeCount) {
+            ringStateStore.set(current.copy(merged = if (joins) current.merged + member else current.merged, snoozeCount = maxOf(current.snoozeCount, snoozeCount)))
+        }
         return true
     }
 
