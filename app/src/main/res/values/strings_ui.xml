@@ -41,7 +41,6 @@
     <string name="edit_wallpaper_thumbnail">Wallpaper preview</string>
     <string name="edit_wallpaper_preview">Preview</string>
     <string name="edit_text_position">Text: %1$s</string>
-    <string name="ring_preview_alarm_line">%1$s alarm</string>
     <string name="ring_preview_text_position">Text position</string>
     <string name="ring_preview_top">Top</string>
     <string name="ring_preview_middle">Middle</string>

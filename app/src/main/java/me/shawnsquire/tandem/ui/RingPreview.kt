@@ -49,11 +49,15 @@ import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.alarm.RingScreenButtons
 import me.shawnsquire.tandem.alarm.RingScreenLayout
 import me.shawnsquire.tandem.alarm.RingScreenText
+import me.shawnsquire.tandem.alarm.alarmTimeLine
 import me.shawnsquire.tandem.alarm.applyGesture
 import me.shawnsquire.tandem.alarm.decodeSampled
+import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.WallpaperFrame
 import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -68,7 +72,7 @@ private val BUTTONS_CLEARANCE = 80.dp + 16.dp + 96.dp + 16.dp + 24.dp
  * clock, a sample alarm line for [hour]:[minute] and [label], and the inert Snooze/Stop buttons,
  * laid out exactly as the ringing activity does. Drag and pinch move the image when [gesturesEnabled];
  * [showPositionSelector] offers Top/Middle/Bottom for the text block. Save reports the draft frame
- * (null while untouched or reset, and [initialFrame] unchanged without gestures) and position;
+ * ([initialFrame] while untouched, or without gestures; null after Reset) and position;
  * Reset returns the position to [resetTextPosition]. Cancel and Back discard it. The wallpaper is [wallpaperPath], or the plain gradient when null or unreadable.
  *
  * It is a [Dialog] drawn edge-to-edge (`usePlatformDefaultWidth = false`, `decorFitsSystemWindows = false`),
@@ -134,7 +138,14 @@ private fun RingPreviewContent(
             delay(1_000)
         }
     }
-    val alarmLine = stringResource(R.string.ring_preview_alarm_line, formatter.format(LocalTime.of(hour, minute)))
+    // The ring's own line for a synthetic ring at the next [hour]:[minute], so the two cannot drift apart.
+    val alarmLine = remember(hour, minute, formatter) {
+        val zone = ZoneId.systemDefault()
+        val now = ZonedDateTime.now(zone)
+        var at = now.with(LocalTime.of(hour, minute))
+        if (at.isBefore(now)) at = at.plusDays(1)
+        alarmTimeLine(RingState("preview", "preview", now.toInstant(), null, occurrenceAt = at.toInstant())) { formatter.format(it.atZone(zone)) }
+    }
 
     var frame by remember { mutableStateOf(initialFrame) }
     var position by remember { mutableStateOf(initialTextPosition) }
@@ -145,7 +156,7 @@ private fun RingPreviewContent(
 
     Box(Modifier.onSizeChanged { size = it }) {
         RingScreenLayout(
-            wallpaper = bitmap?.asImageBitmap(),
+            wallpaper = bitmap?.let { remember(it) { it.asImageBitmap() } },
             frame = frame,
             textPosition = position,
             text = { RingScreenText(formatter.format(clock), alarmLine, listOfNotNull(label.ifBlank { null }), null, null) },

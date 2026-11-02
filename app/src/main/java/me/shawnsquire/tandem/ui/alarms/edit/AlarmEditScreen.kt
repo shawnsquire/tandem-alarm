@@ -74,6 +74,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -442,6 +443,8 @@ private fun DayChips(days: Set<DayOfWeek>, onToggleDay: (DayOfWeek) -> Unit, mod
                 Box(Modifier.padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
                     Text(
                         dayLabel(day),
+                        // The toggle's description already names the day, so TalkBack reads "Monday, checked", not "Mo" too.
+                        modifier = Modifier.clearAndSetSemantics {},
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                         softWrap = false,
