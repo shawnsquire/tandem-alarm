@@ -191,13 +191,24 @@ class RingingSession(
     /**
      * Whether the vibration now runs with [pattern]. Idempotent per pattern: the fire path vibrates
      * before claiming the slot, and ring() must not start it again; another pattern switches it. False
-     * (no vibrator, or the start threw) makes the caller ring with sound (I1).
+     * (no vibrator, or the start threw) makes the caller ring with sound (I1). A start that threw
+     * tries Pulse, the one waveform every ring used before patterns, but still answers false.
      */
     private suspend fun startVibration(what: String, pattern: VibrationPattern): Boolean {
         if (vibratingWith == pattern) return true
-        val started = guarded(what, false) { vibration.start(pattern) }
+        val started = try {
+            vibration.start(pattern)
+        } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
+            log("$what failed; ringing with sound", e)
+            vibratingWith = null
+            if (pattern != VibrationPattern.PULSE && guarded("$what (Pulse)", false) { vibration.start(VibrationPattern.PULSE) }) {
+                vibratingWith = VibrationPattern.PULSE
+            }
+            return false
+        }
         vibratingWith = pattern.takeIf { started }
-        if (!started) log("$what did not start; ringing with sound", null)
+        if (!started) log("$what: no vibrator; ringing with sound", null)
         return started
     }
 
@@ -647,12 +658,13 @@ class RingingSession(
      * when the pattern differs. Vibration first: sound setup must never delay or prevent it. A
      * vibrate-only ring plays no sound at all (no candidates, no system defaults, no bundled tone)
      * only while its vibration actually runs: with no vibrator, or a start that threw, it rings with
-     * sound (I1). Never stops an output: a member leaving doesn't quiet a ring that is sounding.
+     * sound (I1). Returns whether the vibration runs with [outputs]' pattern.
      */
-    private suspend fun startRingOutputs() {
+    private suspend fun startRingOutputs(): Boolean {
         val out = outputs
         val vibrating = out.vibrationOn && startVibration("vibration", out.vibration)
         if (out.soundOn || !vibrating) startSound()
+        return vibrating
     }
 
     /**
@@ -807,9 +819,11 @@ class RingingSession(
      * A merge, promotion or split-out changed who rings ([s]'s alarm ids differ from those [outputs]
      * came from): reads each member (bounded by [RELABEL_TIMEOUT]; one unread or unreadable counts as
      * [RingOutputs.UNKNOWN], I1, as in [watchMembers]), combines them with [mergedOutputs] and starts
-     * what the result adds on the full surface: sound from the first member with it on, or vibration
-     * with the result's pattern. An unchanged result changes nothing, so no re-vibrate. On the Notify
-     * surface or while silent the result is only kept, for [ringInFull] or [unsilence]. Latest wins.
+     * the result on the full surface: sound from the first member with it on, vibration with the
+     * result's pattern, and an output no member has on any more (a split-out or promotion) stops. Each
+     * stop only while the other output really runs, so the ring never goes silent and still (I1). An
+     * unchanged result changes nothing, so no re-vibrate. On the Notify surface or while silent the
+     * result is only kept, for [ringInFull] or [unsilence]. Latest wins.
      */
     private fun reconcileOutputs(s: RingState) {
         val ids = listOf(s.alarmId) + s.merged.map { it.alarmId }
@@ -831,7 +845,15 @@ class RingingSession(
             outputs = merged.outputs
             soundFrom = merged.soundFrom?.let { ids[it] to members[it] }
             if (finished || silencing || !fullSurface) return@launch
-            startRingOutputs()
+            val vibrating = startRingOutputs()
+            if (!outputs.soundOn && vibrating && soundStarted) {
+                guardedNow("sound stop") { sound.stop() }
+                soundStarted = false
+            }
+            if (!outputs.vibrationOn && soundStarted && vibratingWith != null) {
+                guardedNow("vibration stop") { vibration.stop() }
+                vibratingWith = null
+            }
         }.also { jobs += it }
     }
 

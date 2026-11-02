@@ -2892,4 +2892,77 @@ class RingingSessionTest {
         assertEquals(listOf(VibrationPattern.HEARTBEAT), h.vibration.patterns)
         assertTrue(h.sound.starts.isEmpty())
     }
+
+    @Test fun aVibrationStartThatThrowsTriesPulseAndStillRingsWithSound() = runTest {
+        val h = harness(alarms = listOf(outputs(sound = false, pattern = VibrationPattern.ESCALATING)))
+        val failing = object : AlarmVibration {
+            val patterns = mutableListOf<VibrationPattern>()
+            override fun start(pattern: VibrationPattern): Boolean {
+                patterns += pattern
+                if (pattern != VibrationPattern.PULSE) throw IllegalArgumentException("waveform")
+                return true
+            }
+            override fun stop() {}
+        }
+        RingingSession(
+            h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler, h.controller,
+            h.sound, failing, h.notifier, backgroundScope, StandardTestDispatcher(testScheduler), { clockNow },
+            { "ring-1" }, onFinished = {},
+        ).start("a", occurrence, false, null)
+        runCurrent()
+        // Early, then again in ring(): each failed start falls back to Pulse (a no-op on the arbiter the second time).
+        assertEquals(listOf(VibrationPattern.ESCALATING, VibrationPattern.PULSE, VibrationPattern.ESCALATING, VibrationPattern.PULSE), failing.patterns)
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    private suspend fun TestScope.splitOut(h: Harness) {
+        h.fire(occ = occurrence)
+        runCurrent()
+        join(h, "b", bOccurrence)
+        runCurrent()
+        h.controller.dismissOccurrence("b", bOccurrence, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(RingState("a", "ring-1", clockNow, null, occurrence), h.rawStore.state.first())
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun theLastSoundMemberSplittingOutQuietsAVibrateOnlyRing() = runTest {
+        val h = harness(alarms = listOf(outputs("a", sound = false, pattern = VibrationPattern.HEARTBEAT), outputs("b")))
+        splitOut(h)
+        assertEquals(listOf(listOf("content://tone/b")), h.sound.starts)
+        assertEquals(1, h.sound.stops)
+        assertEquals(listOf(VibrationPattern.HEARTBEAT), h.vibration.patterns)
+        assertEquals(0, h.vibration.stops)
+    }
+
+    @Test fun aSplitOutNeverQuietsTheSoundWhileTheVibrationCantRun() = runTest {
+        val h = harness(alarms = listOf(outputs("a", sound = false, pattern = VibrationPattern.HEARTBEAT), outputs("b")))
+        h.vibration.hasVibrator = false
+        splitOut(h)
+        assertEquals(1, h.sound.starts.size) // a's own, since nothing vibrates (I1)
+        assertEquals(0, h.sound.stops)
+    }
+
+    @Test fun theLastVibratingMemberSplittingOutStopsTheVibration() = runTest {
+        val h = harness(alarms = listOf(outputs("a", vibrate = false), outputs("b", pattern = VibrationPattern.RAPID)))
+        splitOut(h)
+        assertEquals(listOf(VibrationPattern.RAPID), h.vibration.patterns)
+        assertEquals(1, h.vibration.stops)
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.sound.stops)
+    }
+
+    @Test fun aPromotedMembersPatternTakesOver() = runTest {
+        val h = harness(alarms = listOf(outputs("a"), outputs("b", pattern = VibrationPattern.ESCALATING)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE), h.vibration.patterns) // the primary's while it rings
+        h.controller.dismissOccurrence("a", occurrence, RingOrigin.REMOTE) // b promoted
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE, VibrationPattern.ESCALATING), h.vibration.patterns)
+        assertEquals(1, h.sound.starts.size) // b has sound too: a's tone plays on
+        assertEquals(0, h.sound.stops)
+    }
 }
