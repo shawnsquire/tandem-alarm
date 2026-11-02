@@ -97,8 +97,8 @@ class SwitchableRingMirrorPort(private val outbox: MirrorOutbox = InMemoryMirror
  * Loops the first candidate URI that opens. With [appendSystemDefaults] the adapter tries the
  * system defaults after [candidates]; a linked ring whose candidates already carry the system alarm
  * Uri, in the order the media cache chose, passes false. The bundled tone is always last.
- * [onExhausted] runs, on any thread, when nothing in that chain played, the bundled tone included:
- * the session then vibrates with Pulse if nothing vibrates (I1).
+ * [onExhausted] runs, on any thread but never synchronously from [start], when nothing in that
+ * chain played, the bundled tone included: the session then vibrates with Pulse if nothing vibrates (I1).
  */
 interface AlarmSound {
     fun start(candidates: List<String>, appendSystemDefaults: Boolean = true, onExhausted: () -> Unit = {})

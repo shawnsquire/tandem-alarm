@@ -3160,4 +3160,87 @@ class RingingSessionTest {
         runCurrent()
         assertEquals(0, h.vibration.starts)
     }
+
+    @Test fun aMergeAfterExhaustionNeverStopsThePulse() = runTest {
+        val h = harness(alarms = listOf(outputs("a", vibrate = false), outputs("b", vibrate = false)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        h.sound.exhausted.single()()
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE), h.vibration.patterns)
+        // b is sound-only too: the result is still sound on, vibration off, but the sound isn't playing.
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(RingMember("b", bOccurrence)), h.rawStore.state.first()!!.merged)
+        assertEquals(0, h.vibration.stops)
+        // Nor when b splits out again.
+        h.controller.dismissOccurrence("b", bOccurrence, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(0, h.vibration.stops)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun anExhaustionFromASoundStartSinceReplacedIsIgnored() = runTest {
+        val h = harness(alarms = listOf(outputs("a", vibrate = false), outputs("b", vibrate = false)))
+        val bAt = occurrence.plusSeconds(600)
+        // b's claim lands just before auto-silence's dismiss, so the dismiss is refused and the ring sounds again.
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(2, h.sound.starts.size)
+        h.sound.exhausted.first()() // the first run's, arriving late while the second plays
+        runCurrent()
+        assertEquals(0, h.vibration.starts)
+        h.sound.exhausted.last()() // the run that is playing
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE), h.vibration.patterns)
+    }
+
+    @Test fun anExhaustionWhileSilencingDoesNothing() = runTest {
+        val h = harness(alarms = listOf(outputs(vibrate = false)))
+        val gate = CompletableDeferred<Boolean>()
+        val slot = AutoSilenceSlot(h.controller) { _, _ -> gate.await() } // the dismiss waits on the lock
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertTrue(h.sound.stops >= 1) // silencing
+        h.sound.exhausted.single()()
+        runCurrent()
+        assertEquals(0, h.vibration.starts)
+        gate.complete(true)
+        runCurrent()
+        assertEquals(1, h.finished)
+        assertEquals(0, h.vibration.starts)
+    }
+
+    @Test fun anExhaustionOnTheFallbackRingKeepsItsPulse() = runTest {
+        val h = harness(alarms = listOf(outputs(vibrate = false)), isArmed = { throw IllegalStateException("bug") })
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE), h.vibration.patterns)
+        h.sound.exhausted.single()()
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE), h.vibration.patterns)
+        assertEquals(0, h.vibration.stops)
+    }
+
+    @Test fun aVibratingMemberLeavingAfterExhaustionLeavesTheVibrationRunning() = runTest {
+        val h = harness(alarms = listOf(outputs("a", vibrate = false), outputs("b", sound = false, pattern = VibrationPattern.RAPID)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        h.sound.exhausted.single()()
+        runCurrent()
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE, VibrationPattern.RAPID), h.vibration.patterns) // b's pattern takes over
+        // b leaves: the result is sound on, vibration off, but the sound still isn't playing.
+        h.controller.dismissOccurrence("b", bOccurrence, RingOrigin.REMOTE)
+        runCurrent()
+        assertEquals(0, h.vibration.stops)
+        assertEquals(0, h.finished)
+    }
 }

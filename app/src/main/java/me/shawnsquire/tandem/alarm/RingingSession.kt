@@ -81,6 +81,13 @@ class RingingSession(
     private var soundStarted = false
     /** Counts sound starts, so an exhaustion reported for one the session has since stopped is ignored. */
     private var soundRun = 0
+    /**
+     * The sound failed (its start threw, or the adapter exhausted the chain), so [soundStarted] doesn't
+     * mean anything plays: no vibration may then stop. Kept until [silence] stops both outputs; the
+     * outputs start afresh after it. Never cleared by a later start (nothing reports that it plays) or
+     * by a vibration start (that vibration may still turn off with a member).
+     */
+    private var soundFailed = false
     private var silencing = false
 
     /**
@@ -254,6 +261,7 @@ class RingingSession(
         guardedNow("vibration stop") { vibration.stop() }
         vibratingWith = null
         soundStarted = false
+        soundFailed = false
         if (ringId != null) {
             // The dismiss's clear must not end the session before the dismiss is done.
             observeJob?.cancel()
@@ -712,9 +720,14 @@ class RingingSession(
         }
     }
 
-    /** Sound failed: Pulse, unless something already vibrates or the ring ended or went silent (I1). */
+    /**
+     * Sound failed: recorded in [soundFailed], so no later member change stops the vibration, and Pulse
+     * unless something already vibrates. Nothing once the ring ended or went silent (I1).
+     */
     private suspend fun noSound(what: String) {
-        if (finished || silencing || vibratingWith != null) return
+        if (finished || silencing) return
+        soundFailed = true
+        if (vibratingWith != null) return
         log("$what; vibrating with Pulse", null)
         startVibration("vibration", VibrationPattern.PULSE)
     }
@@ -873,6 +886,8 @@ class RingingSession(
                     }
                 } ?: log("member reads timed out; unread members ring in full", null)
             }
+            // A newer look (or the Notify upgrade's own read) has taken over: this result is stale.
+            if (outputIds != ids) return@launch
             adoptOutputs(ids, members.toList())
             if (finished || silencing || !fullSurface) return@launch
             val vibrating = startRingOutputs()
@@ -880,16 +895,20 @@ class RingingSession(
                 guardedNow("sound stop") { sound.stop() }
                 soundStarted = false
             }
-            if (!outputs.vibrationOn && soundStarted && vibratingWith != null) {
+            // Not while the sound has failed: that vibration is all the ring has left (I1).
+            if (!outputs.vibrationOn && soundStarted && !soundFailed && vibratingWith != null) {
                 guardedNow("vibration stop") { vibration.stop() }
                 vibratingWith = null
             }
         }.also { jobs += it }
     }
 
-    /** [ringOutputs] for [ids]' rows ([members], same order) become what the full surface drives. */
+    /**
+     * [ringOutputs] for [ids]' rows ([members], same order) become what the full surface drives.
+     * Leaves [outputIds] to [reconcileOutputs]: the ids it last launched for stay the ones a running
+     * job may adopt, so the Notify upgrade's read never makes a newer job's result look stale.
+     */
     private fun adoptOutputs(ids: List<String>, members: List<Alarm?>) {
-        outputIds = ids
         val merged = ringOutputs(members)
         outputs = merged.outputs
         soundFrom = merged.soundFrom?.let { ids[it] to members[it] }
