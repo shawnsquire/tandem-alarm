@@ -43,7 +43,8 @@ Alarm.link = AlarmLink(
   pendingBoth?,                      // {type, occurrenceAt?, commandId}: a "both of us" command
                                      // not yet reflected in the owner's doc
   overrideLabel?, overrideRingtoneUri?, overrideWallpaperPath?,
-  overrideVibration?, overrideVibrationOn?, overrideSoundOn?)   // null = use the owner's
+  overrideVibration?, overrideVibrationOn?, overrideSoundOn?,
+  overrideWallpaperFrame?, overrideTextPosition?)   // null = use the owner's
 ```
 
 A linked row has its own local `id` (a new UUID, like any alarm); `link.ownerAlarmId` names the owner's alarm and is the key in commands and `links`. Its `hour`, `minute`, `days` and `enabled` are copied from the owner's published alarm and are only ever written by `LinkSync`. The joiner's own state lives in separate fields so a sync never overwrites it:
@@ -58,6 +59,8 @@ A linked row has its own local `id` (a new UUID, like any alarm); `link.ownerAla
 **Owner's late-ring answer.** The owner's `Alarm` gains `lateRing = {occurrenceAt, ring}`, the answer to the "hasn't picked up the change" prompt (see Decisions made during the build). It is the owner's own data, stored only before `occurrenceAt`, and `LinkSync` copies it to the joiner as an owner-copied field. An own row's `lateRing` never affects the owner's own fires.
 
 **Vibration and sound.** The owner's `vibration`, `vibrationOn` and `soundOn` are owner-copied fields, written only by `LinkSync`. The three overrides are the joiner's own, so a sync never overwrites them. A ring uses the override when it is set and the copied value otherwise (`effectiveOutputs`). If that leaves both switches off, the ring uses sound on and vibration on, with the effective pattern.
+
+**Wallpaper frame and text position.** The owner's `wallpaperFrame` and `textPosition` are owner-copied fields, written only by `LinkSync`. `overrideWallpaperFrame` goes with `overrideWallpaperPath`: a frame belongs to one image, so the override's frame applies only while the override image is used. `overrideTextPosition` is independent of the image; null means the owner's.
 
 Because a linked alarm is an ordinary row, the scheduler, the direct-boot mirror (`AlarmMirror`), boot re-arming, the ringing service and the Health check need no separate path. The mirror must carry `link` so a locked boot still knows a ring is linked.
 
@@ -88,6 +91,9 @@ households/{hid}/devices/{uid}
   alarms[].vibration, vibrationOn, soundOn          // the owner's ring outputs; copied by LinkSync. A missing field or
                                                     // an unknown pattern name (an older or newer build) reads as
                                                     // PULSE, on, on
+  alarms[].textPosition                             // TOP | MIDDLE | BOTTOM; copied by LinkSync. Missing or unknown reads as MIDDLE
+  alarms[].wallpaperFrame: { zoom, x, y }?          // absent when centred; copied by LinkSync. Malformed reads as null, valid is sanitised
+  defaultWallpaperFrame: { zoom, x, y } | null      // frames defaultWallpaper; same shape and rules
   alarms[].soloSkippedOccurrenceAt                  // display only; never copied by LinkSync
   alarms[].lateRing: { occurrenceAt, ring }         // the owner's answer to the late-ring prompt; copied by LinkSync
   ringing.occurrenceAt, ringing.merged
@@ -169,8 +175,9 @@ A received `STOP_RINGING{occurrenceAt: X}` or `SNOOZE{X, T}` is checked in the o
 - **Alarms screen:** one list, own and joined, sorted by time. A joined row shows a partner chip ("Shawn's"), a link icon, a Ring/Notify tag, a time that can't be edited, and states such as "Shawn skipped" or "Skipped for you". Tap opens the **Linked alarm sheet**: Ring/Notify, message / photo overrides, a Sound row (ringtone override and switch) and a Vibration row (pattern and switch), each defaulting to "Use Shawn's" (the Vibration row's is in its pattern dialog and shows only when an override is set), Skip ("Just me or both of us?"), Leave. The row's switch asks the same question.
 - **Own rows:** a "<partner> joined" badge when linked. Alarm edit gets "Invite <partner>", or "<partner> joined" when already linked. Skip on a joined own alarm asks "Just me or both of us?"; a solo skip shows "Skipped for you". The joiner's row and Partner tab show it as "Shawn's skipping, you're still on".
 - **Partner tab:** each partner alarm gets Join, or Joined (opens the sheet). Existing Skip / Off / Stop are unchanged. When the partner's ring is one of your own alarms that they joined, the banner adds "Your 6:30, joined". Stop then targets that alarm, whether it is their primary ring or a merged member: it dismisses your own copy locally if it is sounding or snoozed (the mirror sends the one STOP), and otherwise sends STOP_RINGING with your alarm id and the member's occurrence. Their own alarms in the ring keep sounding.
-- **Ringing screen:** a joined ring shows "With Shawn" and the resolved label and photo; a merged ring lists every label. When the other phone stopped or snoozed it, the screen shows "Shawn dismissed" or "Shawn snoozed to 6:40" briefly before closing.
+- **Ringing screen:** a joined ring shows "With Shawn" and the resolved label and photo, framed and with the text placed as the resolution below says; a merged ring lists every label. When the other phone stopped or snoozed it, the screen shows "Shawn dismissed" or "Shawn snoozed to 6:40" briefly before closing.
 - **Notifications:** invite (Join / Decline), owner deleted a joined alarm, owner turned off a joined alarm, a "both of us" command rejected, the owner's late-ring prompt (Ring at / Skip), Notify-mode ring (alarm category, Snooze / Stop).
+- **Linked alarm sheet, preview:** the wallpaper row opens the same full-screen preview as the editor. With a joiner override it shows that image and its frame, which can be moved. Without one it shows what would ring (the owner's image and framing, or the owner's default and its framing), which can't be framed here. The Top / Middle / Bottom selector is always there. "Use Shawn's" restores the owner's image and framing and keeps the joiner's text position choice.
 - **Health check:** "Linked media downloaded", "Storage reachable".
 
 ## Error handling
@@ -256,6 +263,14 @@ These were settled while the units were built and integrated. Where one differs 
 - Override files count as references in `MediaOrphanSweeper`, so a joiner's override isn't swept after an hour.
 - Room columns for the link are flat and nullable, because `ALTER TABLE ADD COLUMN` can't add an embedded NOT NULL column without a default.
 - Sound overrides that can't be read fall to the next candidate, and the bundled tone is always last.
+- **Frames and text position on a joined alarm** (Decisions for the framing work, 2026-11-02).
+  - Each wallpaper candidate carries its own frame through the resolution order: joiner override and its frame, then the owner's per-alarm image and frame, then the owner's default and its frame, then the joiner's default and its frame. A frame never moves to another image. The text position resolves apart from the image: the joiner's override if set, else the owner's.
+  - `LinkSync` copies the owner's `wallpaperFrame` and `textPosition` into the joiner's row and leaves both overrides alone (I2). The owner's default-wallpaper frame is stored in the joiner's linked-media cache beside the refs, so a ring finds it without reading the partner's doc.
+  - Frames and positions are outside the media refs. A change publishes the device doc and uploads nothing, and the media hash doesn't change.
+  - The sheet saves the position as an override only when it differs from the owner's, so a joiner who picks the owner's position follows later owner changes.
+  - A joiner on an older build ignores the new fields and rings centred with the text in the middle. An owner on an older build omits them, and the joiner reads centred and MIDDLE.
+  - The locked-boot mirror carries the effective text position and no frame (wallpapers are never available before first unlock).
+- **Snooze count on a joined ring.** Both phones apply the same snooze, so each increments `RingState.snoozeCount` for a local snooze and for a received `SNOOZE`, and the counts agree without a new Firestore field. A snooze that only moves an existing snooze's end (rule 4 settling on the later T) isn't counted. A merged ring shows the primary's count. A member split out of a merged ring on a snooze, local or received, carries the ring's new count into its ledger entry, and a ring that resumes from a parked snooze starts from it.
 
 ## Known limitations
 
@@ -272,6 +287,8 @@ These were settled while the units were built and integrated. Where one differs 
 - The prompt's X is the joiner's copy with skips ignored. When that occurrence is skipped (the owner's shared skip or the joiner's own), the prompt asks about the skipped one, and the next one can still ring late without a prompt. It fails safe: it rings.
 - Phones in different time zones never match an answer, because Xj is computed in the owner's zone. The joiner rings late as before.
 - A joiner that hasn't been unlocked since a reboot ignores a Skip, because the direct-boot mirror doesn't carry `lateRing` and the late ring rings.
+- The two phones' snooze counts can differ if one of them missed a snooze command (for example it was offline or locked since a reboot). Each shows the number it applied.
+- A framed wallpaper is not shown on a joined ring before first unlock; the text position still is.
 
 ## Testing
 
