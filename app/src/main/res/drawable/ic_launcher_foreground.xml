@@ -4,7 +4,7 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Whole drawing sits at 0.76 so the ringing arcs stay inside the 66 dp safe zone. -->
+    <!-- Whole drawing sits at 0.76 so the ringing arcs fit the 36 dp visible mask. They reach about 35 dp from the centre, just outside the 33 dp safe zone. -->
     <group
         android:pivotX="54"
         android:pivotY="54"
