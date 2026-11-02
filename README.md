@@ -137,7 +137,7 @@ To install, use one of:
 
 - Google Play, closed testing for now: open the opt-in link (`<Play opt-in link>`), then install from the Play Store.
 - The APK from the [Releases page](https://github.com/shawnsquire/tandem-alarm/releases), opened on the phone.
-- [Obtainium](https://obtainium.imranr.dev/), tracking `https://github.com/shawnsquire/tandem-alarm`. It installs new versions from GitHub Releases and ignores the `.aab`. An entry made for the old app refuses the new id ("Downloaded package ID does not match existing app ID"): delete the entry, unpair and uninstall the old app, then add the repo again.
+- [Obtainium](https://obtainium.imranr.dev/), tracking `https://github.com/shawnsquire/tandem-alarm`. It installs new versions from GitHub Releases and ignores the `.aab` (it takes only `.apk`, `.xapk`, `.apkm` and `.apks` assets, [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/services/apk_filter_service.dart#L10-L15)). An entry made for the old app refuses the new id ("Downloaded package ID does not match existing app ID", [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/assets/translations/en.json#L48)): delete the entry, unpair and uninstall the old app, then add the repo again.
 
 Play and GitHub builds are meant to carry the same certificate and update each other; [docs/play.md](docs/play.md) step 2 sets that up and checks it. Updates must be signed with the same key as the installed app, or Android refuses them.
 

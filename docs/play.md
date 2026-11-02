@@ -8,7 +8,7 @@ From v0.5.0 on, a tag builds `com.kautiontape.tandem`, not the old app.
 
 - **Register the new id in Firebase first (step 1).** Until `GOOGLE_SERVICES_JSON` holds a client for `com.kautiontape.tandem`, the release build fails: the google-services plugin finds no client for the package.
 - **New app: unpair in the old app and uninstall it first.** If both are installed, both ring.
-- **Obtainium:** an Obtainium entry for this repo is tied to the old id. Obtainium refuses the new APK ("Downloaded package ID does not match existing app ID"), so it never installs the two side by side. Delete the entry in Obtainium, unpair and uninstall the old app, then add `https://github.com/shawnsquire/tandem-alarm` again, or install from Play instead. Obtainium only looks at `.apk`-type assets, so the `.aab` on each release doesn't confuse it.
+- **Obtainium:** an Obtainium entry for this repo is tied to the old id. Obtainium refuses the new APK ("Downloaded package ID does not match existing app ID", [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/assets/translations/en.json#L48)), so it never installs the two side by side. Delete the entry in Obtainium, unpair and uninstall the old app, then add `https://github.com/shawnsquire/tandem-alarm` again, or install from Play instead. Obtainium only looks at `.apk`, `.xapk`, `.apkm` and `.apks` assets ([Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/services/apk_filter_service.dart#L10-L15)), so the `.aab` on each release doesn't confuse it.
 
 ## One-time setup
 
