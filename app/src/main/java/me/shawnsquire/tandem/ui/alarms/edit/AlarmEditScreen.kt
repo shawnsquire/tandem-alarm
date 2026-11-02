@@ -60,6 +60,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -251,8 +253,10 @@ fun AlarmEditScreen(
                     supportingContent = { Text(state.ringtoneTitle) },
                     trailingContent = {
                         // The last output still on can't be switched off.
+                        val switchLabel = stringResource(R.string.edit_ringtone)
                         Switch(
                             checked = state.soundOn,
+                            modifier = Modifier.semantics { contentDescription = switchLabel },
                             onCheckedChange = onSoundOnChange,
                             enabled = !locked && (!state.soundOn || state.vibrationOn),
                         )
@@ -278,8 +282,10 @@ fun AlarmEditScreen(
                 headlineContent = { Text(stringResource(R.string.edit_vibration)) },
                 supportingContent = { Text(vibrationPatternName(state.vibration)) },
                 trailingContent = {
+                    val switchLabel = stringResource(R.string.edit_vibration)
                     Switch(
                         checked = state.vibrationOn,
+                        modifier = Modifier.semantics { contentDescription = switchLabel },
                         onCheckedChange = onVibrationOnChange,
                         enabled = !locked && (!state.vibrationOn || state.soundOn),
                     )

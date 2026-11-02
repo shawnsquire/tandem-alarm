@@ -52,7 +52,7 @@ data class LinkedSheetState(
     val overrideRingtone: String? = null,
     val ringtoneTitle: String = "",
     val overrideWallpaper: String? = null,
-    /** What rings on this phone: each override, else the owner's (see `effectiveOutputs`). */
+    /** The switches as set on this phone: each override, else the owner's. Both can read off if the owner caused it; a ring then uses both on. */
     val soundOn: Boolean = true,
     val vibrationOn: Boolean = true,
     val vibration: VibrationPattern = VibrationPattern.PULSE,
@@ -147,6 +147,8 @@ class LinkedAlarmViewModel(
             if (alarm == null || link == null) return@combine LinkedSheetState(loaded = true, closed = true)
             val now = clock.instant()
             val outputs = alarm.effectiveOutputs()
+            val soundOn = link.overrideSoundOn ?: alarm.soundOn
+            val vibrationOn = link.overrideVibrationOn ?: alarm.vibrationOn
             LinkedSheetState(
                 loaded = true,
                 hour = alarm.hour, minute = alarm.minute, daysText = formatDays(alarm.days),
@@ -156,7 +158,7 @@ class LinkedAlarmViewModel(
                 overrideLabel = link.overrideLabel,
                 overrideRingtone = link.overrideRingtoneUri,
                 overrideWallpaper = link.overrideWallpaperPath,
-                soundOn = outputs.soundOn, vibrationOn = outputs.vibrationOn, vibration = outputs.vibration,
+                soundOn = soundOn, vibrationOn = vibrationOn, vibration = outputs.vibration,
                 overrideSoundOn = link.overrideSoundOn, overrideVibrationOn = link.overrideVibrationOn,
                 overrideVibration = link.overrideVibration,
                 armed = isArmed(alarm),
@@ -321,7 +323,7 @@ class LinkedAlarmViewModel(
             overrideLock.withLock {
                 val row = currentRow() ?: return@withLock
                 val link = row.link ?: return@withLock
-                if (!on && !row.effectiveOutputs().vibrationOn) return@withLock
+                if (!on && !(link.overrideVibrationOn ?: row.vibrationOn)) return@withLock
                 saveOutputOverrides(link, soundOn = on)
             }
         }
@@ -333,7 +335,7 @@ class LinkedAlarmViewModel(
             overrideLock.withLock {
                 val row = currentRow() ?: return@withLock
                 val link = row.link ?: return@withLock
-                if (!on && !row.effectiveOutputs().soundOn) return@withLock
+                if (!on && !(link.overrideSoundOn ?: row.soundOn)) return@withLock
                 saveOutputOverrides(link, vibrationOn = on)
             }
         }
@@ -341,26 +343,43 @@ class LinkedAlarmViewModel(
 
     /** Picks [pattern] for this phone and plays one cycle of it, unless vibration is off. */
     fun selectVibration(pattern: VibrationPattern) {
+        val generation = previewGeneration
         viewModelScope.launch {
+            val row = currentRow() ?: return@launch
+            val link = row.link ?: return@launch
+            // Played before the write and outside the lock, so a slow write can't delay it past a stop.
+            if (generation == previewGeneration && (link.overrideVibrationOn ?: row.vibrationOn)) preview.play(pattern)
             overrideLock.withLock {
-                val row = currentRow() ?: return@withLock
-                val link = row.link ?: return@withLock
-                if (row.effectiveOutputs().vibrationOn) preview.play(pattern)
-                saveOutputOverrides(link, vibration = pattern)
+                val fresh = currentRow()?.link ?: return@withLock
+                saveOutputOverrides(fresh, vibration = pattern)
             }
         }
     }
 
     /** The preset list closed. */
-    fun stopPreview() = preview.stop()
+    fun stopPreview() {
+        previewGeneration++
+        preview.stop()
+    }
+
+    /** Bumped by every stop, so a tap still waiting to play when the list closed stays silent. */
+    private var previewGeneration = 0
 
     /** Clears the tone and the sound switch overrides, whichever are set. */
     fun useOwnersSound() {
         viewModelScope.launch {
             overrideLock.withLock {
-                val link = currentRow()?.link ?: return@withLock
+                val row = currentRow() ?: return@withLock
+                val link = row.link ?: return@withLock
                 if (link.overrideRingtoneUri != null && !saveOverrides(link, ringtone = null)) return@withLock
-                if (link.overrideSoundOn != null) saveOutputOverrides(link, soundOn = null)
+                if (link.overrideSoundOn != null) {
+                    // If the owner's sound is off and vibration is off here, keep vibration on rather than show both off.
+                    val vibrationOn = (link.overrideVibrationOn ?: row.vibrationOn) || row.soundOn
+                    saveOutputOverrides(
+                        link, soundOn = null,
+                        vibrationOn = if (vibrationOn) link.overrideVibrationOn else true,
+                    )
+                }
             }
         }
     }
@@ -369,9 +388,15 @@ class LinkedAlarmViewModel(
     fun useOwnersVibration() {
         viewModelScope.launch {
             overrideLock.withLock {
-                val link = currentRow()?.link ?: return@withLock
+                val row = currentRow() ?: return@withLock
+                val link = row.link ?: return@withLock
                 if (link.overrideVibration != null || link.overrideVibrationOn != null) {
-                    saveOutputOverrides(link, vibrationOn = null, vibration = null)
+                    // If the owner's vibration is off and sound is off here, keep sound on rather than show both off.
+                    val soundOn = (link.overrideSoundOn ?: row.soundOn) || row.vibrationOn
+                    saveOutputOverrides(
+                        link, vibrationOn = null, vibration = null,
+                        soundOn = if (soundOn) link.overrideSoundOn else true,
+                    )
                 }
             }
         }

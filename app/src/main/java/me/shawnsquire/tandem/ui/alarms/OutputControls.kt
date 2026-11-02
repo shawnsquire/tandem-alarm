@@ -20,6 +20,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.schedule.VibrationPattern
 
@@ -71,7 +74,16 @@ fun VibrationPatternDialog(
     onUsePartners: () -> Unit = {},
 ) {
     val latestStop by rememberUpdatedState(onStopPreview)
-    DisposableEffect(Unit) { onDispose { latestStop() } }
+    // Also on ON_STOP: Home or screen-off must not leave a long pass (Escalating) running.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) latestStop() }
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+            latestStop()
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = modifier,

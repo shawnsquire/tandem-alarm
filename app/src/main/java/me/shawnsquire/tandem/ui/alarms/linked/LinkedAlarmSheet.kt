@@ -50,6 +50,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -297,8 +299,10 @@ private fun SoundRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCa
             },
             trailingContent = {
                 // The switch shows what rings here (the override, else the owner's); the last one on is locked.
+                val switchLabel = stringResource(R.string.link_override_sound)
                 Switch(
                     checked = state.soundOn,
+                    modifier = Modifier.semantics { contentDescription = switchLabel },
                     onCheckedChange = cb.onSoundOnChange,
                     enabled = !locked && (!state.soundOn || state.vibrationOn),
                 )
@@ -333,8 +337,10 @@ private fun VibrationRow(state: LinkedSheetState, locked: Boolean, cb: LinkedShe
         headlineContent = { Text(stringResource(R.string.link_override_vibration)) },
         supportingContent = { Text(vibrationPatternName(state.vibration)) },
         trailingContent = {
+            val switchLabel = stringResource(R.string.link_override_vibration)
             Switch(
                 checked = state.vibrationOn,
+                modifier = Modifier.semantics { contentDescription = switchLabel },
                 onCheckedChange = cb.onVibrationOnChange,
                 enabled = !locked && (!state.vibrationOn || state.soundOn),
             )
