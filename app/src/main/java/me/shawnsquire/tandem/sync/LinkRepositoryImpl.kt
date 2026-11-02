@@ -29,6 +29,7 @@ import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -150,6 +151,15 @@ class LinkRepositoryImpl(
     override suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?) {
         alarms.updateLink(alarmId) {
             it.copy(overrideLabel = label, overrideRingtoneUri = ringtoneUri, overrideWallpaperPath = wallpaperPath)
+        }
+        scheduler.rescheduleAll()
+    }
+
+    override suspend fun setOutputOverrides(
+        alarmId: String, soundOn: Boolean?, vibrationOn: Boolean?, vibration: VibrationPattern?,
+    ) {
+        alarms.updateLink(alarmId) {
+            it.copy(overrideSoundOn = soundOn, overrideVibrationOn = vibrationOn, overrideVibration = vibration)
         }
         scheduler.rescheduleAll()
     }
@@ -309,6 +319,9 @@ class LinkRepositoryImpl(
                     minute = owner.minute,
                     days = owner.days,
                     enabled = owner.enabled,
+                    vibration = owner.vibration,
+                    vibrationOn = owner.vibrationOn,
+                    soundOn = owner.soundOn,
                     skippedOccurrenceAt = null,
                     ringtoneUri = null,
                     wallpaperPath = null,

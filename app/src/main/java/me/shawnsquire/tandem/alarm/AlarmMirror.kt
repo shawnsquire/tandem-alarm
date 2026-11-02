@@ -5,11 +5,14 @@ import android.util.Log
 import me.shawnsquire.tandem.data.AlarmEntity
 import me.shawnsquire.tandem.data.toAlarm
 import me.shawnsquire.tandem.data.toEntity
+import me.shawnsquire.tandem.data.toVibrationPattern
+import me.shawnsquire.tandem.data.toVibrationPatternOrNull
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -94,6 +97,9 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
             put("enabled", e.enabled)
             e.skippedOccurrenceAt?.let { put("skippedOccurrenceAt", it) }
             e.ringtoneUri?.let { put("ringtoneUri", it) }
+            put("vibration", e.vibration)
+            put("vibrationOn", e.vibrationOn)
+            put("soundOn", e.soundOn)
             mirrored.alarm.soloSkippedOccurrenceAt?.let { put("soloSkippedOccurrenceAt", it.toEpochMilli()) }
             mirrored.alarm.link?.let { put("link", encode(it)) }
             mirrored.nextTriggerAt?.let { put("nextTriggerAt", it.toEpochMilli()) }
@@ -117,6 +123,9 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
         }
         link.overrideLabel?.let { put("overrideLabel", it) }
         link.overrideRingtoneUri?.let { put("overrideRingtoneUri", it) }
+        link.overrideVibration?.let { put("overrideVibration", it.name) }
+        link.overrideVibrationOn?.let { put("overrideVibrationOn", it) }
+        link.overrideSoundOn?.let { put("overrideSoundOn", it) }
     }
 
     private fun decode(json: String, strict: Boolean): MirrorSnapshot? {
@@ -149,6 +158,10 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
             skippedOccurrenceAt = if (o.isNull("skippedOccurrenceAt")) null else o.getLong("skippedOccurrenceAt"),
             ringtoneUri = o.stringOrNull("ringtoneUri"),
             wallpaperPath = null,
+            // Absent in mirrors written before vibration: the old behavior, sound plus the pulse.
+            vibration = o.stringOrNull("vibration") ?: VibrationPattern.PULSE.name,
+            vibrationOn = o.booleanOrDefault("vibrationOn", true),
+            soundOn = o.booleanOrDefault("soundOn", true),
         ).toAlarm().copy(
             // Absent in mirrors written before linked alarms.
             soloSkippedOccurrenceAt = o.instantOrNull("soloSkippedOccurrenceAt"),
@@ -174,9 +187,16 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
         overrideLabel = o.stringOrNull("overrideLabel"),
         overrideRingtoneUri = o.stringOrNull("overrideRingtoneUri"),
         overrideWallpaperPath = null,
+        overrideVibration = o.stringOrNull("overrideVibration")?.toVibrationPatternOrNull(),
+        overrideVibrationOn = o.booleanOrNull("overrideVibrationOn"),
+        overrideSoundOn = o.booleanOrNull("overrideSoundOn"),
     )
 
     private fun JSONObject.instantOrNull(key: String): Instant? = if (isNull(key)) null else Instant.ofEpochMilli(getLong(key))
+
+    private fun JSONObject.booleanOrNull(key: String): Boolean? = if (isNull(key)) null else getBoolean(key)
+
+    private fun JSONObject.booleanOrDefault(key: String, default: Boolean): Boolean = booleanOrNull(key) ?: default
 
     // optString() turns a JSON null into the string "null".
     private fun JSONObject.stringOrNull(key: String): String? = if (isNull(key)) null else getString(key)

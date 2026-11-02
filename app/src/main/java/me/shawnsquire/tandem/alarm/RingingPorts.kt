@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.alarm
 import android.util.Log
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.RingMember
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import java.time.Instant
 
 enum class MirrorKind { SNOOZE, DISMISS }
@@ -96,14 +97,21 @@ class SwitchableRingMirrorPort(private val outbox: MirrorOutbox = InMemoryMirror
  * Loops the first candidate URI that opens. With [appendSystemDefaults] the adapter tries the
  * system defaults after [candidates]; a linked ring whose candidates already carry the system alarm
  * Uri, in the order the media cache chose, passes false. The bundled tone is always last.
+ * [onExhausted] runs, on any thread but never synchronously from [start], when nothing in that
+ * chain played, the bundled tone included: the session then vibrates with Pulse if nothing vibrates (I1).
  */
 interface AlarmSound {
-    fun start(candidates: List<String>, appendSystemDefaults: Boolean = true)
+    fun start(candidates: List<String>, appendSystemDefaults: Boolean = true, onExhausted: () -> Unit = {})
     fun stop()
 }
 
+/**
+ * The ring's vibration. [start] vibrates with [pattern] (again with a new one switches it) and
+ * returns whether it is vibrating: false when the phone has no vibrator. It may throw when the
+ * vibrate itself fails. Either way the ring plays sound, even when the alarm is vibrate-only (I1).
+ */
 interface AlarmVibration {
-    fun start()
+    fun start(pattern: VibrationPattern): Boolean
     fun stop()
 }
 

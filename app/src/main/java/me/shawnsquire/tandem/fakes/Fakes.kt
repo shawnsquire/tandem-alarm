@@ -27,6 +27,7 @@ import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.sync.CommandApplier
 import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.sync.CommandSender
@@ -119,6 +120,9 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
                     days = alarm.days,
                     enabled = alarm.enabled,
                     lateRing = alarm.lateRing,
+                    vibration = alarm.vibration,
+                    vibrationOn = alarm.vibrationOn,
+                    soundOn = alarm.soundOn,
                     link = storedLink.copy(ownerSkippedOccurrenceAt = incoming.ownerSkippedOccurrenceAt),
                 )
                 list.map { if (it.id == alarm.id) merged else it }
@@ -337,6 +341,12 @@ class FakeLinkRepository : LinkRepository {
             val ringtoneUri: String?,
             val wallpaperPath: String?,
         ) : Call
+        data class SetOutputOverrides(
+            val alarmId: String,
+            val soundOn: Boolean?,
+            val vibrationOn: Boolean?,
+            val vibration: VibrationPattern?,
+        ) : Call
         data class SetJoinerEnabled(val alarmId: String, val enabled: Boolean) : Call
         data class SendBoth(val alarmId: String, val type: CommandType, val occurrenceAt: Instant?) : Call
         data class Invite(val alarmId: String) : Call
@@ -369,6 +379,12 @@ class FakeLinkRepository : LinkRepository {
 
     override suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?) {
         calls += Call.SetOverrides(alarmId, label, ringtoneUri, wallpaperPath)
+    }
+
+    override suspend fun setOutputOverrides(
+        alarmId: String, soundOn: Boolean?, vibrationOn: Boolean?, vibration: VibrationPattern?,
+    ) {
+        calls += Call.SetOutputOverrides(alarmId, soundOn, vibrationOn, vibration)
     }
 
     override suspend fun setJoinerEnabled(alarmId: String, enabled: Boolean) {
@@ -435,4 +451,13 @@ class FakeLinkedMediaCache : LinkedMediaCache {
 
     override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) =
         DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
+}
+
+/** Records what the editor previews and stops. */
+class FakeVibrationPreview : me.shawnsquire.tandem.ui.VibrationPreview {
+    val played = mutableListOf<VibrationPattern>()
+    var stops = 0
+
+    override fun play(pattern: VibrationPattern) { played += pattern }
+    override fun stop() { stops++ }
 }

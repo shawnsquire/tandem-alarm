@@ -67,6 +67,9 @@ class AlarmRepositoryImpl(
                 enabled = incoming.enabled,
                 lateRingOccurrenceAt = incoming.lateRingOccurrenceAt,
                 lateRingRing = incoming.lateRingRing,
+                vibration = incoming.vibration,
+                vibrationOn = incoming.vibrationOn,
+                soundOn = incoming.soundOn,
                 linkOwnerSkippedOccurrenceAt = incoming.linkOwnerSkippedOccurrenceAt,
             )
         }

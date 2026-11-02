@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import me.shawnsquire.tandem.schedule.LateRing
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -76,7 +77,7 @@ class TandemDatabaseMigrationTest {
 
         // The migrated file also opens through Room and the entity conversion.
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5)
             .allowMainThreadQueries()
             .build()
         try {
@@ -128,7 +129,7 @@ class TandemDatabaseMigrationTest {
         migrated.close()
 
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5)
             .allowMainThreadQueries()
             .build()
         try {
@@ -166,7 +167,7 @@ class TandemDatabaseMigrationTest {
         migrated.close()
 
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5)
             .allowMainThreadQueries()
             .build()
         try {
@@ -211,5 +212,38 @@ class TandemDatabaseMigrationTest {
                 TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4,
             ),
         )
+    }
+
+    @Test
+    fun migrate4To5DefaultsVibrationAndSoundAndLeavesOverridesNull() {
+        helper.createDatabase(dbName, 4).apply {
+            insertV3Rows(this)
+            close()
+        }
+        val migrated = helper.runMigrationsAndValidate(dbName, 5, true, TandemDatabase.MIGRATION_4_5)
+        migrated.close()
+
+        val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
+            .addMigrations(
+                TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5,
+            )
+            .allowMainThreadQueries()
+            .build()
+        try {
+            runBlocking {
+                for (id in listOf("own", "linked")) {
+                    val alarm = db.alarmDao().get(id)!!.toAlarm()
+                    assertEquals(id, VibrationPattern.PULSE, alarm.vibration)
+                    assertTrue(id, alarm.vibrationOn)
+                    assertTrue(id, alarm.soundOn)
+                }
+                val link = db.alarmDao().get("linked")!!.toAlarm().link!!
+                assertNull(link.overrideVibration)
+                assertNull(link.overrideVibrationOn)
+                assertNull(link.overrideSoundOn)
+            }
+        } finally {
+            db.close()
+        }
     }
 }

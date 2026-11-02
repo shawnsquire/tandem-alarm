@@ -1,0 +1,187 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 5,
+    "identityHash": "651d847dab23f14a5639776ce0ec70c6",
+    "entities": [
+      {
+        "tableName": "alarms",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `label` TEXT NOT NULL, `hour` INTEGER NOT NULL, `minute` INTEGER NOT NULL, `days` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `skippedOccurrenceAt` INTEGER, `ringtoneUri` TEXT, `wallpaperPath` TEXT, `linkOwnerUid` TEXT, `linkOwnerAlarmId` TEXT, `linkMode` TEXT, `linkOwnerSkippedOccurrenceAt` INTEGER, `linkJoinerEnabled` INTEGER, `linkPendingBothType` TEXT, `linkPendingBothOccurrenceAt` INTEGER, `linkPendingBothCommandId` TEXT, `linkPendingBothCreatedAt` INTEGER, `linkOverrideLabel` TEXT, `linkOverrideRingtoneUri` TEXT, `linkOverrideWallpaperPath` TEXT, `soloSkippedOccurrenceAt` INTEGER, `lateRingOccurrenceAt` INTEGER, `lateRingRing` INTEGER, `vibration` TEXT NOT NULL DEFAULT 'PULSE', `vibrationOn` INTEGER NOT NULL DEFAULT 1, `soundOn` INTEGER NOT NULL DEFAULT 1, `linkOverrideVibration` TEXT, `linkOverrideVibrationOn` INTEGER, `linkOverrideSoundOn` INTEGER, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hour",
+            "columnName": "hour",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "minute",
+            "columnName": "minute",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "days",
+            "columnName": "days",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "skippedOccurrenceAt",
+            "columnName": "skippedOccurrenceAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "ringtoneUri",
+            "columnName": "ringtoneUri",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "wallpaperPath",
+            "columnName": "wallpaperPath",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkOwnerUid",
+            "columnName": "linkOwnerUid",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkOwnerAlarmId",
+            "columnName": "linkOwnerAlarmId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkMode",
+            "columnName": "linkMode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkOwnerSkippedOccurrenceAt",
+            "columnName": "linkOwnerSkippedOccurrenceAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "linkJoinerEnabled",
+            "columnName": "linkJoinerEnabled",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "linkPendingBothType",
+            "columnName": "linkPendingBothType",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkPendingBothOccurrenceAt",
+            "columnName": "linkPendingBothOccurrenceAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "linkPendingBothCommandId",
+            "columnName": "linkPendingBothCommandId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkPendingBothCreatedAt",
+            "columnName": "linkPendingBothCreatedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "linkOverrideLabel",
+            "columnName": "linkOverrideLabel",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkOverrideRingtoneUri",
+            "columnName": "linkOverrideRingtoneUri",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkOverrideWallpaperPath",
+            "columnName": "linkOverrideWallpaperPath",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "soloSkippedOccurrenceAt",
+            "columnName": "soloSkippedOccurrenceAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lateRingOccurrenceAt",
+            "columnName": "lateRingOccurrenceAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lateRingRing",
+            "columnName": "lateRingRing",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "vibration",
+            "columnName": "vibration",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'PULSE'"
+          },
+          {
+            "fieldPath": "vibrationOn",
+            "columnName": "vibrationOn",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "soundOn",
+            "columnName": "soundOn",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "linkOverrideVibration",
+            "columnName": "linkOverrideVibration",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linkOverrideVibrationOn",
+            "columnName": "linkOverrideVibrationOn",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "linkOverrideSoundOn",
+            "columnName": "linkOverrideSoundOn",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '651d847dab23f14a5639776ce0ec70c6')"
+    ]
+  }
+}

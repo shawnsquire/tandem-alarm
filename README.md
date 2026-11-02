@@ -155,6 +155,10 @@ Run on both phones. The linked-alarm items need two phones paired with each othe
 - [ ] A Ring alarm merging into a Notify ring: while a Notify ring is sounding on B, let one of B's own Ring alarms fire. B switches to the full ringing screen and sound, with both labels listed.
 - [ ] Three alarms 5 minutes apart: set three alarms on one phone at X, X+5 and X+10 minutes. Own and joined alarms both merge into one ring. Each alarm gets 10 minutes counted from when it joined, so the ring ends 10 minutes after the last one.
 - [ ] Relabel without relaunch: while a ring is sounding, let another alarm merge in. The labels and notification update, and the ringing screen does not relaunch or flicker.
+- [ ] Each vibration pattern felt on the phone: Pulse, Heartbeat, Rapid, Slow wave and Escalating (which ramps up over about 36 s, then holds at full strength). The editor's preview plays one pass of each, and it stops when the dialog closes.
+- [ ] Vibrate-only (sound switched off) with the phone's Alarm vibration setting on: it vibrates and makes no sound. Then with Alarm vibration off: it makes no noise at all. That is the known, accepted case, and the editor hint says so.
+- [ ] A merged ring of a vibrate-only alarm and a sound alarm at the same minute: one sound plays and it vibrates per the rule (the primary's pattern if its vibration is on, else the first member's with vibration on).
+- [ ] The banner while the phone is in use: with another app open when an alarm fires, the pop-up at the top shows Snooze and Stop without expanding and stays up until one is tapped. Check this on the first fire and again after a second alarm merges into the ring (the relabel). On the emulator, stock Android 17 passed both: the buttons were visible and the banner stayed pinned past 60 s. After the relabel the actions render as plain text buttons instead of pills, which is cosmetic. On Samsung, check the notification pop-up style: "Brief" hides the buttons. If so, switch it to "Detailed" (Settings, Notifications, Notification pop-up style), or note what you see.
 
 ## Known limitations
 

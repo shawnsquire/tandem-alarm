@@ -33,6 +33,7 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import org.junit.Assert.assertEquals
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -148,6 +149,20 @@ class LinkRepositoryImplTest {
     }
 
     @Test
+    fun joinCopiesVibrationAndSwitchesWithNoOverrides() = runTest {
+        val loud = ownerAlarm().copy(vibration = VibrationPattern.ESCALATING, vibrationOn = false, soundOn = false)
+        val e = env(partner = state(loud))
+        e.repo.join("o1")
+        val row = e.rows().single()
+        assertEquals(VibrationPattern.ESCALATING, row.vibration)
+        assertFalse(row.vibrationOn)
+        assertFalse(row.soundOn)
+        assertNull(row.link!!.overrideVibration)
+        assertNull(row.link!!.overrideVibrationOn)
+        assertNull(row.link!!.overrideSoundOn)
+    }
+
+    @Test
     fun joinIsIdempotent() = runTest {
         val e = env()
         val a = e.repo.join("o1")
@@ -230,6 +245,20 @@ class LinkRepositoryImplTest {
         assertEquals(1, e.scheduler.rescheduleCount)
         e.repo.leave("nope")
         assertEquals(1, e.removalCalls.size)
+    }
+
+    @Test
+    fun outputOverridesWriteOnlyTheLinkAndReschedule() = runTest {
+        val e = env(rows = listOf(linked()))
+        val before = e.rows().single()
+        e.repo.setOutputOverrides("row1", false, true, me.shawnsquire.tandem.schedule.VibrationPattern.RAPID)
+        val after = e.rows().single()
+        val l = after.link!!
+        assertEquals(Triple(false, true, me.shawnsquire.tandem.schedule.VibrationPattern.RAPID), Triple(l.overrideSoundOn, l.overrideVibrationOn, l.overrideVibration))
+        assertEquals(before.copy(link = l.copy(overrideSoundOn = null, overrideVibrationOn = null, overrideVibration = null)), after.copy(link = before.link))
+        assertEquals(1, e.scheduler.rescheduleCount)
+        e.repo.setOutputOverrides("row1", null, null, null)
+        assertNull(e.rows().single().link!!.overrideSoundOn)
     }
 
     @Test

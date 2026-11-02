@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.sync
 
+import me.shawnsquire.tandem.data.toVibrationPattern
 import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.media.MediaRef
 import com.google.firebase.Timestamp
@@ -18,6 +19,7 @@ import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.nextOccurrence
 
 // Pure Firestore/FCM mapping. Timestamps are always Firestore Timestamps (never epoch Longs) in
@@ -128,6 +130,7 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
  * [now] is written as null: it is meaningless to the partner, who would send an UNSKIP that is always rejected.
  * A solo skip that is not after [now] is omitted likewise. `alarms[].lateRing` (`occurrenceAt` Timestamp,
  * `ring` Boolean) is written only while its `occurrenceAt` is within [FIRE_GRACE] of [now] or later.
+ * `alarms[].vibration` (the pattern's name), `vibrationOn` and `soundOn` are always written.
  * A link's `hour`, `minute` and `days` are written only when its schedule is known.
  *
  * Top-level newer keys are emitted only when there is something to say: `links` when [links] is
@@ -173,6 +176,9 @@ fun deviceDocMap(
                 a.lateRing?.takeIf { it.occurrenceAt.plus(FIRE_GRACE.toJavaDuration()) > now }?.let {
                     put("lateRing", mapOf("occurrenceAt" to it.occurrenceAt.toTimestamp(), "ring" to it.ring))
                 }
+                put("vibration", a.vibration.name)
+                put("vibrationOn", a.vibrationOn)
+                put("soundOn", a.soundOn)
                 media?.alarms?.get(a.id)?.let { m ->
                     put("media", mapOf("wallpaper" to m.wallpaper?.toMap(), "ringtone" to m.ringtone?.toMap(withTitle = true)))
                 }
@@ -285,6 +291,10 @@ private fun partnerAlarmFrom(m: Map<*, *>): PartnerAlarm? {
         media = alarmMediaFrom(m["media"]),
         soloSkippedOccurrenceAt = (m["soloSkippedOccurrenceAt"] as? Timestamp)?.toInstantCompat(),
         lateRing = lateRingFrom(m["lateRing"]),
+        // A missing field (an older partner build) or an unreadable one (a newer build's pattern) takes the default.
+        vibration = (m["vibration"] as? String)?.toVibrationPattern() ?: VibrationPattern.PULSE,
+        vibrationOn = m["vibrationOn"] as? Boolean ?: true,
+        soundOn = m["soundOn"] as? Boolean ?: true,
     )
 }
 

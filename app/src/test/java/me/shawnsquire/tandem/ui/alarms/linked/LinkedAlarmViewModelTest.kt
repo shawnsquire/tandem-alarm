@@ -12,6 +12,8 @@ import me.shawnsquire.tandem.fakes.FakeLinkRepository
 import me.shawnsquire.tandem.fakes.FakeLinkRepository.Call
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakePartnerRepository
+import me.shawnsquire.tandem.fakes.FakeVibrationPreview
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
@@ -58,18 +60,40 @@ class LinkedAlarmViewModelTest {
         ringing = null, lastSeen = null,
     )
 
-    private inner class Env(row: Alarm?, partner: PartnerState? = partnerState()) {
+    private inner class Env(
+        row: Alarm?, partner: PartnerState? = partnerState(),
+        /** Makes output writes change the row, so the state follows them. */
+        applyWrites: Boolean = false,
+        /** Held until completed, to make a write slow. */
+        gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null,
+    ) {
         val repo = FakeAlarmRepository(listOfNotNull(row))
         val scheduler = FakeAlarmScheduler()
         val links = FakeLinkRepository()
+        private val fakeLinks = links
+        val preview = FakeVibrationPreview()
         val deletedRingtones = mutableListOf<String>()
         val deletedWallpapers = mutableListOf<String>()
         var ringtoneImport: () -> String = { "/files/new.mp3" }
         var wallpaperImport: () -> String = { "/files/new.jpg" }
+        private val vmLinks: me.shawnsquire.tandem.sync.LinkRepository =
+            object : me.shawnsquire.tandem.sync.LinkRepository by links {
+                override suspend fun setOutputOverrides(
+                    alarmId: String, soundOn: Boolean?, vibrationOn: Boolean?, vibration: VibrationPattern?,
+                ) {
+                    gate?.await()
+                    fakeLinks.setOutputOverrides(alarmId, soundOn, vibrationOn, vibration)
+                    if (applyWrites) {
+                        repo.updateLink(alarmId) {
+                            it.copy(overrideSoundOn = soundOn, overrideVibrationOn = vibrationOn, overrideVibration = vibration)
+                        }
+                    }
+                }
+            }
         val vm = LinkedAlarmViewModel(
             alarmId = "j",
             repository = repo,
-            links = links,
+            links = vmLinks,
             actions = LinkedAlarmActions(links, AlarmEdits(repo, scheduler)),
             pairing = FakePairingRepository(),
             partnerRepository = FakePartnerRepository(partner),
@@ -79,6 +103,7 @@ class LinkedAlarmViewModelTest {
             deleteRingtoneFile = { deletedRingtones += it },
             importWallpaper = { wallpaperImport() },
             deleteWallpaperFile = { deletedWallpapers += it },
+            preview = preview,
             rejectedReason = "rejected",
         )
     }
@@ -87,6 +112,200 @@ class LinkedAlarmViewModelTest {
         var s: LinkedSheetState? = null
         vm.state.test { s = expectMostRecentItem(); cancelAndIgnoreRemainingEvents() }
         return s!!
+    }
+
+    private fun outputLink(
+        sound: Boolean? = null, vibrationOn: Boolean? = null, vibration: VibrationPattern? = null,
+    ) = link().copy(overrideSoundOn = sound, overrideVibrationOn = vibrationOn, overrideVibration = vibration)
+
+    @Test fun outputsShowTheOwnersUntilOverridden() = runTest {
+        val plain = Env(joined().copy(vibration = VibrationPattern.HEARTBEAT, soundOn = false)).latest()
+        assertEquals(VibrationPattern.HEARTBEAT, plain.vibration)
+        assertFalse(plain.soundOn)
+        assertTrue(plain.vibrationOn)
+        assertNull(plain.overrideSoundOn)
+        val over = Env(
+            joined(link = outputLink(sound = true, vibrationOn = false, vibration = VibrationPattern.RAPID))
+                .copy(vibration = VibrationPattern.HEARTBEAT, soundOn = false),
+        ).latest()
+        assertEquals(VibrationPattern.RAPID, over.vibration)
+        assertTrue(over.soundOn)
+        assertFalse(over.vibrationOn)
+        assertEquals(true, over.overrideSoundOn)
+        assertEquals(false, over.overrideVibrationOn)
+    }
+
+    @Test fun soundSwitchSetsItsOverrideAndKeepsTheOthers() = runTest {
+        val e = Env(joined(link = outputLink(vibration = VibrationPattern.RAPID)))
+        e.vm.setSoundOn(false)
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", false, null, VibrationPattern.RAPID)), e.links.calls)
+    }
+
+    @Test fun vibrationSwitchSetsItsOverride() = runTest {
+        val e = Env(joined(link = outputLink(sound = true)))
+        e.vm.setVibrationOn(false)
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", true, false, null)), e.links.calls)
+    }
+
+    @Test fun patternSetsItsOverrideAndPlaysAPreview() = runTest {
+        val e = Env(joined(link = outputLink(vibrationOn = true)))
+        e.vm.selectVibration(VibrationPattern.SLOW_WAVE)
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, true, VibrationPattern.SLOW_WAVE)), e.links.calls)
+        assertEquals(listOf(VibrationPattern.SLOW_WAVE), e.preview.played)
+        e.vm.stopPreview()
+        assertEquals(1, e.preview.stops)
+    }
+
+    @Test fun patternWhileVibrationIsOffIsSavedWithoutAPreview() = runTest {
+        val e = Env(joined().copy(vibrationOn = false))
+        e.latest()
+        e.vm.selectVibration(VibrationPattern.RAPID)
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, null, VibrationPattern.RAPID)), e.links.calls)
+        assertTrue(e.preview.played.isEmpty())
+    }
+
+    @Test fun useOwnersVibrationClearsPatternAndSwitchButNotSound() = runTest {
+        val e = Env(joined(link = outputLink(sound = false, vibrationOn = true, vibration = VibrationPattern.RAPID)))
+        e.vm.useOwnersVibration()
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", false, null, null)), e.links.calls)
+    }
+
+    @Test fun useOwnersVibrationWithNothingSetWritesNothing() = runTest {
+        val e = Env(joined(link = outputLink(sound = false)))
+        e.vm.useOwnersVibration()
+        assertTrue(e.links.calls.isEmpty())
+    }
+
+    @Test fun useOwnersSoundClearsToneAndSwitchButNotVibration() = runTest {
+        val e = Env(
+            joined(link = outputLink(sound = false, vibration = VibrationPattern.RAPID).copy(overrideRingtoneUri = "/files/old.mp3")),
+        )
+        e.vm.useOwnersSound()
+        assertEquals(
+            listOf<Call>(
+                Call.SetOverrides("j", null, null, null),
+                Call.SetOutputOverrides("j", null, null, VibrationPattern.RAPID),
+            ),
+            e.links.calls,
+        )
+        assertEquals(listOf("/files/old.mp3"), e.deletedRingtones)
+    }
+
+    @Test fun useOwnersSoundWithOnlyTheSwitchSetLeavesTheToneAlone() = runTest {
+        val e = Env(joined(link = outputLink(sound = false)))
+        e.vm.useOwnersSound()
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, null, null)), e.links.calls)
+    }
+
+    @Test fun lastEffectiveOutputCannotBeSwitchedOff() = runTest {
+        // The owner's vibration is off, so sound is the last output on here.
+        val e = Env(joined().copy(vibrationOn = false))
+        e.vm.setSoundOn(false)
+        assertTrue(e.links.calls.isEmpty())
+        // An override can make the other output the last one on, too.
+        val o = Env(joined(link = outputLink(sound = false)))
+        o.vm.setVibrationOn(false)
+        assertTrue(o.links.calls.isEmpty())
+        // With both effective values on, either may go.
+        val free = Env(joined())
+        free.vm.setVibrationOn(false)
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, false, null)), free.links.calls)
+    }
+
+    @Test fun ownerGoingVibrateOnlyUnderAnOverrideShowsBothOffAndAllowsTurningOneOn() = runTest {
+        val e = Env(joined(link = outputLink(vibrationOn = false)), applyWrites = true)
+        assertTrue(e.latest().soundOn)
+        e.repo.upsert(e.repo.get("j")!!.copy(soundOn = false)) // the owner goes vibrate-only
+        val s = e.latest()
+        assertFalse(s.soundOn)
+        assertFalse(s.vibrationOn)
+        e.vm.setSoundOn(true)
+        assertTrue(e.latest().soundOn)
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", true, false, null)), e.links.calls)
+    }
+
+    @Test fun guardReadsRawValuesNotTheNormalizedOnes() = runTest {
+        // Raw sound and vibration are both off (owner sound off, own vibration off): nothing is turned off further.
+        val e = Env(joined(link = outputLink(vibrationOn = false)).copy(soundOn = false), applyWrites = true)
+        e.vm.setSoundOn(false)
+        e.vm.setVibrationOn(false)
+        assertTrue(e.links.calls.isEmpty())
+        e.vm.setVibrationOn(true)
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, true, null)), e.links.calls)
+        assertTrue(e.latest().vibrationOn)
+        // Now vibration is the last on, so it can't be turned off.
+        e.vm.setVibrationOn(false)
+        assertEquals(1, e.links.calls.size)
+    }
+
+    @Test fun useOwnersSoundKeepsVibrationOnWhenTheOwnersSoundIsOff() = runTest {
+        val e = Env(joined(link = outputLink(sound = true, vibrationOn = false)).copy(soundOn = false), applyWrites = true)
+        e.vm.useOwnersSound()
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, true, null)), e.links.calls)
+        val s = e.latest()
+        assertFalse(s.soundOn)
+        assertTrue(s.vibrationOn)
+    }
+
+    @Test fun useOwnersVibrationKeepsSoundOnWhenTheOwnersVibrationIsOff() = runTest {
+        val e = Env(joined(link = outputLink(sound = false, vibrationOn = true)).copy(vibrationOn = false), applyWrites = true)
+        e.vm.useOwnersVibration()
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", true, null, null)), e.links.calls)
+        val s = e.latest()
+        assertTrue(s.soundOn)
+        assertFalse(s.vibrationOn)
+    }
+
+    @Test fun useOwnersWritesNoCompensationWhenThePairStaysValid() = runTest {
+        val e = Env(joined(link = outputLink(sound = false, vibrationOn = true)), applyWrites = true)
+        e.vm.useOwnersSound()
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, true, null)), e.links.calls)
+    }
+
+    @Test fun clearingOnlyThePatternNeverTouchesTheSound() = runTest {
+        val e = Env(
+            joined(link = outputLink(sound = false, vibration = VibrationPattern.RAPID)).copy(vibrationOn = false),
+            applyWrites = true,
+        )
+        e.vm.useOwnersVibration()
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", false, null, null)), e.links.calls)
+        val s = e.latest()
+        assertFalse(s.soundOn)
+        assertFalse(s.vibrationOn)
+    }
+
+    @Test fun quickTapsSaveInTapOrderAndPlayAtTapTime() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val e = Env(joined(), gate = gate)
+        e.latest()
+        e.vm.selectVibration(VibrationPattern.RAPID)
+        e.vm.selectVibration(VibrationPattern.HEARTBEAT)
+        assertEquals(listOf(VibrationPattern.RAPID, VibrationPattern.HEARTBEAT), e.preview.played) // writes still held
+        gate.complete(Unit)
+        assertEquals(
+            listOf<Call>(
+                Call.SetOutputOverrides("j", null, null, VibrationPattern.RAPID),
+                Call.SetOutputOverrides("j", null, null, VibrationPattern.HEARTBEAT),
+            ),
+            e.links.calls,
+        )
+    }
+
+    @Test fun stopAfterATapStopsAndNothingPlaysLater() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val e = Env(joined(), gate = gate)
+        e.latest()
+        e.vm.selectVibration(VibrationPattern.RAPID)
+        e.vm.stopPreview()
+        gate.complete(Unit)
+        assertEquals(listOf(VibrationPattern.RAPID), e.preview.played)
+        assertEquals(1, e.preview.stops)
+    }
+
+    @Test fun clearingTheViewModelStopsThePreview() = runTest {
+        val e = Env(joined())
+        e.vm.onCleared()
+        assertEquals(1, e.preview.stops)
     }
 
     @Test fun stateShowsTheJoinedRow() = runTest {
@@ -403,7 +622,7 @@ class LinkedAlarmViewModelTest {
         val vm = LinkedAlarmViewModel(
             "j", repo, links, LinkedAlarmActions(links, AlarmEdits(repo, FakeAlarmScheduler())),
             FakePairingRepository(), FakePartnerRepository(partnerState()), clock,
-            { it ?: "Default" }, { "x" }, {}, { "x" }, {}, "rejected",
+            { it ?: "Default" }, { "x" }, {}, { "x" }, {}, FakeVibrationPreview(), "rejected",
         )
         val seen = mutableListOf<CommandUiStatus?>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect { seen += it.bothStatus } }

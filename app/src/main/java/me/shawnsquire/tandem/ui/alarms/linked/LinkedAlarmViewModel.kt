@@ -20,10 +20,13 @@ import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.effectiveOutputs
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PartnerRepository
+import me.shawnsquire.tandem.ui.VibrationPreview
 import me.shawnsquire.tandem.ui.formatDays
 import me.shawnsquire.tandem.ui.partner.CommandUiStatus
 import me.shawnsquire.tandem.ui.partner.FALLBACK_NAME
@@ -49,6 +52,14 @@ data class LinkedSheetState(
     val overrideRingtone: String? = null,
     val ringtoneTitle: String = "",
     val overrideWallpaper: String? = null,
+    /** The switches as set on this phone: each override, else the owner's. Both can read off if the owner caused it; a ring then uses both on. */
+    val soundOn: Boolean = true,
+    val vibrationOn: Boolean = true,
+    val vibration: VibrationPattern = VibrationPattern.PULSE,
+    /** Null means "Use <owner>'s". */
+    val overrideSoundOn: Boolean? = null,
+    val overrideVibrationOn: Boolean? = null,
+    val overrideVibration: VibrationPattern? = null,
     val armed: Boolean = false,
     val skippedForYou: Boolean = false,
     /** "Both of us" needs an owner occurrence to pin to; without one it is not offered. */
@@ -81,6 +92,7 @@ class LinkedAlarmViewModel(
     private val deleteRingtoneFile: (String) -> Unit,
     private val importWallpaper: suspend (String) -> String,
     private val deleteWallpaperFile: (String) -> Unit,
+    private val preview: VibrationPreview,
     /** Shown when a "both of us" command did not take effect. */
     private val rejectedReason: String,
 ) : ViewModel() {
@@ -134,6 +146,9 @@ class LinkedAlarmViewModel(
             val link = alarm?.link
             if (alarm == null || link == null) return@combine LinkedSheetState(loaded = true, closed = true)
             val now = clock.instant()
+            val outputs = alarm.effectiveOutputs()
+            val soundOn = link.overrideSoundOn ?: alarm.soundOn
+            val vibrationOn = link.overrideVibrationOn ?: alarm.vibrationOn
             LinkedSheetState(
                 loaded = true,
                 hour = alarm.hour, minute = alarm.minute, daysText = formatDays(alarm.days),
@@ -143,6 +158,9 @@ class LinkedAlarmViewModel(
                 overrideLabel = link.overrideLabel,
                 overrideRingtone = link.overrideRingtoneUri,
                 overrideWallpaper = link.overrideWallpaperPath,
+                soundOn = soundOn, vibrationOn = vibrationOn, vibration = outputs.vibration,
+                overrideSoundOn = link.overrideSoundOn, overrideVibrationOn = link.overrideVibrationOn,
+                overrideVibration = link.overrideVibration,
                 armed = isArmed(alarm),
                 skippedForYou = isArmed(alarm) && alarm.skippedOccurrenceAt?.let { it > now } == true,
                 // Pinned to the shared occurrence of the row, so the partner's state is not needed.
@@ -154,6 +172,10 @@ class LinkedAlarmViewModel(
         }
             .mapLatest { s -> s.copy(ringtoneTitle = s.overrideRingtone?.let { titleOf(it) }.orEmpty()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LinkedSheetState())
+
+    public override fun onCleared() {
+        preview.stop()
+    }
 
     private suspend fun titleOf(uri: String): String =
         lastTitle?.takeIf { it.first == uri }?.second ?: ringtoneTitle(uri).also { lastTitle = uri to it }
@@ -295,6 +317,85 @@ class LinkedAlarmViewModel(
         }
     }
 
+    /** Switches the sound on this phone; refused while it would leave vibration off too. */
+    fun setSoundOn(on: Boolean) {
+        viewModelScope.launch {
+            overrideLock.withLock {
+                val row = currentRow() ?: return@withLock
+                val link = row.link ?: return@withLock
+                if (!on && !(link.overrideVibrationOn ?: row.vibrationOn)) return@withLock
+                saveOutputOverrides(link, soundOn = on)
+            }
+        }
+    }
+
+    /** Switches the vibration on this phone; refused while it would leave sound off too. */
+    fun setVibrationOn(on: Boolean) {
+        viewModelScope.launch {
+            overrideLock.withLock {
+                val row = currentRow() ?: return@withLock
+                val link = row.link ?: return@withLock
+                if (!on && !(link.overrideSoundOn ?: row.soundOn)) return@withLock
+                saveOutputOverrides(link, vibrationOn = on)
+            }
+        }
+    }
+
+    /** Picks [pattern] for this phone and plays one cycle of it, unless vibration is off. */
+    fun selectVibration(pattern: VibrationPattern) {
+        // Decided and played at tap time, before any suspension: a stop can't be overtaken, and the lock
+        // below (a fair Mutex) saves quick taps in tap order.
+        if (state.value.vibrationOn) preview.play(pattern)
+        viewModelScope.launch {
+            overrideLock.withLock {
+                val link = currentRow()?.link ?: return@withLock
+                saveOutputOverrides(link, vibration = pattern)
+            }
+        }
+    }
+
+    /** The preset list closed. */
+    fun stopPreview() = preview.stop()
+
+    /** Clears the tone and the sound switch overrides, whichever are set. */
+    fun useOwnersSound() {
+        viewModelScope.launch {
+            overrideLock.withLock {
+                val row = currentRow() ?: return@withLock
+                val link = row.link ?: return@withLock
+                if (link.overrideRingtoneUri != null && !saveOverrides(link, ringtone = null)) return@withLock
+                if (link.overrideSoundOn != null) {
+                    // If the owner's sound is off and vibration is off here, keep vibration on rather than show both off.
+                    val vibrationOn = (link.overrideVibrationOn ?: row.vibrationOn) || row.soundOn
+                    saveOutputOverrides(
+                        link, soundOn = null,
+                        vibrationOn = if (vibrationOn) link.overrideVibrationOn else true,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Clears the pattern and the vibration switch overrides, whichever are set. */
+    fun useOwnersVibration() {
+        viewModelScope.launch {
+            overrideLock.withLock {
+                val row = currentRow() ?: return@withLock
+                val link = row.link ?: return@withLock
+                if (link.overrideVibration != null || link.overrideVibrationOn != null) {
+                    // Only clearing the switch can leave both off (the owner's vibration off, sound off here); then
+                    // keep sound on rather than show both off. Clearing the pattern alone never touches the sound.
+                    val bothOff = link.overrideVibrationOn != null && !row.vibrationOn &&
+                        !(link.overrideSoundOn ?: row.soundOn)
+                    saveOutputOverrides(
+                        link, vibrationOn = null, vibration = null,
+                        soundOn = if (bothOff) true else link.overrideSoundOn,
+                    )
+                }
+            }
+        }
+    }
+
     fun dismissError() = local.update { it.copy(error = null) }
 
     /** The sheet opened: a settled "both of us" result from earlier is stale now, a pending one stays. */
@@ -358,6 +459,14 @@ class LinkedAlarmViewModel(
         if (link.overrideWallpaperPath != wallpaper) link.overrideWallpaperPath?.let(deleteWallpaperFile)
         return true
     }
+
+    /** Writes the sound, vibration switch and pattern overrides; each defaults to the row's current value. */
+    private suspend fun saveOutputOverrides(
+        link: AlarmLink,
+        soundOn: Boolean? = link.overrideSoundOn,
+        vibrationOn: Boolean? = link.overrideVibrationOn,
+        vibration: VibrationPattern? = link.overrideVibration,
+    ): Boolean = runSaving { links.setOutputOverrides(alarmId, soundOn, vibrationOn, vibration) }
 
     private suspend fun runSaving(block: suspend () -> Unit): Boolean = try {
         block()

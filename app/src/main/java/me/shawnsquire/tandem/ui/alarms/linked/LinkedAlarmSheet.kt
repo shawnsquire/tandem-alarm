@@ -32,6 +32,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,6 +50,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -58,6 +61,10 @@ import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.ui.alarms.OutputHints
+import me.shawnsquire.tandem.ui.alarms.VibrationPatternDialog
+import me.shawnsquire.tandem.ui.alarms.vibrationPatternName
 import me.shawnsquire.tandem.ui.alarms.edit.WallpaperThumbnail
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
@@ -72,7 +79,12 @@ class LinkedSheetCallbacks(
     val onSetMessage: (String) -> Unit = {},
     val onPickSystemRingtone: () -> Unit = {},
     val onPickRingtoneFile: () -> Unit = {},
-    val onUseOwnersRingtone: () -> Unit = {},
+    val onUseOwnersSound: () -> Unit = {},
+    val onSoundOnChange: (Boolean) -> Unit = {},
+    val onVibrationOnChange: (Boolean) -> Unit = {},
+    val onSelectVibration: (VibrationPattern) -> Unit = {},
+    val onStopPreview: () -> Unit = {},
+    val onUseOwnersVibration: () -> Unit = {},
     val onPickWallpaper: () -> Unit = {},
     val onUseOwnersWallpaper: () -> Unit = {},
     val onAskSkip: () -> Unit = {},
@@ -156,7 +168,12 @@ fun LinkedAlarmSheetRoute(
                 onSetMessage = viewModel::setMessage,
                 onPickSystemRingtone = { systemPicker.launch(state.overrideRingtone) },
                 onPickRingtoneFile = { filePicker.launch(Unit) },
-                onUseOwnersRingtone = viewModel::useOwnersRingtone,
+                onUseOwnersSound = viewModel::useOwnersSound,
+                onSoundOnChange = viewModel::setSoundOn,
+                onVibrationOnChange = viewModel::setVibrationOn,
+                onSelectVibration = viewModel::selectVibration,
+                onStopPreview = viewModel::stopPreview,
+                onUseOwnersVibration = viewModel::useOwnersVibration,
                 onPickWallpaper = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onUseOwnersWallpaper = viewModel::useOwnersWallpaper,
                 onAskSkip = viewModel::askSkip,
@@ -193,6 +210,8 @@ fun LinkedAlarmSheetContent(
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         MessageField(state, callbacks.onSetMessage)
         SoundRow(state, locked, callbacks)
+        VibrationRow(state, locked, callbacks)
+        OutputHints(state.soundOn, state.vibrationOn)
         PhotoRow(state, locked, callbacks)
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SkipSection(state, callbacks)
@@ -278,6 +297,16 @@ private fun SoundRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCa
                     else state.ringtoneTitle,
                 )
             },
+            trailingContent = {
+                // The switch shows what rings here (the override, else the owner's); the last one on is locked.
+                val switchLabel = stringResource(R.string.link_override_sound)
+                Switch(
+                    checked = state.soundOn,
+                    modifier = Modifier.semantics { contentDescription = switchLabel },
+                    onCheckedChange = cb.onSoundOnChange,
+                    enabled = !locked && (!state.soundOn || state.vibrationOn),
+                )
+            },
             modifier = Modifier.clickable(enabled = !locked) { menu = true },
         )
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -289,13 +318,46 @@ private fun SoundRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCa
                 text = { Text(stringResource(R.string.edit_ringtone_file)) },
                 onClick = { menu = false; cb.onPickRingtoneFile() },
             )
-            if (state.overrideRingtone != null) {
+            // Clears the tone and the switch together, so it shows while either is set.
+            if (state.overrideRingtone != null || state.overrideSoundOn != null) {
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.link_use_partners, state.partnerName)) },
-                    onClick = { menu = false; cb.onUseOwnersRingtone() },
+                    onClick = { menu = false; cb.onUseOwnersSound() },
+                    enabled = !locked,
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun VibrationRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCallbacks) {
+    var list by rememberSaveable { mutableStateOf(false) }
+    ListItem(
+        headlineContent = { Text(stringResource(R.string.link_override_vibration)) },
+        supportingContent = { Text(vibrationPatternName(state.vibration)) },
+        trailingContent = {
+            val switchLabel = stringResource(R.string.link_override_vibration)
+            Switch(
+                checked = state.vibrationOn,
+                modifier = Modifier.semantics { contentDescription = switchLabel },
+                onCheckedChange = cb.onVibrationOnChange,
+                enabled = !locked && (!state.vibrationOn || state.soundOn),
+            )
+        },
+        modifier = Modifier.clickable(enabled = !locked) { list = true },
+    )
+    if (list) {
+        // Like the Sound row's menu item, not offered while an import or save is in flight.
+        val overridden = !locked && (state.overrideVibration != null || state.overrideVibrationOn != null)
+        VibrationPatternDialog(
+            selected = state.vibration,
+            onSelect = cb.onSelectVibration,
+            onStopPreview = cb.onStopPreview,
+            onDismiss = { list = false },
+            usePartnersLabel = if (overridden) stringResource(R.string.link_use_partners, state.partnerName) else null,
+            onUsePartners = cb.onUseOwnersVibration,
+        )
     }
 }
 
@@ -395,6 +457,8 @@ private fun SheetNotifyOverridesPreview() {
                 mode = LinkMode.NOTIFY, label = "Up and at 'em", overrideLabel = "Up and at 'em",
                 overrideRingtone = "content://media/internal/audio/media/9", ringtoneTitle = "Morning birds",
                 overrideWallpaper = "/nonexistent.jpg", skippedForYou = true,
+                soundOn = false, overrideSoundOn = false,
+                vibration = VibrationPattern.HEARTBEAT, overrideVibration = VibrationPattern.HEARTBEAT,
             ),
             LinkedSheetCallbacks(),
         )

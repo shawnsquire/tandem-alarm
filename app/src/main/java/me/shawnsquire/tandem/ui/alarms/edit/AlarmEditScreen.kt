@@ -37,6 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -48,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -58,6 +60,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -68,7 +72,11 @@ import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.fakes.SAMPLE_ALARMS
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.ui.alarmEditViewModelFactory
+import me.shawnsquire.tandem.ui.alarms.OutputHints
+import me.shawnsquire.tandem.ui.alarms.VibrationPatternDialog
+import me.shawnsquire.tandem.ui.alarms.vibrationPatternName
 import me.shawnsquire.tandem.ui.formatDays
 import me.shawnsquire.tandem.ui.partner.CommandStatusLine
 import me.shawnsquire.tandem.ui.partner.CommandUiStatus
@@ -119,6 +127,10 @@ fun AlarmEditRoute(
         },
         onErrorShown = viewModel::dismissError,
         onInvite = viewModel::invite,
+        onSoundOnChange = viewModel::setSoundOn,
+        onVibrationOnChange = viewModel::setVibrationOn,
+        onSelectVibration = viewModel::selectVibration,
+        onStopPreview = viewModel::stopPreview,
         modifier = modifier,
     )
 }
@@ -140,6 +152,10 @@ fun AlarmEditScreen(
     onErrorShown: () -> Unit,
     modifier: Modifier = Modifier,
     onInvite: () -> Unit = {},
+    onSoundOnChange: (Boolean) -> Unit = {},
+    onVibrationOnChange: (Boolean) -> Unit = {},
+    onSelectVibration: (VibrationPattern) -> Unit = {},
+    onStopPreview: () -> Unit = {},
 ) {
     // Busy covers imports and saves; none of the controls may act while one is in flight.
     val locked = state.busy
@@ -235,6 +251,16 @@ fun AlarmEditScreen(
                 ListItem(
                     headlineContent = { Text(stringResource(R.string.edit_ringtone)) },
                     supportingContent = { Text(state.ringtoneTitle) },
+                    trailingContent = {
+                        // The last output still on can't be switched off.
+                        val switchLabel = stringResource(R.string.edit_ringtone)
+                        Switch(
+                            checked = state.soundOn,
+                            modifier = Modifier.semantics { contentDescription = switchLabel },
+                            onCheckedChange = onSoundOnChange,
+                            enabled = !locked && (!state.soundOn || state.vibrationOn),
+                        )
+                    },
                     modifier = Modifier.clickable(enabled = !locked) { ringtoneMenu = true },
                 )
                 DropdownMenu(expanded = ringtoneMenu, onDismissRequest = { ringtoneMenu = false }) {
@@ -250,6 +276,31 @@ fun AlarmEditScreen(
                     )
                 }
             }
+
+            var vibrationList by rememberSaveable { mutableStateOf(false) }
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.edit_vibration)) },
+                supportingContent = { Text(vibrationPatternName(state.vibration)) },
+                trailingContent = {
+                    val switchLabel = stringResource(R.string.edit_vibration)
+                    Switch(
+                        checked = state.vibrationOn,
+                        modifier = Modifier.semantics { contentDescription = switchLabel },
+                        onCheckedChange = onVibrationOnChange,
+                        enabled = !locked && (!state.vibrationOn || state.soundOn),
+                    )
+                },
+                modifier = Modifier.clickable(enabled = !locked) { vibrationList = true },
+            )
+            if (vibrationList) {
+                VibrationPatternDialog(
+                    selected = state.vibration,
+                    onSelect = onSelectVibration,
+                    onStopPreview = onStopPreview,
+                    onDismiss = { vibrationList = false },
+                )
+            }
+            OutputHints(state.soundOn, state.vibrationOn)
 
             ListItem(
                 headlineContent = { Text(stringResource(R.string.edit_wallpaper)) },
@@ -380,6 +431,18 @@ private fun AlarmEditNewPreview() {
 private fun AlarmEditExistingPreview() {
     TandemTheme {
         AlarmEditScreen(previewExisting, {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {})
+    }
+}
+
+/** Sound off: vibration is the last output on, so its switch is locked and the hints show. */
+@Preview(showBackground = true)
+@Composable
+private fun AlarmEditVibrateOnlyPreview() {
+    TandemTheme {
+        AlarmEditScreen(
+            previewExisting.copy(soundOn = false, vibration = VibrationPattern.HEARTBEAT),
+            {}, {}, { _, _ -> }, {}, {}, {}, {}, {}, {}, {}, {},
+        )
     }
 }
 

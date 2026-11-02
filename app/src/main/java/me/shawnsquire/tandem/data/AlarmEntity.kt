@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import java.time.DayOfWeek
@@ -10,6 +11,7 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.VibrationPattern
 
 @Entity(tableName = "alarms")
 data class AlarmEntity(
@@ -48,7 +50,21 @@ data class AlarmEntity(
     /** Epoch millis of [LateRing.occurrenceAt]. Set together with [lateRingRing], or both null. */
     val lateRingOccurrenceAt: Long? = null,
     val lateRingRing: Boolean? = null,
+    /** [VibrationPattern] name; see [toVibrationPattern]. */
+    @ColumnInfo(defaultValue = "PULSE") val vibration: String = VibrationPattern.PULSE.name,
+    @ColumnInfo(defaultValue = "1") val vibrationOn: Boolean = true,
+    @ColumnInfo(defaultValue = "1") val soundOn: Boolean = true,
+    /** [VibrationPattern] name; null means use the copied [vibration]. */
+    val linkOverrideVibration: String? = null,
+    val linkOverrideVibrationOn: Boolean? = null,
+    val linkOverrideSoundOn: Boolean? = null,
 )
+
+/** An unknown name (a newer build's pattern, or bad data) reads as the default pattern. */
+fun String.toVibrationPattern(): VibrationPattern = toVibrationPatternOrNull() ?: VibrationPattern.PULSE
+
+/** Null for an unknown name, which a link override reads as "use the owner's". */
+fun String.toVibrationPatternOrNull(): VibrationPattern? = VibrationPattern.entries.firstOrNull { it.name == this }
 
 fun AlarmEntity.toAlarm(): Alarm = Alarm(
     id = id,
@@ -65,6 +81,9 @@ fun AlarmEntity.toAlarm(): Alarm = Alarm(
     lateRing = if (lateRingOccurrenceAt != null && lateRingRing != null) {
         LateRing(Instant.ofEpochMilli(lateRingOccurrenceAt), lateRingRing)
     } else null,
+    vibration = vibration.toVibrationPattern(),
+    vibrationOn = vibrationOn,
+    soundOn = soundOn,
 )
 
 /**
@@ -94,6 +113,9 @@ private fun AlarmEntity.toLink(): AlarmLink? {
         overrideLabel = linkOverrideLabel,
         overrideRingtoneUri = linkOverrideRingtoneUri,
         overrideWallpaperPath = linkOverrideWallpaperPath,
+        overrideVibration = linkOverrideVibration?.toVibrationPatternOrNull(),
+        overrideVibrationOn = linkOverrideVibrationOn,
+        overrideSoundOn = linkOverrideSoundOn,
     )
 }
 
@@ -122,4 +144,10 @@ fun Alarm.toEntity(): AlarmEntity = AlarmEntity(
     soloSkippedOccurrenceAt = soloSkippedOccurrenceAt?.toEpochMilli(),
     lateRingOccurrenceAt = lateRing?.occurrenceAt?.toEpochMilli(),
     lateRingRing = lateRing?.ring,
+    vibration = vibration.name,
+    vibrationOn = vibrationOn,
+    soundOn = soundOn,
+    linkOverrideVibration = link?.overrideVibration?.name,
+    linkOverrideVibrationOn = link?.overrideVibrationOn,
+    linkOverrideSoundOn = link?.overrideSoundOn,
 )

@@ -7,14 +7,14 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [AlarmEntity::class], version = 4, exportSchema = true)
+@Database(entities = [AlarmEntity::class], version = 5, exportSchema = true)
 abstract class TandemDatabase : RoomDatabase() {
     abstract fun alarmDao(): AlarmDao
 
     companion object {
         /** Room opens the file lazily, so this does no I/O. */
         fun build(context: Context): TandemDatabase =
-            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
 
         private val LINK_COLUMNS = listOf(
             "linkOwnerUid" to "TEXT",
@@ -60,6 +60,22 @@ abstract class TandemDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `lateRingOccurrenceAt` INTEGER")
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `lateRingRing` INTEGER")
+            }
+        }
+
+        /**
+         * Adds the ring's vibration pattern and sound/vibration switches. The alarm columns are NOT NULL
+         * with a default so existing rows keep today's behavior (sound plus the pulse); the defaults must
+         * match the entity's `defaultValue`. The link overrides are nullable, like the other link columns.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `vibration` TEXT NOT NULL DEFAULT 'PULSE'")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `vibrationOn` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `soundOn` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideVibration` TEXT")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideVibrationOn` INTEGER")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideSoundOn` INTEGER")
             }
         }
     }

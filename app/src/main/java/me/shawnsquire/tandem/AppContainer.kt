@@ -118,6 +118,7 @@ class AppContainer private constructor(
     val fcmTokenStore = FcmTokenStore(context.syncDataStore)
     private val commandRemote = FirestoreCommandRemote(firestore)
     val partnerRepository: PartnerRepository = PartnerRepositoryImpl(householdFlow, firestore)
+    val vibrationPreview: me.shawnsquire.tandem.ui.VibrationPreview = me.shawnsquire.tandem.ui.ArbiterVibrationPreview(context)
     private val confirmHousehold: suspend () -> HouseholdCheck = {
         val uid = authManager.uid.value
         if (uid == null) HouseholdCheck.Unknown

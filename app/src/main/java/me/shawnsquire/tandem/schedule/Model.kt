@@ -16,6 +16,10 @@ import java.time.Instant
  * [lateRing] is the owner's answer to "still ring at the old time?" after moving a joined alarm
  * earlier. On an own row it is that answer; on a linked row it is copied from the owner's
  * published alarm and written only by LinkSync, like hour/minute.
+ *
+ * [vibration], [vibrationOn] and [soundOn] pick what a ring does besides showing the screen:
+ * [soundOn] is a switch, so the [ringtoneUri] is kept while it is off. Read them through
+ * [effectiveOutputs], never directly, so a linked row's overrides and the "never silent" rule apply.
  */
 data class Alarm(
     val id: String,
@@ -30,6 +34,9 @@ data class Alarm(
     val link: AlarmLink? = null,
     val soloSkippedOccurrenceAt: Instant? = null,
     val lateRing: LateRing? = null,
+    val vibration: VibrationPattern = VibrationPattern.PULSE,
+    val vibrationOn: Boolean = true,
+    val soundOn: Boolean = true,
 )
 
 /**
@@ -37,6 +44,9 @@ data class Alarm(
  * `ring = false` asks the joiner not to ring late at [occurrenceAt], the old occurrence.
  */
 data class LateRing(val occurrenceAt: Instant, val ring: Boolean)
+
+/** The shape of a ring's vibration. Stored and synced by name, so never rename a value. */
+enum class VibrationPattern { PULSE, HEARTBEAT, RAPID, SLOW_WAVE, ESCALATING }
 
 /**
  * How a joiner's linked alarm behaves on this phone: [RING] rings like a normal alarm,
@@ -68,6 +78,8 @@ data class PendingBoth(
  * [ownerSkippedOccurrenceAt] is copied from the owner's device doc. [joinerEnabled] is the
  * joiner's own on/off. [pendingBoth] is a both-of-us command not yet reflected in the owner's doc.
  * The override fields replace the owner's label, ringtone and wallpaper on this phone only.
+ * [overrideVibration], [overrideVibrationOn] and [overrideSoundOn] do the same for the ring's
+ * vibration and sound; null means use the copied value.
  */
 data class AlarmLink(
     val ownerUid: String,
@@ -79,7 +91,68 @@ data class AlarmLink(
     val overrideLabel: String?,
     val overrideRingtoneUri: String?,
     val overrideWallpaperPath: String?,
+    val overrideVibration: VibrationPattern? = null,
+    val overrideVibrationOn: Boolean? = null,
+    val overrideSoundOn: Boolean? = null,
 )
+
+/** What a ring actually drives: sound, vibration, and the vibration's [vibration] pattern. At least one of the two is on. */
+data class RingOutputs(val soundOn: Boolean, val vibrationOn: Boolean, val vibration: VibrationPattern) {
+    companion object {
+        /** An alarm that can't be read rings in full, with the pattern every ring had before patterns (I1). */
+        val UNKNOWN = RingOutputs(soundOn = true, vibrationOn = true, vibration = VibrationPattern.PULSE)
+    }
+}
+
+/**
+ * What a merged ring drives: [outputs], and [soundFrom], the index (in ring order) of the member whose
+ * sound plays, null while sound is off or when there are no members (the ring's own media).
+ */
+data class MergedOutputs(val outputs: RingOutputs, val soundFrom: Int?)
+
+/**
+ * One ring for several alarms ([members]: each one's [effectiveOutputs] in ring order, primary first;
+ * null for a member that can't be read, which counts as [RingOutputs.UNKNOWN], I1). Sound plays when any
+ * member has it on, from the first such member. Vibration is off only when every member's is off; its
+ * pattern is the primary's when its vibration is on, else the first member's in ring order whose is (with
+ * the primary first, both are "the first with vibration on"). Pure, so a member change that leaves this
+ * result alone changes nothing on the phone.
+ */
+fun mergedOutputs(members: List<RingOutputs?>): MergedOutputs {
+    if (members.isEmpty()) return MergedOutputs(RingOutputs.UNKNOWN, soundFrom = null)
+    val known = members.map { it ?: RingOutputs.UNKNOWN }
+    val soundFrom = known.indexOfFirst { it.soundOn }.takeIf { it >= 0 }
+    val vibrating = known.firstOrNull { it.vibrationOn }
+    return MergedOutputs(
+        RingOutputs(soundOn = soundFrom != null, vibrationOn = vibrating != null, vibration = (vibrating ?: known.first()).vibration),
+        soundFrom,
+    )
+}
+
+/**
+ * A ring's outputs from its members' rows in ring order (null: unreadable, which counts as
+ * [RingOutputs.UNKNOWN] since it could be a Ring alarm). A Notify link only notifies, so its own
+ * settings never drive a full ring and it is left out; a ring of Notify links alone rings as unknown,
+ * sound and Pulse, as it always has when its notification can't alert (I1). [MergedOutputs.soundFrom]
+ * indexes [members] as given.
+ */
+fun ringOutputs(members: List<Alarm?>): MergedOutputs {
+    val counted = members.indices.filter { members[it]?.link?.mode != LinkMode.NOTIFY }
+    val merged = mergedOutputs(counted.map { members[it]?.effectiveOutputs() })
+    return merged.copy(soundFrom = merged.soundFrom?.let { counted[it] })
+}
+
+/**
+ * The joiner's override else the row's own (or copied) value, for each of sound, vibration and
+ * pattern. An alarm that would be silent and still (bad data, or an override combination) rings
+ * with both on, so a ring is never missed.
+ */
+fun Alarm.effectiveOutputs(): RingOutputs {
+    val sound = link?.overrideSoundOn ?: soundOn
+    val vibrate = link?.overrideVibrationOn ?: vibrationOn
+    val pattern = link?.overrideVibration ?: vibration
+    return if (!sound && !vibrate) RingOutputs(true, true, pattern) else RingOutputs(sound, vibrate, pattern)
+}
 
 /**
  * One alarm folded into a merged ring: [alarmId] at its scheduled [occurrenceAt]. Per I3

@@ -8,6 +8,8 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeLinkRepository
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakePartnerRepository
+import me.shawnsquire.tandem.fakes.FakeVibrationPreview
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.LateRing
@@ -60,6 +62,7 @@ class AlarmEditViewModelTest {
         val deletedWallpapers = mutableListOf<String>()
         var failImport = false
         val links = FakeLinkRepository()
+        val preview = FakeVibrationPreview()
         val pairing = FakePairingRepository()
         val partner = FakePartnerRepository(null)
         val saved = mutableListOf<Pair<Alarm?, Alarm>>()
@@ -81,6 +84,7 @@ class AlarmEditViewModelTest {
             },
             deleteWallpaperFile = { deletedWallpapers += it },
             newId = { "new-id" },
+            preview = preview,
             links = linkOverride?.invoke(links) ?: links,
             pairing = pairing,
             partnerRepository = partner,
@@ -113,6 +117,100 @@ class AlarmEditViewModelTest {
         val saved = e.repo.get("a1")!!
         assertEquals("Office", saved.label)
         assertTrue(saved.enabled)
+    }
+
+    @Test fun newAlarmDefaultsToPulseWithSoundAndVibrationOn() = runTest {
+        val s = fresh().vm.state.value
+        assertEquals(VibrationPattern.PULSE, s.vibration)
+        assertTrue(s.soundOn && s.vibrationOn)
+    }
+
+    @Test fun loadingShowsTheStoredOutputs() = runTest {
+        val e = Env("a1", listOf(existing.copy(vibration = VibrationPattern.RAPID, vibrationOn = true, soundOn = false)))
+        val s = e.vm.state.value
+        assertEquals(VibrationPattern.RAPID, s.vibration)
+        assertTrue(s.vibrationOn)
+        assertFalse(s.soundOn)
+    }
+
+    @Test fun savePersistsPatternAndSwitches() = runTest {
+        val e = edit()
+        e.vm.selectVibration(VibrationPattern.SLOW_WAVE)
+        e.vm.setSoundOn(false)
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertEquals(VibrationPattern.SLOW_WAVE, saved.vibration)
+        assertFalse(saved.soundOn)
+        assertTrue(saved.vibrationOn)
+        assertEquals("file:///old-ring", saved.ringtoneUri)
+    }
+
+    @Test fun vibrationCanBeSwitchedOffWhileSoundStaysOn() = runTest {
+        val e = edit()
+        e.vm.setVibrationOn(false)
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertFalse(saved.vibrationOn)
+        assertTrue(saved.soundOn)
+    }
+
+    @Test fun lastSwitchStillOnCannotBeTurnedOff() = runTest {
+        val e = edit()
+        e.vm.setSoundOn(false)
+        e.vm.setVibrationOn(false)
+        assertTrue(e.vm.state.value.vibrationOn)
+        assertFalse(e.vm.state.value.soundOn)
+        e.vm.setVibrationOn(true)
+        e.vm.setSoundOn(true)
+        e.vm.setVibrationOn(false)
+        e.vm.setSoundOn(false)
+        assertTrue(e.vm.state.value.soundOn)
+        assertFalse(e.vm.state.value.vibrationOn)
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertTrue(saved.soundOn)
+        assertFalse(saved.vibrationOn)
+    }
+
+    @Test fun savingAStoredBothOffAlarmWritesBothOn() = runTest {
+        val e = Env("a1", listOf(existing.copy(soundOn = false, vibrationOn = false)))
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertTrue(saved.soundOn && saved.vibrationOn)
+    }
+
+    @Test fun selectingAPresetPlaysItAndLeavingStopsIt() = runTest {
+        val e = edit()
+        e.vm.selectVibration(VibrationPattern.HEARTBEAT)
+        e.vm.selectVibration(VibrationPattern.ESCALATING)
+        assertEquals(listOf(VibrationPattern.HEARTBEAT, VibrationPattern.ESCALATING), e.preview.played)
+        assertEquals(VibrationPattern.ESCALATING, e.vm.state.value.vibration)
+        e.vm.stopPreview()
+        assertEquals(1, e.preview.stops)
+    }
+
+    @Test fun selectingAPresetWhileVibrationIsOffSelectsWithoutPlaying() = runTest {
+        val e = edit()
+        e.vm.setVibrationOn(false)
+        val stopsBefore = e.preview.stops
+        e.vm.selectVibration(VibrationPattern.RAPID)
+        assertTrue(e.preview.played.isEmpty())
+        assertEquals(VibrationPattern.RAPID, e.vm.state.value.vibration)
+        assertEquals(1, stopsBefore)
+    }
+
+    @Test fun switchingVibrationOffStopsAPreview() = runTest {
+        val e = edit()
+        e.vm.selectVibration(VibrationPattern.ESCALATING)
+        e.vm.setVibrationOn(false)
+        assertEquals(1, e.preview.stops)
+    }
+
+    @Test fun clearingTheViewModelStopsThePreview() = runTest {
+        val e = edit()
+        e.vm.selectVibration(VibrationPattern.ESCALATING)
+        e.vm.onCleared()
+        assertEquals(1, e.preview.stops)
     }
 
     @Test fun missingAlarmCloses() = runTest {

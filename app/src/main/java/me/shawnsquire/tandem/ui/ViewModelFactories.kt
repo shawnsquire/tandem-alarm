@@ -71,6 +71,7 @@ val alarmEditViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
             newId = { UUID.randomUUID().toString() },
+            preview = container.vibrationPreview,
             links = container.linkRepository,
             pairing = container.pairingRepository,
             partnerRepository = container.partnerRepository,
@@ -100,6 +101,7 @@ fun linkedAlarmViewModelFactory(alarmId: String): ViewModelProvider.Factory = vi
             deleteRingtoneFile = { ringtones.delete(it) },
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
+            preview = container.vibrationPreview,
             rejectedReason = app.getString(R.string.link_both_rejected),
         )
     }
