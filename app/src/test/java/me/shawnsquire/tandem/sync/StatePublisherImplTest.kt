@@ -74,6 +74,7 @@ class StatePublisherImplTest {
         fcmToken: kotlinx.coroutines.flow.Flow<String?> = MutableStateFlow("tok"),
         links: kotlinx.coroutines.flow.Flow<List<PublishedLink>> = flowOf(emptyList()),
         media: kotlinx.coroutines.flow.Flow<PublishedMedia?> = flowOf(null),
+        defaultFrame: kotlinx.coroutines.flow.Flow<me.shawnsquire.tandem.schedule.WallpaperFrame?> = flowOf(null),
         initial: List<Alarm> = listOf(weekly),
         pairedHousehold: MutableStateFlow<Household?>? = null,
     ): Env {
@@ -86,7 +87,7 @@ class StatePublisherImplTest {
         val ring = FakeRingStateStore()
         val household = pairedHousehold ?: MutableStateFlow(if (paired) hh else null)
         val publisher = StatePublisherImpl(
-            alarms, ring, household, MutableStateFlow("Pixel"), fcmToken, links, media, writer, clock, backgroundScope,
+            alarms, ring, household, MutableStateFlow("Pixel"), fcmToken, links, media, defaultFrame, writer, clock, backgroundScope,
         )
         return Env(alarms, ring, household, writer, publisher)
     }
@@ -389,6 +390,39 @@ class StatePublisherImplTest {
     }
 
     private fun media(hash: String) = PublishedMedia(MediaRef(hash, 10), emptyMap())
+
+    @Test
+    fun `a frame or text position edit alone republishes the alarm`() = runTest {
+        val e = env()
+        e.publisher.start()
+        advance(2_000)
+        assertEquals(1, e.writer.writes.size)
+        e.alarms.upsert(weekly.copy(wallpaperFrame = me.shawnsquire.tandem.schedule.WallpaperFrame(2f, 0.2f, 0.8f)))
+        advance(2_000)
+        assertEquals(2, e.writer.writes.size)
+        assertEquals(mapOf("zoom" to 2.0, "x" to 0.2f.toDouble(), "y" to 0.8f.toDouble()), e.writer.writes.last().second.firstAlarm()["wallpaperFrame"])
+        e.alarms.upsert(weekly.copy(textPosition = me.shawnsquire.tandem.schedule.TextPosition.TOP))
+        advance(2_000)
+        assertEquals(3, e.writer.writes.size)
+        assertEquals("TOP", e.writer.writes.last().second.firstAlarm()["textPosition"])
+    }
+
+    @Test
+    fun `a default frame change alone republishes beside the default wallpaper and rides the heartbeat`() = runTest {
+        val frame = MutableStateFlow<me.shawnsquire.tandem.schedule.WallpaperFrame?>(null)
+        val e = env(media = flowOf(media("m1")), defaultFrame = frame)
+        e.publisher.start()
+        advance(2_000)
+        assertNull(e.writer.writes.single().second["defaultWallpaperFrame"])
+        frame.value = me.shawnsquire.tandem.schedule.WallpaperFrame(3f, 0.1f, 0.9f)
+        advance(2_000)
+        assertEquals(2, e.writer.writes.size)
+        val written = e.writer.writes.last().second
+        assertEquals("m1", (written["defaultWallpaper"] as Map<*, *>)["sha"])
+        assertEquals(mapOf("zoom" to 3.0, "x" to 0.1f.toDouble(), "y" to 0.9f.toDouble()), written["defaultWallpaperFrame"])
+        assertTrue(e.publisher.publishNow())
+        assertEquals(0.1f.toDouble(), (e.writer.awaited.single().second["defaultWallpaperFrame"] as Map<*, *>)["x"])
+    }
 
     @Test
     fun `media is published by the pipeline and the heartbeat`() = runTest {

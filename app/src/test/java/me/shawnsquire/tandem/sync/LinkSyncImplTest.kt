@@ -34,6 +34,8 @@ import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
 import org.junit.Assert.assertEquals
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -89,7 +91,8 @@ class LinkSyncImplTest {
 
     private fun state(
         vararg alarms: PartnerAlarm, name: String = "Shawn", wallpaper: MediaRef? = null, seen: Instant? = null,
-    ) = PartnerState(name, alarms.toList(), null, seen, defaultWallpaper = wallpaper)
+        wallpaperFrame: WallpaperFrame? = null,
+    ) = PartnerState(name, alarms.toList(), null, seen, defaultWallpaper = wallpaper, defaultWallpaperFrame = wallpaperFrame)
 
     private class Env(
         val test: LinkSyncImplTest,
@@ -161,6 +164,33 @@ class LinkSyncImplTest {
         assertEquals(VibrationPattern.RAPID, r.link!!.overrideVibration)
         assertEquals(false, r.link!!.overrideVibrationOn)
         assertEquals(true, r.link!!.overrideSoundOn)
+    }
+
+    @Test fun `copies the owner's frame and text position, follows changes and keeps the joiner's overrides`() = runTest {
+        val overrides = row().link!!.copy(
+            overrideWallpaperFrame = WallpaperFrame(3f, 0.1f, 0.2f), overrideTextPosition = TextPosition.TOP,
+        )
+        val e = started(env(partner = null, rows = listOf(row().copy(link = overrides))))
+        val f1 = WallpaperFrame(2f, 0.3f, 0.7f)
+        e.partner.value = state(owner().copy(wallpaperFrame = f1, textPosition = TextPosition.BOTTOM))
+        runCurrent()
+        assertEquals(f1, e.row()!!.wallpaperFrame)
+        assertEquals(TextPosition.BOTTOM, e.row()!!.textPosition)
+        assertEquals(overrides, e.row()!!.link!!.copy(ownerSkippedOccurrenceAt = null))
+        // Only the frame changes: the row must be rewritten.
+        val f2 = WallpaperFrame(1.5f, 0.6f, 0.4f)
+        e.partner.value = state(owner().copy(wallpaperFrame = f2, textPosition = TextPosition.BOTTOM))
+        runCurrent()
+        assertEquals(f2, e.row()!!.wallpaperFrame)
+        e.partner.value = state(owner().copy(wallpaperFrame = f2, textPosition = TextPosition.TOP))
+        runCurrent()
+        assertEquals(TextPosition.TOP, e.row()!!.textPosition)
+        e.partner.value = state(owner())
+        runCurrent()
+        assertNull(e.row()!!.wallpaperFrame)
+        assertEquals(TextPosition.MIDDLE, e.row()!!.textPosition)
+        assertEquals(WallpaperFrame(3f, 0.1f, 0.2f), e.row()!!.link!!.overrideWallpaperFrame)
+        assertEquals(TextPosition.TOP, e.row()!!.link!!.overrideTextPosition)
     }
 
     @Test fun `copies the owner's late ring and a later doc without it clears it`() = runTest {
@@ -592,6 +622,23 @@ class LinkSyncImplTest {
         e.partner.value = state(owner(media = m), owner("unlinked"), wallpaper = wp)
         runCurrent()
         assertEquals(1, e.media.updates.size)
+    }
+
+    @Test fun `passes the owner's default wallpaper frame and re-passes it when only the frame changes`() = runTest {
+        val wp = MediaRef("sha2", 20)
+        val f1 = WallpaperFrame(2f, 0.3f, 0.7f)
+        val e = started(env())
+        e.partner.value = state(owner(), wallpaper = wp, wallpaperFrame = f1)
+        runCurrent()
+        assertEquals(listOf(FakeLinkedMediaCache.Update("them", emptyMap(), wp, f1)), e.media.updates)
+        val f2 = WallpaperFrame(3f, 0.5f, 0.5f)
+        e.partner.value = state(owner(), wallpaper = wp, wallpaperFrame = f2)
+        runCurrent()
+        assertEquals(f2, e.media.updates.last().defaultWallpaperFrame)
+        assertEquals(2, e.media.updates.size)
+        e.partner.value = state(owner(), wallpaper = wp, wallpaperFrame = f2, seen = Instant.parse("2026-03-02T05:01:00Z"))
+        runCurrent()
+        assertEquals(2, e.media.updates.size)
     }
 
     @Test fun `no media update while the partner state is unknown`() = runTest {

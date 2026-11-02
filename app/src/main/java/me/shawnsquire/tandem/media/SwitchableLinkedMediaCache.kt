@@ -3,13 +3,15 @@ package me.shawnsquire.tandem.media
 import me.shawnsquire.tandem.alarm.chooseWallpaperPaths
 import me.shawnsquire.tandem.alarm.systemDefaultAlarmUri
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 
 /**
  * Before the real cache is attached: nothing cached, so a linked row resolves from its own media.
  * Both this and [LinkedMediaCacheImpl]'s error fallback use [resolveFromRow].
  */
 object DefaultLinkedMediaCache : LinkedMediaCache {
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) = Unit
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) = Unit
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? = null
     override fun pathFor(sha: String): String? = null
     override fun inUse(): Set<String> = emptySet()
 
@@ -45,8 +47,10 @@ object DefaultLinkedMediaCache : LinkedMediaCache {
 class SwitchableLinkedMediaCache : LinkedMediaCache {
     @Volatile var delegate: LinkedMediaCache = DefaultLinkedMediaCache
 
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) =
-        delegate.update(ownerUid, alarms, defaultWallpaper)
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) =
+        delegate.update(ownerUid, alarms, defaultWallpaper, defaultWallpaperFrame)
+
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? = delegate.defaultWallpaperFrame(ownerUid)
 
     override fun pathFor(sha: String): String? = delegate.pathFor(sha)
     override fun inUse(): Set<String> = delegate.inUse()

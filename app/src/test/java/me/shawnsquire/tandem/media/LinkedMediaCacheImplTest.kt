@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -230,6 +231,57 @@ class LinkedMediaCacheImplTest {
     @Test fun resolveSurvivesACorruptStore() = runTest {
         File(tmp.root, "linked-media.json").writeText("{ not json")
         assertEquals(listOf(sys, "content://j"), cache().resolve(alarm(), "content://j", null).soundCandidates)
+    }
+
+    // default wallpaper frame
+
+    @Test fun persistsTheDefaultWallpaperFrameWithTheRefs() {
+        val frame = WallpaperFrame(2.5f, 0.25f, 0.75f)
+        cache().update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), null)), ref(defBytes), frame)
+        val fresh = cache()
+        assertEquals(frame, fresh.defaultWallpaperFrame("owner"))
+        assertEquals(setOf(sha256(photoBytes), sha256(defBytes)), fresh.inUse())
+        assertNull(fresh.defaultWallpaperFrame("someone-else"))
+    }
+
+    @Test fun aNewFrameReplacesTheOldAndNullClearsIt() {
+        val c = cache()
+        c.update("owner", emptyMap(), ref(defBytes), WallpaperFrame(2f, 0.3f, 0.3f))
+        c.update("owner", emptyMap(), ref(defBytes), WallpaperFrame(3f, 0.6f, 0.6f))
+        assertEquals(WallpaperFrame(3f, 0.6f, 0.6f), cache().defaultWallpaperFrame("owner"))
+        c.update("owner", emptyMap(), ref(defBytes))
+        assertNull(cache().defaultWallpaperFrame("owner"))
+    }
+
+    @Test fun aFrameDoesNotEnqueueADownload() {
+        cacheFile(defBytes)
+        cache().update("owner", emptyMap(), ref(defBytes), WallpaperFrame(2f, 0.5f, 0.5f))
+        assertEquals(0, enqueued)
+    }
+
+    @Test fun anOldStoreWithoutAFrameReadsNull() {
+        File(tmp.root, "linked-media.json").writeText(
+            """{"ownerUid":"owner","defaultWallpaper":{"sha":"${sha256(defBytes)}","size":7},"alarms":{}}""",
+        )
+        val c = cache()
+        assertNull(c.defaultWallpaperFrame("owner"))
+        assertEquals(setOf(sha256(defBytes)), c.inUse())
+    }
+
+    @Test fun aGarbledStoredFrameReadsNullWithoutFailingTheRest() {
+        for (bad in listOf("\"x\"", "{\"zoom\":2,\"x\":0.5}", "{\"zoom\":\"a\",\"x\":0.5,\"y\":0.5}", "[1]", "null")) {
+            File(tmp.root, "linked-media.json").writeText(
+                """{"ownerUid":"owner","defaultWallpaper":{"sha":"${sha256(defBytes)}","size":7},"defaultWallpaperFrame":$bad,"alarms":{}}""",
+            )
+            val c = cache()
+            assertNull(bad, c.defaultWallpaperFrame("owner"))
+            assertEquals(bad, setOf(sha256(defBytes)), c.inUse())
+        }
+    }
+
+    @Test fun aCorruptStoreReadsNullFrame() {
+        File(tmp.root, "linked-media.json").writeText("{ not json")
+        assertNull(cache().defaultWallpaperFrame("owner"))
     }
 
     @Test fun constructingDoesNoIo() {

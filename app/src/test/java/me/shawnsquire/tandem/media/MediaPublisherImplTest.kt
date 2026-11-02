@@ -18,6 +18,8 @@ import me.shawnsquire.tandem.fakes.FakePartnerRepository
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.Household
 import me.shawnsquire.tandem.sync.PartnerState
 import me.shawnsquire.tandem.sync.PublishedLink
@@ -162,6 +164,33 @@ class MediaPublisherImplTest {
         assertEquals("image/jpeg", storage.uploads.first { it.sha == sha(photo) }.contentType)
         assertEquals("audio/mpeg", storage.uploads.first { it.sha == sha(tone) }.contentType)
         assertTrue(storage.uploads.all { it.hid == "hid-1" && it.uid == "me" })
+    }
+
+    @Test
+    fun aFrameOrTextPositionEditChangesNeitherTheRefsNorUploadsAnything() = runTest {
+        source.put("/w/a.jpg", photo)
+        source.put("/w/def.jpg", "default".toByteArray())
+        alarms.upsert(alarm("a", wallpaper = "/w/a.jpg"))
+        settings.setDefaultWallpaperPath("/w/def.jpg")
+        partner.set(link("a"))
+        val p = publisher()
+        p.start()
+        advanceUntilIdle()
+        val before = p.published.first()!!
+        val uploads = storage.uploads.size
+        val emitted = mutableListOf<PublishedMedia?>()
+        val job = launch(StandardTestDispatcher(testScheduler)) { p.published.collect { emitted += it } }
+        runCurrent()
+
+        alarms.upsert(alarm("a", wallpaper = "/w/a.jpg").copy(wallpaperFrame = WallpaperFrame(3f, 0.1f, 0.9f), textPosition = TextPosition.TOP))
+        settings.setDefaultWallpaperFrame(WallpaperFrame(2f, 0.2f, 0.8f))
+        advanceUntilIdle()
+        job.cancel()
+
+        assertEquals(before, p.published.first())
+        assertEquals(listOf(before), emitted)
+        assertEquals(uploads, storage.uploads.size)
+        assertTrue(storage.deletes.isEmpty())
     }
 
     @Test

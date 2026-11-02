@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.media
 
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 
 /** What a linked ring shows and plays. [soundCandidates] are in resolution order and already include the system alarm sound, so the ring passes them through without the adapter appending its defaults. */
 data class RingMedia(val label: String, val soundCandidates: List<String>, val wallpaperPaths: List<String>)
@@ -14,8 +15,13 @@ data class RingMedia(val label: String, val soundCandidates: List<String>, val w
 interface LinkedMediaCache {
     /**
      * Must persist [alarms] and [defaultWallpaper] before returning, not just hold them in memory:
-     * [resolve] and [pathFor] may run in a process that never saw this call. LinkSync, each pass: the owner's current refs for linked alarms (keyed by ownerAlarmId) and default wallpaper; enqueues downloads of uncached hashes (network-constrained WorkManager). */
-    fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?)
+     * [resolve] and [pathFor] may run in a process that never saw this call. LinkSync, each pass: the owner's current refs for linked alarms (keyed by ownerAlarmId) and default wallpaper; enqueues downloads of uncached hashes (network-constrained WorkManager).
+     * [defaultWallpaperFrame] frames [defaultWallpaper] (null: centred); it is persisted with the refs but is not a media ref, so it adds no download. */
+    fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame? = null)
+
+    /** The frame of [ownerUid]'s default wallpaper as last passed to [update]; null (centred) when none, another owner's, or unreadable. Never throws. */
+
+    fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame?
 
     /** Cached file path (filesDir/linked/{sha}) for [sha], or null. */
     fun pathFor(sha: String): String?

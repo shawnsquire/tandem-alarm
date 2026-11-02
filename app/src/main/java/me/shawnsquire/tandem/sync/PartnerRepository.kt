@@ -5,7 +5,9 @@ import me.shawnsquire.tandem.media.MediaRef
 import kotlinx.coroutines.flow.Flow
 import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import java.time.DayOfWeek
 import java.time.Instant
 
@@ -25,6 +27,9 @@ data class PartnerAlarm(
     val vibration: VibrationPattern = VibrationPattern.PULSE,
     val vibrationOn: Boolean = true,
     val soundOn: Boolean = true,
+    /** Frames the alarm's own wallpaper (null: centred) and places the ring text; both copied by a joiner. */
+    val wallpaperFrame: WallpaperFrame? = null,
+    val textPosition: TextPosition = TextPosition.MIDDLE,
 )
 
 /** Read-only mirror of the partner's state; commands target [PartnerAlarm.nextOccurrenceAt] / [ringing] (I3). */
@@ -35,6 +40,7 @@ data class PartnerState(
     val lastSeen: Instant?,
     val links: List<PublishedLink> = emptyList(),
     val defaultWallpaper: MediaRef? = null,
+    val defaultWallpaperFrame: WallpaperFrame? = null,
 )
 
 interface PartnerRepository {

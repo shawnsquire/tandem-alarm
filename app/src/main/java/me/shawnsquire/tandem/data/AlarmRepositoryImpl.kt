@@ -70,6 +70,9 @@ class AlarmRepositoryImpl(
                 vibration = incoming.vibration,
                 vibrationOn = incoming.vibrationOn,
                 soundOn = incoming.soundOn,
+                wallpaperZoom = incoming.wallpaperZoom,
+                wallpaperFocusX = incoming.wallpaperFocusX,
+                wallpaperFocusY = incoming.wallpaperFocusY,
                 textPosition = incoming.textPosition,
                 linkOwnerSkippedOccurrenceAt = incoming.linkOwnerSkippedOccurrenceAt,
             )

@@ -34,6 +34,7 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.MediaRef
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
@@ -94,7 +95,7 @@ class LinkSyncImpl(
 
     private val applied = HashMap<String, AppliedMark>()
 
-    private data class MediaArgs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val wallpaper: MediaRef?)
+    private data class MediaArgs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val wallpaper: MediaRef?, val wallpaperFrame: WallpaperFrame? = null)
     private data class Trigger(val partner: PartnerState?, val household: Household?)
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -299,6 +300,7 @@ class LinkSyncImpl(
             label = doc.label, hour = doc.hour, minute = doc.minute, days = doc.days, enabled = doc.enabled,
             lateRing = doc.lateRing,
             vibration = doc.vibration, vibrationOn = doc.vibrationOn, soundOn = doc.soundOn,
+            wallpaperFrame = doc.wallpaperFrame, textPosition = doc.textPosition,
             link = link.copy(ownerSkippedOccurrenceAt = doc.skippedOccurrenceAt),
         )
         var changed = false
@@ -465,10 +467,10 @@ class LinkSyncImpl(
         val byOwnerId = rows.mapNotNull { it.link?.ownerAlarmId }.toSet()
         val media = owner.alarms.filter { it.id in byOwnerId }
             .mapNotNull { a -> a.media?.let { a.id to it } }.toMap()
-        val args = MediaArgs(hh.partnerUid, media, owner.defaultWallpaper)
+        val args = MediaArgs(hh.partnerUid, media, owner.defaultWallpaper, owner.defaultWallpaperFrame)
         if (args == lastMedia) return
         try {
-            mediaCache.update(args.ownerUid, args.alarms, args.wallpaper)
+            mediaCache.update(args.ownerUid, args.alarms, args.wallpaper, args.wallpaperFrame)
             lastMedia = args
         } catch (e: CancellationException) {
             throw e

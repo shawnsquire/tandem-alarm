@@ -19,7 +19,9 @@ import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.nextOccurrence
 
 // Pure Firestore/FCM mapping. Timestamps are always Firestore Timestamps (never epoch Longs) in
@@ -130,11 +132,14 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
  * [now] is written as null: it is meaningless to the partner, who would send an UNSKIP that is always rejected.
  * A solo skip that is not after [now] is omitted likewise. `alarms[].lateRing` (`occurrenceAt` Timestamp,
  * `ring` Boolean) is written only while its `occurrenceAt` is within [FIRE_GRACE] of [now] or later.
- * `alarms[].vibration` (the pattern's name), `vibrationOn` and `soundOn` are always written.
+ * `alarms[].vibration` (the pattern's name), `vibrationOn` and `soundOn` are always written, and so is
+ * `alarms[].textPosition` (its name); `alarms[].wallpaperFrame` (`{zoom, x, y}`) only when the alarm has a frame.
+ * The frame and position sit beside `media`, never inside it, so they never touch a media hash.
  * A link's `hour`, `minute` and `days` are written only when its schedule is known.
  *
  * Top-level newer keys are emitted only when there is something to say: `links` when [links] is
- * non-null (even empty), `defaultWallpaper` when [media] is non-null, `alarms[].media` for alarms
+ * non-null (even empty), `defaultWallpaper` and `defaultWallpaperFrame` (null when [defaultWallpaperFrame]
+ * is, so a cleared frame replaces the stored one) when [media] is non-null, `alarms[].media` for alarms
  * with an entry in [PublishedMedia.alarms]. Inside a non-null `ringing` map every key is always
  * written: `snoozedUntil`, `occurrenceAt` (Timestamp or null) and `merged` (possibly empty).
  * `ringing.alarmId` and `merged[].alarmId` name a linked row by its owner's alarm id, looked up in
@@ -143,7 +148,7 @@ fun reasonFromFcm(data: Map<String, String>): String? = data["reason"]?.takeIf(S
  *
  * The writer merges (SetOptions.merge), which merges nested maps deeply: an omitted key inside
  * `ringing` would keep the previous ring's value, hence the always-written keys above. An omitted
- * top-level key (`links`, `defaultWallpaper`) keeps its stored value, but `alarms` is an array and
+ * top-level key (`links`, `defaultWallpaper`, `defaultWallpaperFrame`) keeps its stored value, but `alarms` is an array and
  * is replaced whole, so `alarms[].media` survives only if [media] is passed every time.
  */
 fun deviceDocMap(
@@ -156,6 +161,7 @@ fun deviceDocMap(
     links: List<PublishedLink>? = null,
     media: PublishedMedia? = null,
     ringOwnerIds: Map<String, String> = emptyMap(),
+    defaultWallpaperFrame: WallpaperFrame? = null,
 ): Map<String, Any?> = buildMap {
     put("displayName", displayName)
     if (fcmToken != null) put("fcmToken", fcmToken)
@@ -179,6 +185,8 @@ fun deviceDocMap(
                 put("vibration", a.vibration.name)
                 put("vibrationOn", a.vibrationOn)
                 put("soundOn", a.soundOn)
+                put("textPosition", a.textPosition.name)
+                a.wallpaperFrame?.let { put("wallpaperFrame", it.toMap()) }
                 media?.alarms?.get(a.id)?.let { m ->
                     put("media", mapOf("wallpaper" to m.wallpaper?.toMap(), "ringtone" to m.ringtone?.toMap(withTitle = true)))
                 }
@@ -199,7 +207,19 @@ fun deviceDocMap(
         },
     )
     if (links != null) put("links", links.map { it.toMap() })
-    if (media != null) put("defaultWallpaper", media.defaultWallpaper?.toMap())
+    if (media != null) {
+        put("defaultWallpaper", media.defaultWallpaper?.toMap())
+        put("defaultWallpaperFrame", defaultWallpaperFrame?.toMap())
+    }
+}
+
+private fun WallpaperFrame.toMap(): Map<String, Any?> = mapOf("zoom" to zoom.toDouble(), "x" to focusX.toDouble(), "y" to focusY.toDouble())
+
+/** A frame from a doc value; null (centred) when absent, not a map, a part missing or not a finite number. */
+private fun wallpaperFrameFrom(v: Any?): WallpaperFrame? {
+    val m = v as? Map<*, *> ?: return null
+    fun part(key: String): Float? = (m[key] as? Number)?.toFloat()?.takeIf { it.isFinite() }
+    return WallpaperFrame(part("zoom") ?: return null, part("x") ?: return null, part("y") ?: return null).sanitized()
 }
 
 private fun PublishedLink.toMap(): Map<String, Any?> = buildMap {
@@ -267,6 +287,7 @@ fun partnerStateFromDoc(data: Map<String, Any?>): PartnerState? {
         lastSeen = (data["updatedAt"] as? Timestamp)?.toInstantCompat(),
         links = (data["links"] as? List<*>).orEmpty().mapNotNull(::linkFrom),
         defaultWallpaper = mediaRefFrom(data["defaultWallpaper"]),
+        defaultWallpaperFrame = wallpaperFrameFrom(data["defaultWallpaperFrame"]),
     )
 }
 
@@ -295,6 +316,9 @@ private fun partnerAlarmFrom(m: Map<*, *>): PartnerAlarm? {
         vibration = (m["vibration"] as? String)?.toVibrationPattern() ?: VibrationPattern.PULSE,
         vibrationOn = m["vibrationOn"] as? Boolean ?: true,
         soundOn = m["soundOn"] as? Boolean ?: true,
+        // Same for an older partner (no field) or a newer one (an unknown position): centred, the plain crop.
+        textPosition = TextPosition.entries.firstOrNull { it.name == m["textPosition"] } ?: TextPosition.MIDDLE,
+        wallpaperFrame = wallpaperFrameFrom(m["wallpaperFrame"]),
     )
 }
 

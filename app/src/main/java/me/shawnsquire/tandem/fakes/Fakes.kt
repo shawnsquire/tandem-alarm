@@ -124,6 +124,8 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
                     vibration = alarm.vibration,
                     vibrationOn = alarm.vibrationOn,
                     soundOn = alarm.soundOn,
+                    wallpaperFrame = alarm.wallpaperFrame,
+                    textPosition = alarm.textPosition,
                     link = storedLink.copy(ownerSkippedOccurrenceAt = incoming.ownerSkippedOccurrenceAt),
                 )
                 list.map { if (it.id == alarm.id) merged else it }
@@ -436,13 +438,21 @@ class FakeMediaPublisher : MediaPublisher {
 
 /** Reproduces today's ring choice (no owner media), so L2 can call it before L5 exists. */
 class FakeLinkedMediaCache : LinkedMediaCache {
-    data class Update(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val defaultWallpaper: MediaRef?)
+    data class Update(
+        val ownerUid: String,
+        val alarms: Map<String, AlarmMedia>,
+        val defaultWallpaper: MediaRef?,
+        val defaultWallpaperFrame: WallpaperFrame? = null,
+    )
 
     val updates = mutableListOf<Update>()
 
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) {
-        updates += Update(ownerUid, alarms, defaultWallpaper)
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) {
+        updates += Update(ownerUid, alarms, defaultWallpaper, defaultWallpaperFrame)
     }
+
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? =
+        updates.lastOrNull()?.takeIf { it.ownerUid == ownerUid }?.defaultWallpaperFrame
 
     /** Cached file paths by sha, for tests to populate. */
     val paths = mutableMapOf<String, String>()

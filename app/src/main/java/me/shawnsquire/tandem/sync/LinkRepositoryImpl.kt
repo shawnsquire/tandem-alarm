@@ -322,6 +322,8 @@ class LinkRepositoryImpl(
                     vibration = owner.vibration,
                     vibrationOn = owner.vibrationOn,
                     soundOn = owner.soundOn,
+                    wallpaperFrame = owner.wallpaperFrame,
+                    textPosition = owner.textPosition,
                     skippedOccurrenceAt = null,
                     ringtoneUri = null,
                     wallpaperPath = null,

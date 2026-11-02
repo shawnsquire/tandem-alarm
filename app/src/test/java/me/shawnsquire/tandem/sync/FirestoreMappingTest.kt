@@ -14,6 +14,8 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import kotlin.time.toJavaDuration
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
@@ -123,7 +125,7 @@ class FirestoreMappingTest {
         val a = (m["alarms"] as List<*>).single() as Map<*, *>
         assertEquals(
             setOf("id", "label", "hour", "minute", "days", "enabled", "nextOccurrenceAt", "skippedOccurrenceAt",
-                "vibration", "vibrationOn", "soundOn"),
+                "vibration", "vibrationOn", "soundOn", "textPosition"),
             a.keys,
         )
     }
@@ -375,6 +377,85 @@ class FirestoreMappingTest {
         )!!
         assertEquals(3, s.alarms.size)
         assertTrue(s.alarms.all { it.vibration == VibrationPattern.PULSE && it.vibrationOn && it.soundOn })
+    }
+
+    @Test
+    fun frameAndTextPositionRoundTripBesideTheMediaRefs() {
+        val frame = WallpaperFrame(2.5f, 0.25f, 0.75f)
+        val defFrame = WallpaperFrame(1.5f, 0.5f, 0.125f)
+        val a = alarm.copy(wallpaperFrame = frame, textPosition = TextPosition.BOTTOM)
+        val wall = MediaRef("w".repeat(64), 5)
+        val media = PublishedMedia(MediaRef("d".repeat(64), 7), mapOf("a1" to AlarmMedia(wall, null)))
+        val m = deviceDocMap("P", null, listOf(a), null, now, zone, null, media, defaultWallpaperFrame = defFrame)
+        val entry = (m["alarms"] as List<*>).single() as Map<*, *>
+        assertEquals("BOTTOM", entry["textPosition"])
+        assertEquals(mapOf("zoom" to 2.5, "x" to 0.25, "y" to 0.75), entry["wallpaperFrame"])
+        assertEquals(mapOf("zoom" to 1.5, "x" to 0.5, "y" to 0.125), m["defaultWallpaperFrame"])
+        // Nothing of the framing leaks into the content-addressed refs.
+        assertEquals(setOf("sha", "size"), ((entry["media"] as Map<*, *>)["wallpaper"] as Map<*, *>).keys)
+        assertEquals(setOf("sha", "size"), (m["defaultWallpaper"] as Map<*, *>).keys)
+        val s = partnerStateFromDoc(m + ("updatedAt" to Timestamp(now.epochSecond, 0)))!!
+        assertEquals(frame, s.alarms.single().wallpaperFrame)
+        assertEquals(TextPosition.BOTTOM, s.alarms.single().textPosition)
+        assertEquals(AlarmMedia(wall, null), s.alarms.single().media)
+        assertEquals(defFrame, s.defaultWallpaperFrame)
+    }
+
+    @Test
+    fun anAlarmWithoutAFrameOmitsItAndAClearedDefaultFrameIsWrittenNull() {
+        val entry = (deviceDocMap("P", null, listOf(alarm), null, now, zone)["alarms"] as List<*>).single() as Map<*, *>
+        assertFalse(entry.containsKey("wallpaperFrame"))
+        assertEquals("MIDDLE", entry["textPosition"])
+        // The writer merges, so a reset default frame must replace the stored one with an explicit null.
+        val cleared = deviceDocMap("P", null, listOf(alarm), null, now, zone, null, PublishedMedia(null, emptyMap()))
+        assertTrue(cleared.containsKey("defaultWallpaperFrame") && cleared["defaultWallpaperFrame"] == null)
+        assertFalse(deviceDocMap("P", null, listOf(alarm), null, now, zone).containsKey("defaultWallpaperFrame"))
+        val s = partnerStateFromDoc(cleared)!!
+        assertNull(s.defaultWallpaperFrame)
+        assertNull(s.alarms.single().wallpaperFrame)
+    }
+
+    @Test
+    fun anOlderDocWithoutFrameFieldsParsesCentredAtMiddle() {
+        val s = partnerStateFromDoc(
+            mapOf("displayName" to "P", "alarms" to listOf(mapOf("id" to "a", "hour" to 6L, "minute" to 5L, "enabled" to true))),
+        )!!
+        assertNull(s.alarms.single().wallpaperFrame)
+        assertEquals(TextPosition.MIDDLE, s.alarms.single().textPosition)
+        assertNull(s.defaultWallpaperFrame)
+    }
+
+    @Test
+    fun unknownOrMalformedFrameAndPositionNeverDropTheAlarmOrDoc() {
+        val base = mapOf("id" to "a", "hour" to 6L, "minute" to 5L, "enabled" to true)
+        val s = partnerStateFromDoc(
+            mapOf(
+                "displayName" to "P",
+                "defaultWallpaperFrame" to mapOf("zoom" to 2.0, "x" to Double.NaN, "y" to 0.5),
+                "alarms" to listOf(
+                    base + mapOf("textPosition" to "SIDEWAYS", "wallpaperFrame" to "x"),
+                    base + mapOf("textPosition" to 3L, "wallpaperFrame" to mapOf("zoom" to 2.0, "x" to 0.5)),
+                    base + mapOf("wallpaperFrame" to mapOf("zoom" to "2", "x" to 0.5, "y" to 0.5)),
+                    base + mapOf("wallpaperFrame" to mapOf("zoom" to Double.NaN, "x" to 0.5, "y" to 0.5)),
+                    base + mapOf("wallpaperFrame" to mapOf("zoom" to Double.POSITIVE_INFINITY, "x" to 0.5, "y" to 0.5)),
+                ),
+            ),
+        )!!
+        assertEquals(5, s.alarms.size)
+        assertTrue(s.alarms.all { it.wallpaperFrame == null && it.textPosition == TextPosition.MIDDLE })
+        assertNull(s.defaultWallpaperFrame)
+    }
+
+    @Test
+    fun anOutOfRangeFrameIsSanitized() {
+        val base = mapOf("id" to "a", "hour" to 6L, "minute" to 5L, "enabled" to true)
+        val s = partnerStateFromDoc(
+            mapOf(
+                "displayName" to "P",
+                "alarms" to listOf(base + ("wallpaperFrame" to mapOf("zoom" to 99L, "x" to -3L, "y" to 7.5))),
+            ),
+        )!!
+        assertEquals(WallpaperFrame(4f, 0f, 1f), s.alarms.single().wallpaperFrame)
     }
 
     @Test

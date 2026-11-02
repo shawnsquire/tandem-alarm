@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -35,11 +36,12 @@ class LinkedMediaCacheImpl(
     private val lock = Any()
     private var cached: Refs? = null
 
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) {
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) {
         val refs = Refs(
             ownerUid,
             alarms.mapValues { (_, m) -> AlarmMedia(m.wallpaper?.takeIf(::valid), m.ringtone?.takeIf(::valid)) },
             defaultWallpaper?.takeIf(::valid),
+            defaultWallpaperFrame?.sanitized(),
         )
         synchronized(lock) {
             cached = refs
@@ -66,6 +68,13 @@ class LinkedMediaCacheImpl(
         } catch (e: Exception) {
             Log.w(TAG, "reporting linked media status failed", e)
         }
+    }
+
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? = try {
+        refs().takeIf { it.ownerUid == ownerUid }?.defaultWallpaperFrame
+    } catch (e: Exception) {
+        Log.w(TAG, "reading linked media refs failed", e)
+        null
     }
 
     override fun pathFor(sha: String): String? {
@@ -170,7 +179,7 @@ class LinkedMediaCacheImpl(
     }
 
     private fun load(): Refs {
-        if (!storeFile.exists()) return Refs("", emptyMap(), null)
+        if (!storeFile.exists()) return Refs("", emptyMap(), null, null)
         return decode(JSONObject(storeFile.readText()))
     }
 
@@ -184,6 +193,9 @@ class LinkedMediaCacheImpl(
     private fun encode(r: Refs): JSONObject = JSONObject().apply {
         put("ownerUid", r.ownerUid)
         r.defaultWallpaper?.let { put("defaultWallpaper", it.toJson()) }
+        r.defaultWallpaperFrame?.let {
+            put("defaultWallpaperFrame", JSONObject().put("zoom", it.zoom.toDouble()).put("x", it.focusX.toDouble()).put("y", it.focusY.toDouble()))
+        }
         put("alarms", JSONObject().apply {
             r.alarms.forEach { (id, m) ->
                 put(id, JSONObject().apply {
@@ -203,7 +215,15 @@ class LinkedMediaCacheImpl(
                 AlarmMedia(m.optJSONObject("wallpaper")?.let(::mediaRefFromJson)?.takeIf(::valid), m.optJSONObject("ringtone")?.let(::mediaRefFromJson)?.takeIf(::valid))
             },
             defaultWallpaper = o.optJSONObject("defaultWallpaper")?.let(::mediaRefFromJson)?.takeIf(::valid),
+            defaultWallpaperFrame = frameFromJson(o.opt("defaultWallpaperFrame")),
         )
+    }
+
+    /** Null for an absent or garbled frame: it must never fail the rest of the read. */
+    private fun frameFromJson(v: Any?): WallpaperFrame? {
+        val o = v as? JSONObject ?: return null
+        fun part(key: String): Float? = (o.opt(key) as? Number)?.toFloat()?.takeIf { it.isFinite() }
+        return WallpaperFrame(part("zoom") ?: return null, part("x") ?: return null, part("y") ?: return null).sanitized()
     }
 
     /** Refs come from the partner's document: only a bare SHA-256 may become a file name. */
@@ -219,7 +239,12 @@ class LinkedMediaCacheImpl(
         else -> readable(s)
     }
 
-    private data class Refs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val defaultWallpaper: MediaRef?) {
+    private data class Refs(
+        val ownerUid: String,
+        val alarms: Map<String, AlarmMedia>,
+        val defaultWallpaper: MediaRef?,
+        val defaultWallpaperFrame: WallpaperFrame?,
+    ) {
         fun shas(): Set<String> = buildSet {
             alarms.values.forEach { m -> m.wallpaper?.let { add(it.sha) }; m.ringtone?.let { add(it.sha) } }
             defaultWallpaper?.let { add(it.sha) }

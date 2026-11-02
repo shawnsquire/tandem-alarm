@@ -36,9 +36,11 @@ interface AlarmRepository {
     /**
      * Writes a linked row; [alarm].link must be non-null (IllegalArgumentException otherwise).
      * Inserts it if absent. If a row with that id exists, replaces only the owner-copied fields
-     * (label, hour, minute, days, enabled, lateRing, vibration, vibrationOn, soundOn, textPosition, link.ownerSkippedOccurrenceAt) and keeps every joiner-owned
-     * field (skippedOccurrenceAt, soloSkippedOccurrenceAt, ringtoneUri, wallpaperPath, wallpaperFrame and the rest of link;
-     * the frame goes with the wallpaper file it frames),
+     * (label, hour, minute, days, enabled, lateRing, vibration, vibrationOn, soundOn, wallpaperFrame, textPosition, link.ownerSkippedOccurrenceAt) and keeps every joiner-owned
+     * field (skippedOccurrenceAt, soloSkippedOccurrenceAt, ringtoneUri, wallpaperPath and the rest of link).
+     * On a linked row wallpaperFrame is the owner's frame for the owner's wallpaper, which the joiner resolves
+     * by hash through the media cache rather than through wallpaperPath; the joiner's own wallpaper has
+     * link.overrideWallpaperFrame,
      * so a sync never overwrites the joiner's own state. If an existing row with that id is not linked,
      * throws IllegalStateException without writing: an id collision or LinkSync bug must never turn an
      * own alarm into a linked row (I2). One transaction.

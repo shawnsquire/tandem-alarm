@@ -484,15 +484,21 @@ class AlarmRepositoryImplTest {
     }
 
     @Test
-    fun upsertLinkedCopiesTheTextPositionButKeepsTheFrameAndTheJoinersOverrides() = runTest {
+    fun upsertLinkedCopiesTheOwnersFrameAndTextPositionButKeepsTheJoinersOverrides() = runTest {
+        val own = linked().link!!.copy(
+            overrideTextPosition = TextPosition.TOP, overrideWallpaperFrame = WallpaperFrame(3f, 0.1f, 0.9f),
+        )
+        repo.upsertLinked(linked().copy(link = own))
         val frame = WallpaperFrame(2f, 0.3f, 0.7f)
-        val own = linked().link!!.copy(overrideTextPosition = TextPosition.TOP, overrideWallpaperFrame = frame)
-        repo.upsertLinked(linked().copy(wallpaperFrame = frame, link = own))
-        repo.upsertLinked(linked().copy(textPosition = TextPosition.BOTTOM))
+        repo.upsertLinked(linked().copy(wallpaperFrame = frame, textPosition = TextPosition.BOTTOM))
         val stored = repo.get("l")!!
         assertEquals(TextPosition.BOTTOM, stored.textPosition)
         assertEquals(frame, stored.wallpaperFrame)
         assertEquals(own, stored.link)
+        repo.upsertLinked(linked())
+        assertNull(repo.get("l")!!.wallpaperFrame)
+        assertEquals(TextPosition.MIDDLE, repo.get("l")!!.textPosition)
+        assertEquals(own, repo.get("l")!!.link)
     }
 
     @Test
