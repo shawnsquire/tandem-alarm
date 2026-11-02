@@ -57,7 +57,7 @@ Debug builds reach the host at `10.0.2.2`, the Android emulator's alias for it. 
 Android 17 (API 37) requires the runtime permission `android.permission.ACCESS_LOCAL_NETWORK` for apps targeting it to reach private addresses such as `10.0.2.2`. Debug builds declare it but do not ask for it, so grant it by hand after installing. See the [Android docs](https://developer.android.com/privacy-and-security/local-network-permission). Release builds talk to public Firebase hosts and do not need it.
 
 ```
-adb shell pm grant me.shawnsquire.tandem android.permission.ACCESS_LOCAL_NETWORK
+adb shell pm grant com.kautiontape.tandem android.permission.ACCESS_LOCAL_NETWORK
 ```
 
 ### Android emulator
@@ -72,11 +72,11 @@ emulator -avd tandem37 -no-window -no-audio -no-snapshot -no-boot-anim -memory 2
 
 ### Two installs on one device
 
-The `partner` build type installs as `me.shawnsquire.tandem.partner`, with the same debug and emulator setup, so one device or emulator can play both people. Both show the launcher label "Tandem Alarm".
+The `partner` build type installs as `com.kautiontape.tandem.partner`, with the same debug and emulator setup, so one device or emulator can play both people. Both show the launcher label "Tandem Alarm".
 
 ```
 ./gradlew installDebug installPartner
-adb shell pm grant me.shawnsquire.tandem.partner android.permission.ACCESS_LOCAL_NETWORK
+adb shell pm grant com.kautiontape.tandem.partner android.permission.ACCESS_LOCAL_NETWORK
 ```
 
 ### Instrumented smoke test
@@ -104,7 +104,7 @@ These are one-time steps. Details for the backend are in [docs/deploy.md](docs/d
 
 1. Create a Firebase project. Enable Anonymous Auth, Firestore and Cloud Messaging.
 2. Switch the project to the Blaze plan. Cloud Functions need it. Usage at this scale stays in the free tier; set a $1 budget alert.
-3. Register the Android app `me.shawnsquire.tandem` and download its `google-services.json`, and store the contents only as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. Do not copy it into `app/`: the tracked `app/google-services.json` is the demo config that debug, partner and the emulators use. The release workflow writes the prod file at build time.
+3. Register the Android app `com.kautiontape.tandem` and download its `google-services.json`, and store the contents only as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. Do not copy it into `app/`: the tracked `app/google-services.json` is the demo config that debug, partner and the emulators use. The release workflow writes the prod file at build time.
 4. Create a release keystore once, keep it and its passwords in a password manager, and add them as GitHub Actions secrets (below). Without a stable key, updates will not install over the previous build.
 5. Deploy the rules and functions: `firebase deploy --project prod --only firestore:rules,functions`, run from `firebase/`. The `prod` alias maps to `tandem-alarm` in `firebase/.firebaserc`.
 6. Create the GitHub repo, `shawnsquire/tandem-alarm`.
@@ -119,7 +119,7 @@ Required repository secrets:
 - `TANDEM_KEYSTORE_PASSWORD`
 - `TANDEM_KEY_ALIAS`
 - `TANDEM_KEY_PASSWORD`
-- `GOOGLE_SERVICES_JSON`: the production `google-services.json` for `me.shawnsquire.tandem`
+- `GOOGLE_SERVICES_JSON`: the production `google-services.json` for `com.kautiontape.tandem`
 
 To build a signed APK locally, set `TANDEM_KEYSTORE_PATH`, `TANDEM_KEYSTORE_PASSWORD`, `TANDEM_KEY_ALIAS` and `TANDEM_KEY_PASSWORD`, and optionally `TANDEM_VERSION_NAME` and `TANDEM_VERSION_CODE`, then run `./gradlew assembleRelease`.
 
@@ -138,7 +138,7 @@ Run on both phones. The linked-alarm items need two phones paired with each othe
 - [ ] An alarm rings through Do Not Disturb.
 - [ ] An alarm rings after a reboot without unlocking the phone.
 - [ ] After that reboot and the first unlock, `adb logcat` or the app shows startup completed (USER_UNLOCKED fired after the locked boot) and the periodic sync is scheduled (WorkManager).
-- [ ] After installing an update over the old build, the alarms are still armed (MY_PACKAGE_REPLACED). Check with `adb shell dumpsys alarm | grep me.shawnsquire.tandem`.
+- [ ] After installing an update over the old build, the alarms are still armed (MY_PACKAGE_REPLACED). Check with `adb shell dumpsys alarm | grep com.kautiontape.tandem`.
 - [ ] Skip from the partner while the target phone is dozing: the alarm does not ring.
 - [ ] Stop from the partner while the target phone rings: it goes quiet.
 - [ ] Snooze an alarm, then stop it from the partner: the pending snooze is cancelled.

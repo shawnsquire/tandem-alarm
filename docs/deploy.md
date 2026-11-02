@@ -8,7 +8,7 @@ This covers the first real deploy of Firestore rules and Cloud Functions to the 
 - The Blaze (pay-as-you-go) plan. Cloud Functions for Firebase requires it to deploy (see https://firebase.google.com/docs/functions). The free no-cost tier still applies.
 - Firestore enabled (Native mode).
 - Anonymous sign-in enabled under Authentication.
-- An Android app registered in the project with package name `me.shawnsquire.tandem`. Download its `google-services.json` and store the file contents as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. The release workflow writes it over `app/google-services.json`.
+- An Android app registered in the project with package name `com.kautiontape.tandem`. Download its `google-services.json` and store the file contents as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. The release workflow writes it over `app/google-services.json`.
 - Node 22.12 or newer and npm. Use the npm `firebase-tools` through `npx`. A system-wide `/usr/bin/firebase` that bundles Node 20 cannot load the functions.
 
 ## Deploy
