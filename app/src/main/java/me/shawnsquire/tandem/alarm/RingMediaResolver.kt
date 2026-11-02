@@ -11,6 +11,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.Alarm
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -33,7 +34,7 @@ suspend fun resolveRingMedia(
     alarm: Alarm?,
     cache: LinkedMediaCache,
     defaultRingtone: String?,
-    defaultWallpaper: String?,
+    defaultWallpaper: RingWallpaper?,
     timeout: Duration = RING_MEDIA_TIMEOUT,
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
     systemAlarmUri: () -> String? = ::systemDefaultAlarmUri,
@@ -41,7 +42,7 @@ suspend fun resolveRingMedia(
     val link = alarm?.link ?: return RingMedia(
         label = alarm?.label.orEmpty(),
         soundCandidates = listOfNotNull(alarm?.ringtoneUri, defaultRingtone),
-        wallpaperPaths = chooseWallpaperPaths(alarm?.wallpaperPath, defaultWallpaper),
+        wallpapers = chooseWallpapers(alarm?.wallpaperPath, alarm?.wallpaperFrame, defaultWallpaper),
     )
     fun fallback() = DefaultLinkedMediaCache.resolveFromRow(alarm, defaultRingtone, defaultWallpaper, systemAlarmUri())
     // Its own Job: a throw stays in the Deferred (await rethrows it) and never cancels the caller.

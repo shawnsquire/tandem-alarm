@@ -420,7 +420,7 @@ class TwoDeviceSmokeTest {
         val media = resolveRingMedia(b.alarms.get(row.id), b.linkedMediaCache, null, null, timeout = 5.seconds)
         assertEquals("Wake", media.label)
         assertEquals(Uri.fromFile(File(cachedTone)).toString(), media.soundCandidates.first())
-        assertEquals(cachedPhoto, media.wallpaperPaths.first())
+        assertEquals(cachedPhoto, media.wallpapers.first().path)
     }
 
     private data class Paired(val id: String, val aUid: String, val bUid: String)

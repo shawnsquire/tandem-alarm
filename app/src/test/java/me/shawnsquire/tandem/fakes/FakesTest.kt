@@ -4,6 +4,7 @@ import app.cash.turbine.test
 import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.alarm.MirrorKind
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.LinkMode
@@ -67,14 +68,14 @@ class FakesTest {
         )
         val cache = FakeLinkedMediaCache()
         assertEquals(
-            RingMedia("Owner", listOf("content://own", "content://def"), listOf("/own.jpg", "/def.jpg")),
-            cache.resolve(base, "content://def", "/def.jpg"),
+            RingMedia("Owner", listOf("content://own", "content://def"), listOf(RingWallpaper("/own.jpg", null), RingWallpaper("/def.jpg", null))),
+            cache.resolve(base, "content://def", RingWallpaper("/def.jpg", null)),
         )
         val linked = base.copy(
             ringtoneUri = null, wallpaperPath = null,
             link = AlarmLink("u", "o", LinkMode.RING, null, true, null, "Mine", null, null),
         )
-        assertEquals(RingMedia("Mine", listOf("content://def"), listOf("/def.jpg")), cache.resolve(linked, "content://def", "/def.jpg"))
+        assertEquals(RingMedia("Mine", listOf("content://def"), listOf(RingWallpaper("/def.jpg", null))), cache.resolve(linked, "content://def", RingWallpaper("/def.jpg", null)))
     }
 
     @Test

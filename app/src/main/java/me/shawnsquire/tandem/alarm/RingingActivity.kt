@@ -51,6 +51,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -58,6 +59,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.TandemApp
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.ui.theme.TandemTheme
@@ -125,9 +127,11 @@ class RingingActivity : ComponentActivity() {
         setContent {
             TandemTheme {
                 val current = ring
-                val defaultPath by produceState<String?>(null) {
+                val defaultWallpaper by produceState<RingWallpaper?>(null) {
                     try {
-                        engine.settings.defaultWallpaperPath.collect { value = it }
+                        combine(engine.settings.defaultWallpaperPath, engine.settings.defaultWallpaperFrame) { path, frame ->
+                            path?.let { RingWallpaper(it, frame) }
+                        }.collect { value = it }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -137,11 +141,11 @@ class RingingActivity : ComponentActivity() {
                 val partnerName by produceState<String?>(null) { partnerNames().collect { value = it } }
                 // Keyed on the members as well as the ringId: a merge or a promotion changes what is shown.
                 val shown by produceState<ShownContent?>(
-                    null, current?.ringId, current?.alarmId, current?.occurrenceAt, current?.merged, defaultPath, partnerName,
+                    null, current?.ringId, current?.alarmId, current?.occurrenceAt, current?.merged, defaultWallpaper, partnerName,
                 ) {
                     val r = current ?: return@produceState
                     val content = try {
-                        ringScreenContent(r, engine.alarmRepository::get, engine.linkedMediaCache, defaultPath, partnerName)
+                        ringScreenContent(r, engine.alarmRepository::get, engine.linkedMediaCache, defaultWallpaper, partnerName)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
@@ -157,7 +161,7 @@ class RingingActivity : ComponentActivity() {
                     withPartner = content?.withPartner,
                     notice = notice,
                     partnerName = partnerName,
-                    wallpaperPaths = content?.wallpaperPaths ?: chooseWallpaperPaths(null, defaultPath),
+                    wallpapers = content?.wallpapers ?: chooseWallpapers(null, null, defaultWallpaper),
                     // The ring is over; the notice is only saying who ended it.
                     canAct = current != null && !ended,
                     onStop = {
@@ -222,16 +226,16 @@ private fun RingingScreen(
     withPartner: String?,
     notice: RemoteRingEnd?,
     partnerName: String?,
-    wallpaperPaths: List<String>,
+    wallpapers: List<RingWallpaper>,
     canAct: Boolean,
     onStop: () -> Unit,
     onSnooze: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val metrics = context.resources.displayMetrics
-    val wallpaper by produceState<Bitmap?>(null, wallpaperPaths) {
+    val wallpaper by produceState<Bitmap?>(null, wallpapers) {
         value = withContext(Dispatchers.IO) {
-            wallpaperPaths.firstNotNullOfOrNull { decodeSampled(it, metrics.widthPixels, metrics.heightPixels) }
+            wallpapers.firstNotNullOfOrNull { decodeSampled(it.path, metrics.widthPixels, metrics.heightPixels) }
         }
     }
     val is24 = remember { DateFormat.is24HourFormat(context) }

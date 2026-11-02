@@ -5,17 +5,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import me.shawnsquire.tandem.media.LinkedMediaCache
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.effectiveTextPosition
 
 /**
- * What a ring shows: every member's label (primary first), the partner's name on a joined ring, and
- * the primary's wallpaper candidates (the screen decodes the first readable one).
+ * What a ring shows: every member's label (primary first), the partner's name on a joined ring, the
+ * primary's wallpaper candidates (the screen decodes the first readable one, framed as its candidate is)
+ * and where the primary puts the text block ([TextPosition.MIDDLE] when the primary can't be read).
  */
 data class RingScreenContent(
     val labels: List<String>,
     val withPartner: String?,
-    val wallpaperPaths: List<String>,
+    val wallpapers: List<RingWallpaper>,
+    val textPosition: TextPosition,
 )
 
 /**
@@ -29,7 +34,7 @@ suspend fun ringScreenContent(
     ring: RingState,
     readAlarm: suspend (String) -> Alarm?,
     cache: LinkedMediaCache,
-    defaultWallpaper: String?,
+    defaultWallpaper: RingWallpaper?,
     partnerName: String?,
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ): RingScreenContent {
@@ -41,7 +46,8 @@ suspend fun ringScreenContent(
     return RingScreenContent(
         labels = resolved.mapNotNull { (_, media) -> media?.label?.takeIf { it.isNotBlank() } },
         withPartner = partnerName?.takeIf { joined && it.isNotBlank() },
-        wallpaperPaths = resolved.first().second?.wallpaperPaths ?: chooseWallpaperPaths(null, defaultWallpaper),
+        wallpapers = resolved.first().second?.wallpapers ?: chooseWallpapers(null, null, defaultWallpaper),
+        textPosition = resolved.first().first?.effectiveTextPosition() ?: TextPosition.MIDDLE,
     )
 }
 

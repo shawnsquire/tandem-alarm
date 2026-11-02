@@ -14,6 +14,7 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.sync.LateRingNotifier
 import me.shawnsquire.tandem.sync.LateRingPrompt
 import me.shawnsquire.tandem.schedule.Alarm
@@ -463,7 +464,7 @@ class FakeLinkedMediaCache : LinkedMediaCache {
     override fun pathFor(sha: String): String? = paths[sha]
     override fun inUse(): Set<String> = inUseHashes.toSet()
 
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) =
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?) =
         DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
 }
 

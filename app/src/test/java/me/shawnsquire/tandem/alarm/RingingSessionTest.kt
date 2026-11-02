@@ -31,6 +31,7 @@ import me.shawnsquire.tandem.fakes.FakeRingStateStore
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
@@ -131,7 +132,7 @@ private class StubMediaCache(
     private val hang: Boolean = false,
     private val fail: Boolean = false,
 ) : LinkedMediaCache by FakeLinkedMediaCache() {
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?): RingMedia {
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?): RingMedia {
         if (hang) awaitCancellation()
         if (fail) throw IllegalStateException("cache")
         return media!!

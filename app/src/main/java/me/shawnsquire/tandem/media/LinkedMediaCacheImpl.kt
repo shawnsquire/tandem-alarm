@@ -86,7 +86,7 @@ class LinkedMediaCacheImpl(
     /** Throws if the store exists but cannot be read, so the orphan sweeper deletes nothing. */
     override fun inUse(): Set<String> = refs().shas()
 
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?): RingMedia {
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?): RingMedia {
         val link = alarm.link ?: return DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
         return withContext(io) {
             try {
@@ -95,9 +95,9 @@ class LinkedMediaCacheImpl(
                 val owner = refs?.alarms?.get(link.ownerAlarmId)
 
                 val photos = listOfNotNull(
-                    link.overrideWallpaperPath?.takeIf { readable(it) },
-                    owner?.wallpaper?.let { pathFor(it.sha) },
-                    refs?.defaultWallpaper?.let { pathFor(it.sha) },
+                    link.overrideWallpaperPath?.takeIf { readable(it) }?.let { RingWallpaper(it, link.overrideWallpaperFrame) },
+                    owner?.wallpaper?.let { pathFor(it.sha) }?.let { RingWallpaper(it, alarm.wallpaperFrame) },
+                    refs?.defaultWallpaper?.let { pathFor(it.sha) }?.let { RingWallpaper(it, ownerDefaultFrame(link.ownerUid)) },
                     joinerDefaultWallpaper,
                 )
                 val sounds = listOfNotNull(
@@ -109,7 +109,7 @@ class LinkedMediaCacheImpl(
                 RingMedia(
                     label = link.overrideLabel?.takeIf { it.isNotBlank() } ?: alarm.label,
                     soundCandidates = sounds.filter { it.isNotBlank() }.distinct(),
-                    wallpaperPaths = photos.filter { it.isNotBlank() }.distinct(),
+                    wallpapers = photos.distinctWallpapers(),
                 )
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -118,6 +118,10 @@ class LinkedMediaCacheImpl(
             }
         }
     }
+
+    /** The owner's default-wallpaper frame; a failure reading it is a centred frame, never a failed resolve. */
+    private fun ownerDefaultFrame(ownerUid: String): WallpaperFrame? =
+        try { defaultWallpaperFrame(ownerUid) } catch (e: Exception) { Log.w(TAG, "reading the default wallpaper frame failed", e); null }
 
     /**
      * Downloads every referenced blob that is not cached, re-reading the refs until nothing new is

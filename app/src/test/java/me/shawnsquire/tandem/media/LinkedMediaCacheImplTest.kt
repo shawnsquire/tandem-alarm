@@ -61,14 +61,22 @@ class LinkedMediaCacheImplTest {
     private val defBytes = "default".toByteArray()
     private fun ref(b: ByteArray) = MediaRef(sha256(b), b.size.toLong())
 
+    private val rowFrame = WallpaperFrame(2f, 0.3f, 0.6f)
+    private val overrideFrame = WallpaperFrame(1.5f, 0.7f, 0.2f)
+    private val ownerDefaultFrame = WallpaperFrame(3f, 0.4f, 0.4f)
+    private val joinerFrame = WallpaperFrame(1.2f, 0.5f, 0.9f)
+
+    /** The row's [rowFrame] is the owner's copied frame of the per-alarm wallpaper. */
     private fun alarm(link: AlarmLink? = link(), label: String = "Owner label") =
-        Alarm("row", label, 6, 30, setOf(DayOfWeek.MONDAY), true, null, "content://ignored", "/ignored.jpg", link)
+        Alarm("row", label, 6, 30, setOf(DayOfWeek.MONDAY), true, null, "content://ignored", "/ignored.jpg", link, wallpaperFrame = rowFrame)
 
     private fun link(label: String? = null, ring: String? = null, wall: String? = null) =
-        AlarmLink("owner", "oa", LinkMode.RING, null, true, null, label, ring, wall)
+        AlarmLink("owner", "oa", LinkMode.RING, null, true, null, label, ring, wall, overrideWallpaperFrame = overrideFrame)
+
+    private fun wp(path: String, frame: WallpaperFrame?) = RingWallpaper(path, frame)
 
     private fun fullRefs(c: LinkedMediaCacheImpl) =
-        c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), ref(ringBytes))), ref(defBytes))
+        c.update("owner", mapOf("oa" to AlarmMedia(ref(photoBytes), ref(ringBytes))), ref(defBytes), ownerDefaultFrame)
 
     private fun cacheAll() { cacheFile(photoBytes); cacheFile(ringBytes); cacheFile(defBytes) }
     private fun path(b: ByteArray) = File(linked, sha256(b)).absolutePath
@@ -80,39 +88,45 @@ class LinkedMediaCacheImplTest {
         cacheAll()
         val c = cache().also(::fullRefs)
         val override = tmp.newFile("o.jpg").absolutePath
+        val joiner = wp("/joiner.jpg", joinerFrame)
+        // Each candidate carries its own frame: the override's, the row's copy of the owner's, the owner's default's, the joiner's.
         assertEquals(
-            listOf(override, path(photoBytes), path(defBytes), "/joiner.jpg"),
-            c.resolve(alarm(link(wall = override)), null, "/joiner.jpg").wallpaperPaths,
+            listOf(wp(override, overrideFrame), wp(path(photoBytes), rowFrame), wp(path(defBytes), ownerDefaultFrame), joiner),
+            c.resolve(alarm(link(wall = override)), null, joiner).wallpapers,
         )
-        assertEquals(listOf(path(photoBytes), path(defBytes), "/joiner.jpg"), c.resolve(alarm(), null, "/joiner.jpg").wallpaperPaths)
+        assertEquals(
+            listOf(wp(path(photoBytes), rowFrame), wp(path(defBytes), ownerDefaultFrame), joiner),
+            c.resolve(alarm(), null, joiner).wallpapers,
+        )
     }
 
     @Test fun photoFallsThroughWhenEarlierStepsAreAbsent() = runTest {
         cacheFile(defBytes)
         val c = cache()
         c.update("owner", mapOf("oa" to AlarmMedia(null, null)), ref(defBytes))
-        assertEquals(listOf(path(defBytes), "/joiner.jpg"), c.resolve(alarm(), null, "/joiner.jpg").wallpaperPaths)
+        val joiner = wp("/joiner.jpg", joinerFrame)
+        assertEquals(listOf(wp(path(defBytes), null), joiner), c.resolve(alarm(), null, joiner).wallpapers)
         c.update("owner", emptyMap(), null)
-        assertEquals(listOf("/joiner.jpg"), c.resolve(alarm(), null, "/joiner.jpg").wallpaperPaths)
-        assertEquals(emptyList<String>(), c.resolve(alarm(), null, " ").wallpaperPaths)
+        assertEquals(listOf(joiner), c.resolve(alarm(), null, joiner).wallpapers)
+        assertEquals(emptyList<RingWallpaper>(), c.resolve(alarm(), null, wp(" ", null)).wallpapers)
     }
 
     @Test fun unreadableWallpaperOverrideFallsToOwnerPhoto() = runTest {
         cacheAll()
         val c = cache().also(::fullRefs)
         val media = c.resolve(alarm(link(wall = "/nope/missing.jpg")), null, null)
-        assertEquals(listOf(path(photoBytes), path(defBytes)), media.wallpaperPaths)
+        assertEquals(listOf(wp(path(photoBytes), rowFrame), wp(path(defBytes), ownerDefaultFrame)), media.wallpapers)
     }
 
     @Test fun uncachedPhotoFallsToNextStep() = runTest {
         cacheFile(defBytes)
         val c = cache().also(::fullRefs)
-        assertEquals(listOf(path(defBytes)), c.resolve(alarm(), null, null).wallpaperPaths)
+        assertEquals(listOf(wp(path(defBytes), ownerDefaultFrame)), c.resolve(alarm(), null, null).wallpapers)
     }
 
     @Test fun ownWallpaperPathIsIgnoredOnALinkedRow() = runTest {
         val c = cache()
-        assertEquals(emptyList<String>(), c.resolve(alarm(), null, null).wallpaperPaths)
+        assertEquals(emptyList<RingWallpaper>(), c.resolve(alarm(), null, null).wallpapers)
         assertEquals(emptyList<String>(), c.resolve(alarm(), null, null).soundCandidates - sys)
     }
 
@@ -160,7 +174,7 @@ class LinkedMediaCacheImplTest {
         cacheAll()
         val c = cache().also(::fullRefs)
         val other = alarm(AlarmLink("someone-else", "oa", LinkMode.RING, null, true, null, null, null, null))
-        assertEquals(emptyList<String>(), c.resolve(other, null, null).wallpaperPaths)
+        assertEquals(emptyList<RingWallpaper>(), c.resolve(other, null, null).wallpapers)
     }
 
     // message
@@ -177,7 +191,7 @@ class LinkedMediaCacheImplTest {
     @Test fun nonLinkedAlarmResolvesLikeTheDefault() = runTest {
         val c = cache().also(::fullRefs)
         val a = alarm(link = null)
-        assertEquals(DefaultLinkedMediaCache.resolve(a, "content://j", "/w.jpg"), c.resolve(a, "content://j", "/w.jpg"))
+        assertEquals(DefaultLinkedMediaCache.resolve(a, "content://j", wp("/w.jpg", joinerFrame)), c.resolve(a, "content://j", wp("/w.jpg", joinerFrame)))
     }
 
     // persistence
@@ -188,7 +202,10 @@ class LinkedMediaCacheImplTest {
         val fresh = cache()
         val shas = setOf(sha256(photoBytes), sha256(ringBytes), sha256(defBytes))
         assertEquals(shas, fresh.inUse())
-        assertEquals(listOf(path(photoBytes), path(defBytes)), fresh.resolve(alarm(), null, null).wallpaperPaths)
+        assertEquals(
+            listOf(wp(path(photoBytes), rowFrame), wp(path(defBytes), ownerDefaultFrame)),
+            fresh.resolve(alarm(), null, null).wallpapers,
+        )
         assertEquals(path(photoBytes), fresh.pathFor(sha256(photoBytes)))
     }
 
