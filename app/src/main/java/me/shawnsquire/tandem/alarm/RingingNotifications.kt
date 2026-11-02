@@ -72,7 +72,7 @@ class AndroidRingingNotifier(
     fun prepNotification(): Notification {
         ensureChannels()
         return Notification.Builder(context, PREP_CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(R.string.alarm_prep_title))
             .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
@@ -209,7 +209,7 @@ class AndroidRingingNotifier(
     private fun builder(channel: String, labels: List<String>, contentIntent: android.app.PendingIntent): Notification.Builder {
         val shown = labels.filter { it.isNotBlank() }
         return Notification.Builder(context, channel)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(R.string.alarm_notification_title))
             .apply {
                 when (shown.size) {
@@ -241,7 +241,7 @@ class AndroidRingingNotifier(
         val dismiss = Notification.Action.Builder(null, context.getString(R.string.alarm_action_dismiss), AlarmIntents.dismissPendingIntent(context, ringId)).build()
         val shown = labels.filter { it.isNotBlank() }
         val notification = Notification.Builder(context, SNOOZE_CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(shown.takeIf { it.isNotEmpty() }?.joinToString(context.getString(R.string.alarm_label_separator)) ?: context.getString(R.string.alarm_notification_title))
             .setContentText(context.getString(R.string.alarm_snoozed_until, time))
             .setCategory(Notification.CATEGORY_ALARM)

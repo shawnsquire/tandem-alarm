@@ -46,7 +46,7 @@ class AndroidLateRingNotifier(
             )
             val skip = action(context.getString(R.string.link_late_ring_skip), LateRingActionReceiver.ACTION_SKIP, prompt)
             val notification = NotificationCompat.Builder(context, AndroidCommandNotifier.CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_popup_reminder)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setContentIntent(tap)
