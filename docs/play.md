@@ -183,12 +183,12 @@ Closed testing has no tester minimum. The 12-testers-for-14-days rule only gates
 Play's API can't make the first release of a new app ("you will have to upload at least one APK through the Play Console before you can use this API", [Play Developer API](https://developers.google.com/android-publisher/edits)). Until the app has a reviewed release, it also refuses anything but drafts ("Only releases with status draft may be created on draft app"). So the first release goes in by hand, with the Play secret unset.
 
 1. Make sure `PLAY_SERVICE_ACCOUNT_JSON` is **not** set. The workflow then skips Play with a notice.
-2. Tag v0.5.0 with an annotated tag. Its message becomes Play's release notes, which Play caps at "500 Unicode characters per language" ([Play help](https://support.google.com/googleplay/android-developer/answer/9859348)). Check the length with `wc -m`, not `wc -c`.
+2. Write the release notes in a file and tag v0.5.0 with an annotated tag. The tag message becomes the GitHub Release body in full, so APK and Obtainium users see it. The first 500 characters or fewer, cut at a paragraph break, become Play's "What's new" (Play caps notes at "500 Unicode characters per language", [Play help](https://support.google.com/googleplay/android-developer/answer/9859348)). Put the "new app: unpair and uninstall the old one first" warning first, and check that the first paragraphs fit in 500 characters with `wc -m`, not `wc -c`.
    ```
-   git tag -a v0.5.0 -F notes.txt && git push origin v0.5.0
+   git tag -a v0.5.0 -F release-notes-v0.5.0.txt && git push origin v0.5.0
    ```
 3. When the workflow finishes, download `tandem-v0.5.0.aab` from the [v0.5.0 GitHub Release](https://github.com/shawnsquire/tandem-alarm/releases/tag/v0.5.0).
-4. Play Console, Closed testing, your track, **Create new release**. Upload `tandem-v0.5.0.aab`. Release name `v0.5.0`. Paste the tag message as the release notes. Play warns that no deobfuscation file was uploaded. Download `tandem-v0.5.0-mapping.txt` from the same GitHub Release and upload it as the deobfuscation file (in the Console's App bundle explorer for this version, or wherever it offers "Upload deobfuscation file"). Later releases upload the mapping automatically.
+4. Play Console, Closed testing, your track, **Create new release**. Upload `tandem-v0.5.0.aab`. Release name `v0.5.0`. Paste the first paragraphs of the tag message (500 characters at most) as the release notes. Play warns that no deobfuscation file was uploaded. Download `tandem-v0.5.0-mapping.txt` from the same GitHub Release and upload it as the deobfuscation file (in the Console's App bundle explorer for this version, or wherever it offers "Upload deobfuscation file"). Later releases upload the mapping automatically.
 5. Fill in any declarations it asks for (step 3), then **Send for review** and roll out.
 6. Google reviews the first release, usually within hours to a couple of days.
 
@@ -235,9 +235,9 @@ Do this once, after the first Play release is live. Both apps installed at once 
 
 ## Every release
 
-1. Tag with an annotated tag; the message is the release notes (500 characters at most):
+1. Tag with an annotated tag. The message is the GitHub Release body in full, and its first 500 characters or fewer (cut at a paragraph break) are Play's "What's new", so put the most important paragraph first:
    ```
-   git tag -a v0.5.1 -m "…" && git push origin v0.5.1
+   git tag -a v0.5.1 -F notes.txt && git push origin v0.5.1
    ```
 2. The workflow publishes the GitHub Release (APK and AAB) first, then uploads to Play. The version code is the workflow run number.
 3. **If the workflow fails, push a new tag; don't re-run it.** A re-run keeps the same run number, so the same version code, and Play rejects a version code it has already seen.

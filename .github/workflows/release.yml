@@ -90,6 +90,35 @@ jobs:
       - name: Remove signing key
         run: rm -f "$RUNNER_TEMP/tandem.jks" app/google-services.json
 
+      # actions/checkout drops the tag annotation, so fetch it (anonymous fetch: the repo is public).
+      # The annotated tag message is the full release body. A lightweight tag falls back to a one-line note.
+      # Play's "What's new" takes at most 500 characters, so cut it at the last paragraph (else line) break within the limit.
+      # This runs no third-party code, so it is fine after the signing key is removed.
+      - name: Write release notes
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          mkdir -p "$RUNNER_TEMP/whatsnew"
+          if [ "$(git for-each-ref --format='%(objecttype)' "refs/tags/$GITHUB_REF_NAME")" = tag ]; then
+            git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" > "$RUNNER_TEMP/tag-message.txt"
+          else
+            : > "$RUNNER_TEMP/tag-message.txt"
+          fi
+          python3 -I -c '
+          import re, sys
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          text = re.split(r"^-----BEGIN (?:PGP|SSH) SIGNATURE-----", text, maxsplit=1, flags=re.M)[0].strip()
+          text = text or "Tandem Alarm " + sys.argv[2]
+          open(sys.argv[3], "w", encoding="utf-8").write(text + "\n")
+          short = text
+          if len(short) > 500:
+              head = short[:501]
+              cut = head.rfind("\n\n")
+              if cut <= 0:
+                  cut = head.rfind("\n")
+              short = head[:cut] if cut > 0 else short[:500]
+          open(sys.argv[4], "w", encoding="utf-8").write(short.rstrip())
+          ' "$RUNNER_TEMP/tag-message.txt" "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/whatsnew/whatsnew-en-US"
+
       # The GitHub Release publishes first, so it ships even if the Play upload fails.
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
@@ -97,6 +126,7 @@ jobs:
             tandem-${{ github.ref_name }}.apk
             tandem-${{ github.ref_name }}.aab
             tandem-${{ github.ref_name }}-mapping.txt
+          body_path: ${{ runner.temp }}/release-notes.md
 
       # Secrets can't be read in `if:`, so gate the Play steps on an output.
       - name: Check for the Play service account
@@ -116,25 +146,6 @@ jobs:
         env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
         run: printf '%s' "$PLAY_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/play-service-account.json"
-
-      # actions/checkout drops the tag annotation, so fetch it (anonymous fetch: the repo is public).
-      # A lightweight tag falls back to a one-line note; Play caps notes at 500 characters.
-      - name: Write Play release notes
-        if: steps.play.outputs.enabled == 'true'
-        run: |
-          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          mkdir -p "$RUNNER_TEMP/whatsnew"
-          if [ "$(git for-each-ref --format='%(objecttype)' "refs/tags/$GITHUB_REF_NAME")" = tag ]; then
-            git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" > "$RUNNER_TEMP/tag-message.txt"
-          else
-            : > "$RUNNER_TEMP/tag-message.txt"
-          fi
-          python3 -I -c '
-          import re, sys
-          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-          text = re.split(r"^-----BEGIN (?:PGP|SSH) SIGNATURE-----", text, maxsplit=1, flags=re.M)[0].strip()
-          print((text or "Tandem Alarm " + sys.argv[2])[:500], end="")
-          ' "$RUNNER_TEMP/tag-message.txt" "$GITHUB_REF_NAME" > "$RUNNER_TEMP/whatsnew/whatsnew-en-US"
 
       # Track "alpha" is the usual id of Play's default closed-testing track; confirm it and set the PLAY_TRACK variable if it differs.
       - uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
