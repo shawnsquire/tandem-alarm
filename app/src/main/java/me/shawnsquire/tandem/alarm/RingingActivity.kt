@@ -147,11 +147,14 @@ class RingingActivity : ComponentActivity() {
                 }
                 val earlyRead = early?.takeIf { it.ringId == current?.ringId && it.alarmId == current?.alarmId }
                 // Hidden (not removed, so the layout holds still) until the read returns; the cap keeps it from staying hidden.
-                val capped by produceState(false, current?.ringId) {
-                    value = false // produceState keeps its last value across keys: a later ring hides again
+                // It carries the ring it timed: produceState keeps its last value across keys, so the first
+                // frame of a replacing ring must not count the previous ring's cap.
+                val cappedRingId by produceState<String?>(null, current?.ringId) {
+                    val id = current?.ringId ?: return@produceState
                     delay(TEXT_POSITION_WAIT_MS)
-                    value = true
+                    value = id
                 }
+                val capped = cappedRingId != null && cappedRingId == current?.ringId
                 val ended = notice?.endsRing == true
                 RingingScreen(
                     labels = content?.labels.orEmpty(),
