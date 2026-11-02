@@ -116,7 +116,7 @@ The app id is `com.kautiontape.tandem`. Builds before v0.5.0 were `me.shawnsquir
 
 **New app: unpair in the old app and uninstall it first.** If both are installed, both ring. The release build also needs `com.kautiontape.tandem` registered in Firebase and in the `GOOGLE_SERVICES_JSON` secret, or it fails.
 
-Pushing a tag that starts with `v` runs `.github/workflows/release.yml`. It builds a signed, minified release and attaches `tandem-<tag>.apk` and `tandem-<tag>.aab` to a GitHub Release. When `PLAY_SERVICE_ACCOUNT_JSON` is set, it then uploads the AAB and the R8 mapping to the Play closed-testing track, with the annotated tag's message (500 characters at most) as release notes. The version name is the tag without the `v`. The version code is the workflow run number, so push a new tag rather than re-running a failed release: Play rejects a version code it has seen.
+Pushing a tag that starts with `v` runs `.github/workflows/release.yml`. It builds a signed, minified release and attaches `tandem-<tag>.apk`, `tandem-<tag>.aab` and `tandem-<tag>-mapping.txt` (the R8 mapping) to a GitHub Release. When `PLAY_SERVICE_ACCOUNT_JSON` is set, it then uploads the AAB and the mapping to the Play closed-testing track, with the annotated tag's message (500 characters at most) as release notes. The version name is the tag without the `v`. The version code is the workflow run number, so push a new tag rather than re-running a failed release: Play rejects a version code it has seen.
 
 Required repository secrets:
 
