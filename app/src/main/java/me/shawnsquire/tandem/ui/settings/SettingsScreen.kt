@@ -198,7 +198,7 @@ fun SettingsScreen(
                         }
                     }
                 },
-                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path) } },
+                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path, frame = null) } },
             )
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))

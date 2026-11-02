@@ -8,7 +8,10 @@ import me.shawnsquire.tandem.fakes.FakeAlarmScheduler
 import me.shawnsquire.tandem.fakes.FakeLinkRepository
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakePartnerRepository
+import me.shawnsquire.tandem.fakes.FakeSettingsRepository
 import me.shawnsquire.tandem.fakes.FakeVibrationPreview
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandStatus
@@ -61,6 +64,10 @@ class AlarmEditViewModelTest {
         val deletedRingtones = mutableListOf<String>()
         val deletedWallpapers = mutableListOf<String>()
         var failImport = false
+        val settings = FakeSettingsRepository()
+        /** What the re-pick comparison answers; null throws, as an unreadable file would. */
+        var sameContent: Boolean? = false
+        val compared = mutableListOf<Pair<String, String>>()
         val links = FakeLinkRepository()
         val preview = FakeVibrationPreview()
         val pairing = FakePairingRepository()
@@ -83,6 +90,8 @@ class AlarmEditViewModelTest {
                 "/wall-${importedWallpapers.size}"
             },
             deleteWallpaperFile = { deletedWallpapers += it },
+            sameWallpaperContent = { a, b -> compared += a to b; sameContent ?: error("unreadable") },
+            settings = settings,
             newId = { "new-id" },
             preview = preview,
             links = linkOverride?.invoke(links) ?: links,
@@ -322,6 +331,94 @@ class AlarmEditViewModelTest {
         assertEquals("/wall-1", e.repo.get("a1")!!.wallpaperPath)
         assertEquals(listOf("/old-wall"), e.deletedWallpapers)
         assertTrue(e.deletedRingtones.isEmpty())
+    }
+
+    private val framed = WallpaperFrame(2f, 0.3f, 0.6f)
+    private val withFrame = existing.copy(wallpaperFrame = framed, textPosition = TextPosition.BOTTOM)
+
+    @Test fun framingLoadsFromTheAlarm() = runTest {
+        val s = Env("a1", listOf(withFrame)).vm.state.value
+        assertEquals(framed, s.wallpaperFrame)
+        assertEquals(TextPosition.BOTTOM, s.textPosition)
+    }
+
+    @Test fun newAlarmIsCentredWithTheTextInTheMiddle() = runTest {
+        val s = fresh().vm.state.value
+        assertNull(s.wallpaperFrame)
+        assertEquals(TextPosition.MIDDLE, s.textPosition)
+    }
+
+    @Test fun setFramingThenSavePersistsBoth() = runTest {
+        val e = edit()
+        e.vm.setFraming(framed, TextPosition.TOP)
+        assertEquals(framed, e.vm.state.value.wallpaperFrame)
+        assertEquals(TextPosition.TOP, e.vm.state.value.textPosition)
+        e.vm.save()
+        val saved = e.repo.get("a1")!!
+        assertEquals(framed, saved.wallpaperFrame)
+        assertEquals(TextPosition.TOP, saved.textPosition)
+    }
+
+    @Test fun setFramingThenCancelPersistsNothing() = runTest {
+        val e = edit()
+        e.vm.setFraming(framed, TextPosition.TOP)
+        e.vm.cancel()
+        assertEquals(existing, e.repo.get("a1"))
+    }
+
+    @Test fun setFramingWithoutAnImageKeepsOnlyThePosition() = runTest {
+        val e = Env("a1", listOf(existing.copy(wallpaperPath = null)))
+        e.vm.setFraming(framed, TextPosition.TOP)
+        assertNull(e.vm.state.value.wallpaperFrame)
+        assertEquals(TextPosition.TOP, e.vm.state.value.textPosition)
+    }
+
+    @Test fun repickingTheSameContentKeepsTheFrame() = runTest {
+        val e = Env("a1", listOf(withFrame))
+        e.sameContent = true
+        e.vm.onWallpaperPicked("content://img/1")
+        assertEquals(listOf("/old-wall" to "/wall-1"), e.compared)
+        assertEquals("/wall-1", e.vm.state.value.wallpaperPath)
+        assertEquals(framed, e.vm.state.value.wallpaperFrame)
+    }
+
+    @Test fun pickingDifferentContentResetsTheFrameButNotThePosition() = runTest {
+        val e = Env("a1", listOf(withFrame))
+        e.vm.onWallpaperPicked("content://img/1")
+        assertNull(e.vm.state.value.wallpaperFrame)
+        assertEquals(TextPosition.BOTTOM, e.vm.state.value.textPosition)
+    }
+
+    @Test fun aFailedComparisonResetsTheFrame() = runTest {
+        val e = Env("a1", listOf(withFrame))
+        e.sameContent = null
+        e.vm.onWallpaperPicked("content://img/1")
+        assertEquals("/wall-1", e.vm.state.value.wallpaperPath)
+        assertNull(e.vm.state.value.wallpaperFrame)
+    }
+
+    @Test fun aPickAsksForThePreviewUntilItIsHandled() = runTest {
+        val e = edit()
+        e.vm.onWallpaperPicked("content://img/1")
+        assertTrue(e.vm.state.value.previewRequested)
+        e.vm.previewRequestHandled()
+        assertFalse(e.vm.state.value.previewRequested)
+    }
+
+    @Test fun removingTheWallpaperClearsTheFrame() = runTest {
+        val e = Env("a1", listOf(withFrame))
+        e.vm.removeWallpaper()
+        assertNull(e.vm.state.value.wallpaperFrame)
+        e.vm.save()
+        assertNull(e.repo.get("a1")!!.wallpaperFrame)
+    }
+
+    @Test fun theDefaultWallpaperAndItsFrameShowInTheState() = runTest {
+        val e = edit()
+        e.settings.setDefaultWallpaperPath("/default")
+        e.settings.setDefaultWallpaperFrame(framed)
+        assertEquals("/default", e.vm.state.value.defaultWallpaperPath)
+        assertEquals(framed, e.vm.state.value.defaultWallpaperFrame)
     }
 
     @Test fun removeWallpaperThenSaveDeletesOriginalOnly() = runTest {

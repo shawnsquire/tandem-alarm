@@ -256,7 +256,7 @@ internal fun <T : Any> firstDecoded(candidates: List<RingWallpaper>, decode: (St
 private class DecodedWallpaper(val bitmap: Bitmap, val frame: WallpaperFrame?)
 
 /** Decodes [path] downsampled to fit the [reqW]x[reqH] memory budget; null if missing or unreadable. */
-private fun decodeSampled(path: String, reqW: Int, reqH: Int): Bitmap? = try {
+internal fun decodeSampled(path: String, reqW: Int, reqH: Int): Bitmap? = try {
     if (!File(path).canRead()) null else {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(path, bounds)

@@ -6,7 +6,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -55,9 +56,16 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
+import me.shawnsquire.tandem.alarm.frameTransform
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
+import me.shawnsquire.tandem.ui.RingPreview
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -120,6 +128,8 @@ fun AlarmEditRoute(
         onPickRingtoneFile = { filePicker.launch(Unit) },
         onPickWallpaper = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
         onRemoveWallpaper = viewModel::removeWallpaper,
+        onFramingChanged = viewModel::setFraming,
+        onPreviewRequestHandled = viewModel::previewRequestHandled,
         onDelete = {
             viewModel.existingId?.let { id ->
                 onDelete(id, viewModel::discardSession)
@@ -156,10 +166,20 @@ fun AlarmEditScreen(
     onVibrationOnChange: (Boolean) -> Unit = {},
     onSelectVibration: (VibrationPattern) -> Unit = {},
     onStopPreview: () -> Unit = {},
+    onFramingChanged: (WallpaperFrame?, TextPosition) -> Unit = { _, _ -> },
+    onPreviewRequestHandled: () -> Unit = {},
 ) {
     // Busy covers imports and saves; none of the controls may act while one is in flight.
     val locked = state.busy
     val snackbarHostState = remember { SnackbarHostState() }
+    var showRingPreview by rememberSaveable { mutableStateOf(false) }
+    // A fresh pick opens the preview so the new image can be framed right away.
+    LaunchedEffect(state.previewRequested) {
+        if (state.previewRequested) {
+            showRingPreview = true
+            onPreviewRequestHandled()
+        }
+    }
     val errorText = when (state.error) {
         EditError.RingtoneImport -> stringResource(R.string.edit_error_ringtone)
         EditError.WallpaperImport -> stringResource(R.string.edit_error_wallpaper)
@@ -311,9 +331,13 @@ fun AlarmEditScreen(
                                 if (state.wallpaperPath == null) R.string.edit_wallpaper_none else R.string.edit_wallpaper_set,
                             ),
                         )
+                        Text(stringResource(R.string.edit_text_position, textPositionName(state.textPosition)))
                         Row {
                             TextButton(onClick = onPickWallpaper, enabled = !locked) {
                                 Text(stringResource(R.string.edit_wallpaper_choose))
+                            }
+                            TextButton(onClick = { showRingPreview = true }, enabled = !locked) {
+                                Text(stringResource(R.string.edit_wallpaper_preview))
                             }
                             if (state.wallpaperPath != null) {
                                 TextButton(onClick = onRemoveWallpaper, enabled = !locked) {
@@ -323,8 +347,28 @@ fun AlarmEditScreen(
                         }
                     }
                 },
-                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path) } },
+                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path, state.wallpaperFrame) } },
+                modifier = Modifier.clickable(enabled = !locked) { showRingPreview = true },
             )
+            if (showRingPreview) {
+                // Without an image of its own the preview shows the Settings default, whose frame is Settings' to change.
+                val own = state.wallpaperPath != null
+                RingPreview(
+                    wallpaperPath = state.wallpaperPath ?: state.defaultWallpaperPath,
+                    initialFrame = if (own) state.wallpaperFrame else state.defaultWallpaperFrame,
+                    gesturesEnabled = own,
+                    initialTextPosition = state.textPosition,
+                    showPositionSelector = true,
+                    hour = state.hour,
+                    minute = state.minute,
+                    label = state.label,
+                    onSave = { frame, position ->
+                        onFramingChanged(frame, position)
+                        showRingPreview = false
+                    },
+                    onCancel = { showRingPreview = false },
+                )
+            }
 
             InviteSection(state, locked, onInvite)
 
@@ -381,23 +425,44 @@ private fun dayLabel(day: DayOfWeek): String = stringResource(
     },
 )
 
+/**
+ * The wallpaper as the ringing screen draws it: a phone-shaped box at this screen's aspect ratio,
+ * with [frame] applied (null is the centred crop).
+ */
 @Composable
-internal fun WallpaperThumbnail(path: String) {
+internal fun WallpaperThumbnail(path: String, frame: WallpaperFrame?) {
     val bitmap by produceState<ImageBitmap?>(null, path) {
         value = withContext(Dispatchers.IO) { decodeThumbnail(path, 256) }
     }
-    val shape = MaterialTheme.shapes.small
-    Box(Modifier.size(width = 56.dp, height = 80.dp).clip(shape)) {
-        bitmap?.let {
-            Image(
-                it,
-                contentDescription = stringResource(R.string.edit_wallpaper_thumbnail),
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-    }
+    val metrics = LocalContext.current.resources.displayMetrics
+    val aspect = metrics.widthPixels.toFloat() / metrics.heightPixels
+    val description = stringResource(R.string.edit_wallpaper_thumbnail)
+    Box(
+        Modifier
+            .height(96.dp)
+            .aspectRatio(aspect)
+            .clip(MaterialTheme.shapes.small)
+            .semantics { contentDescription = description }
+            .drawBehind {
+                val image = bitmap ?: return@drawBehind
+                val t = frameTransform(frame, image.width.toFloat(), image.height.toFloat(), size.width, size.height)
+                drawImage(
+                    image,
+                    dstOffset = IntOffset(t.left.roundToInt(), t.top.roundToInt()),
+                    dstSize = IntSize((image.width * t.scale).roundToInt(), (image.height * t.scale).roundToInt()),
+                )
+            },
+    )
 }
+
+@Composable
+private fun textPositionName(position: TextPosition): String = stringResource(
+    when (position) {
+        TextPosition.TOP -> R.string.ring_preview_top
+        TextPosition.MIDDLE -> R.string.ring_preview_middle
+        TextPosition.BOTTOM -> R.string.ring_preview_bottom
+    },
+).lowercase()
 
 private fun decodeThumbnail(path: String, maxSide: Int): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

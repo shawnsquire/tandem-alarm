@@ -39,6 +39,16 @@
     <string name="edit_wallpaper_choose">Choose image</string>
     <string name="edit_wallpaper_remove">Remove</string>
     <string name="edit_wallpaper_thumbnail">Wallpaper preview</string>
+    <string name="edit_wallpaper_preview">Preview</string>
+    <string name="edit_text_position">Text: %1$s</string>
+    <string name="ring_preview_alarm_line">%1$s alarm</string>
+    <string name="ring_preview_text_position">Text position</string>
+    <string name="ring_preview_top">Top</string>
+    <string name="ring_preview_middle">Middle</string>
+    <string name="ring_preview_bottom">Bottom</string>
+    <string name="ring_preview_reset">Reset</string>
+    <string name="ring_preview_cancel">Cancel</string>
+    <string name="ring_preview_save">Save</string>
     <string name="edit_delete">Delete alarm</string>
     <string name="edit_error_ringtone">Couldn\'t import that file</string>
     <string name="edit_error_wallpaper">Couldn\'t import that image</string>

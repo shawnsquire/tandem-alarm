@@ -383,7 +383,7 @@ private fun PhotoRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCa
                 }
             }
         },
-        trailingContent = state.overrideWallpaper?.let { path -> { WallpaperThumbnail(path) } },
+        trailingContent = state.overrideWallpaper?.let { path -> { WallpaperThumbnail(path, frame = null) } },
     )
 }
 
