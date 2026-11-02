@@ -98,8 +98,8 @@ some of it can stay behind. Email me (below) and I will delete it.
 - Each phone's anonymous sign-in record in Firebase Authentication. It holds a random ID,
   no name, and the app never deletes it.
 - Pairing codes that were never used. The app does not delete them, and they do not
-  expire out of the database. A code holds the household ID, the creator's ID and an
-  expiry time.
+  expire out of the database, except that joining another phone's code deletes the codes
+  you showed. A code holds the household ID, the creator's ID and an expiry time.
 - Firebase's own registrations: the push token and the installation ID. The app does not
   delete them.
 - Server logs, for up to 30 days.
