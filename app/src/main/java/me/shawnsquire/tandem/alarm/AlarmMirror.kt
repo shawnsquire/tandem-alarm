@@ -5,6 +5,7 @@ import android.util.Log
 import me.shawnsquire.tandem.data.AlarmEntity
 import me.shawnsquire.tandem.data.toAlarm
 import me.shawnsquire.tandem.data.toEntity
+import me.shawnsquire.tandem.data.toTextPositionOrNull
 import me.shawnsquire.tandem.data.toVibrationPattern
 import me.shawnsquire.tandem.data.toVibrationPatternOrNull
 import me.shawnsquire.tandem.schedule.Alarm
@@ -12,6 +13,7 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.json.JSONArray
 import org.json.JSONObject
@@ -100,6 +102,7 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
             put("vibration", e.vibration)
             put("vibrationOn", e.vibrationOn)
             put("soundOn", e.soundOn)
+            put("textPosition", e.textPosition)
             mirrored.alarm.soloSkippedOccurrenceAt?.let { put("soloSkippedOccurrenceAt", it.toEpochMilli()) }
             mirrored.alarm.link?.let { put("link", encode(it)) }
             mirrored.nextTriggerAt?.let { put("nextTriggerAt", it.toEpochMilli()) }
@@ -126,6 +129,7 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
         link.overrideVibration?.let { put("overrideVibration", it.name) }
         link.overrideVibrationOn?.let { put("overrideVibrationOn", it) }
         link.overrideSoundOn?.let { put("overrideSoundOn", it) }
+        link.overrideTextPosition?.let { put("overrideTextPosition", it.name) }
     }
 
     private fun decode(json: String, strict: Boolean): MirrorSnapshot? {
@@ -162,6 +166,8 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
             vibration = o.stringOrNull("vibration") ?: VibrationPattern.PULSE.name,
             vibrationOn = o.booleanOrDefault("vibrationOn", true),
             soundOn = o.booleanOrDefault("soundOn", true),
+            // Absent in mirrors written before text positions: the middle. The frame is not mirrored (a locked ring has no wallpaper).
+            textPosition = o.stringOrNull("textPosition") ?: TextPosition.MIDDLE.name,
         ).toAlarm().copy(
             // Absent in mirrors written before linked alarms.
             soloSkippedOccurrenceAt = o.instantOrNull("soloSkippedOccurrenceAt"),
@@ -190,6 +196,7 @@ class SharedPrefsAlarmMirror(context: Context) : AlarmMirror {
         overrideVibration = o.stringOrNull("overrideVibration")?.toVibrationPatternOrNull(),
         overrideVibrationOn = o.booleanOrNull("overrideVibrationOn"),
         overrideSoundOn = o.booleanOrNull("overrideSoundOn"),
+        overrideTextPosition = o.stringOrNull("overrideTextPosition")?.toTextPositionOrNull(),
     )
 
     private fun JSONObject.instantOrNull(key: String): Instant? = if (isNull(key)) null else Instant.ofEpochMilli(getLong(key))

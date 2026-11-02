@@ -70,6 +70,7 @@ class AlarmRepositoryImpl(
                 vibration = incoming.vibration,
                 vibrationOn = incoming.vibrationOn,
                 soundOn = incoming.soundOn,
+                textPosition = incoming.textPosition,
                 linkOwnerSkippedOccurrenceAt = incoming.linkOwnerSkippedOccurrenceAt,
             )
         }

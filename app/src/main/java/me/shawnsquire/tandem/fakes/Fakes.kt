@@ -28,6 +28,7 @@ import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.CommandApplier
 import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.sync.CommandSender
@@ -157,12 +158,15 @@ class FakeSettingsRepository : SettingsRepository {
     private val snooze = MutableStateFlow(10)
     private val wallpaper = MutableStateFlow<String?>(null)
     private val ringtone = MutableStateFlow<String?>(null)
+    private val frame = MutableStateFlow<WallpaperFrame?>(null)
     override val snoozeMinutes: Flow<Int> = snooze
     override val defaultWallpaperPath: Flow<String?> = wallpaper
     override val defaultRingtoneUri: Flow<String?> = ringtone
+    override val defaultWallpaperFrame: Flow<WallpaperFrame?> = frame
     override suspend fun setSnoozeMinutes(m: Int) { snooze.value = m }
     override suspend fun setDefaultWallpaperPath(p: String?) { wallpaper.value = p }
     override suspend fun setDefaultRingtoneUri(u: String?) { ringtone.value = u }
+    override suspend fun setDefaultWallpaperFrame(f: WallpaperFrame?) { frame.value = f?.sanitized() }
 }
 
 class FakeAlarmScheduler : AlarmScheduler {

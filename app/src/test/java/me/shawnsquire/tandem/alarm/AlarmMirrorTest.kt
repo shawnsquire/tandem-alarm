@@ -7,6 +7,7 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -120,6 +121,43 @@ class AlarmMirrorTest {
         assertNull(alarm.link!!.overrideVibration)
         assertNull(alarm.link!!.overrideVibrationOn)
         assertNull(alarm.link!!.overrideSoundOn)
+    }
+
+    @Test fun textPositionAndItsOverrideRoundTrip() {
+        val alarms = listOf(
+            MirroredAlarm(full.alarm.copy(id = "t1", textPosition = TextPosition.TOP), null),
+            MirroredAlarm(full.alarm.copy(id = "t2", textPosition = TextPosition.BOTTOM, link = plainLink.copy(overrideTextPosition = TextPosition.TOP)), null),
+        )
+        val snap = MirrorSnapshot(alarms, null, null)
+        SharedPrefsAlarmMirror(context).write(snap)
+        assertEquals(snap, SharedPrefsAlarmMirror(context).readOrNull())
+    }
+
+    @Test fun mirrorWrittenBeforeTextPositionsDecodesAsMiddleAndNoOverride() {
+        val link = plainLink.copy(overrideTextPosition = TextPosition.TOP)
+        SharedPrefsAlarmMirror(context).write(MirrorSnapshot(listOf(MirroredAlarm(full.alarm.copy(textPosition = TextPosition.TOP, link = link), null)), null, null))
+        val root = org.json.JSONObject(raw()!!)
+        val o = root.getJSONArray("alarms").getJSONObject(0)
+        o.remove("textPosition")
+        o.getJSONObject("link").remove("overrideTextPosition")
+        putRaw(root.toString())
+
+        val alarm = SharedPrefsAlarmMirror(context).readOrNull()!!.alarms.single().alarm
+        assertEquals(TextPosition.MIDDLE, alarm.textPosition)
+        assertNull(alarm.link!!.overrideTextPosition)
+    }
+
+    @Test fun unknownTextPositionNamesDecodeAsMiddleButAnUnknownOverrideAsNull() {
+        SharedPrefsAlarmMirror(context).write(MirrorSnapshot(listOf(MirroredAlarm(full.alarm.copy(link = plainLink.copy(overrideTextPosition = TextPosition.TOP)), null)), null, null))
+        val root = org.json.JSONObject(raw()!!)
+        val o = root.getJSONArray("alarms").getJSONObject(0)
+        o.put("textPosition", "FROM_THE_FUTURE")
+        o.getJSONObject("link").put("overrideTextPosition", "FROM_THE_FUTURE")
+        putRaw(root.toString())
+
+        val alarm = SharedPrefsAlarmMirror(context).readOrNull()!!.alarms.single().alarm
+        assertEquals(TextPosition.MIDDLE, alarm.textPosition)
+        assertNull(alarm.link!!.overrideTextPosition)
     }
 
     @Test fun unknownPatternNamesDecodeAsPulseButAnUnknownOverrideAsNull() {

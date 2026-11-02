@@ -16,7 +16,9 @@ import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.schedule.LateRing
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -479,6 +481,18 @@ class AlarmRepositoryImplTest {
         assertEquals(late, repo.get("l")!!.lateRing)
         repo.upsertLinked(linked())
         assertNull(repo.get("l")!!.lateRing)
+    }
+
+    @Test
+    fun upsertLinkedCopiesTheTextPositionButKeepsTheFrameAndTheJoinersOverrides() = runTest {
+        val frame = WallpaperFrame(2f, 0.3f, 0.7f)
+        val own = linked().link!!.copy(overrideTextPosition = TextPosition.TOP, overrideWallpaperFrame = frame)
+        repo.upsertLinked(linked().copy(wallpaperFrame = frame, link = own))
+        repo.upsertLinked(linked().copy(textPosition = TextPosition.BOTTOM))
+        val stored = repo.get("l")!!
+        assertEquals(TextPosition.BOTTOM, stored.textPosition)
+        assertEquals(frame, stored.wallpaperFrame)
+        assertEquals(own, stored.link)
     }
 
     @Test

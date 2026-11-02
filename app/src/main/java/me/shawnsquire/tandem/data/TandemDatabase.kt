@@ -7,14 +7,14 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [AlarmEntity::class], version = 5, exportSchema = true)
+@Database(entities = [AlarmEntity::class], version = 6, exportSchema = true)
 abstract class TandemDatabase : RoomDatabase() {
     abstract fun alarmDao(): AlarmDao
 
     companion object {
         /** Room opens the file lazily, so this does no I/O. */
         fun build(context: Context): TandemDatabase =
-            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
+            Room.databaseBuilder(context.applicationContext, TandemDatabase::class.java, "tandem.db").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build()
 
         private val LINK_COLUMNS = listOf(
             "linkOwnerUid" to "TEXT",
@@ -76,6 +76,24 @@ abstract class TandemDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideVibration` TEXT")
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideVibrationOn` INTEGER")
                 db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideSoundOn` INTEGER")
+            }
+        }
+
+        /**
+         * Adds the wallpaper frame and the ringing screen's text position. A frame is three nullable
+         * REAL columns (null: centred); the alarm's position is NOT NULL with a default so existing
+         * rows keep the middle, matching the entity's `defaultValue`. The link overrides are nullable.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `wallpaperZoom` REAL")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `wallpaperFocusX` REAL")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `wallpaperFocusY` REAL")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `textPosition` TEXT NOT NULL DEFAULT 'MIDDLE'")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideWallpaperZoom` REAL")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideWallpaperFocusX` REAL")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideWallpaperFocusY` REAL")
+                db.execSQL("ALTER TABLE alarms ADD COLUMN `linkOverrideTextPosition` TEXT")
             }
         }
     }

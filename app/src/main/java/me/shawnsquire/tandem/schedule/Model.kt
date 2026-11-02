@@ -20,6 +20,10 @@ import java.time.Instant
  * [vibration], [vibrationOn] and [soundOn] pick what a ring does besides showing the screen:
  * [soundOn] is a switch, so the [ringtoneUri] is kept while it is off. Read them through
  * [effectiveOutputs], never directly, so a linked row's overrides and the "never silent" rule apply.
+ *
+ * [wallpaperFrame] frames [wallpaperPath] on the ringing screen (null: centred, the plain crop) and
+ * [textPosition] places the clock and label block. On a linked row both are copied from the owner and
+ * written only by LinkSync, like hour/minute. Read the position through [effectiveTextPosition].
  */
 data class Alarm(
     val id: String,
@@ -37,7 +41,37 @@ data class Alarm(
     val vibration: VibrationPattern = VibrationPattern.PULSE,
     val vibrationOn: Boolean = true,
     val soundOn: Boolean = true,
+    val wallpaperFrame: WallpaperFrame? = null,
+    val textPosition: TextPosition = TextPosition.MIDDLE,
 )
+
+/** The largest [WallpaperFrame.zoom]. */
+const val MAX_ZOOM = 4f
+
+/**
+ * How a wallpaper sits on the ringing screen. [focusX] and [focusY] (0..1) are the image point,
+ * normalised to the image's width and height, that sits at the centre of the screen; [zoom] (>= 1) is
+ * relative to the centre-crop "cover" scale `max(screenW/imageW, screenH/imageH)`. Being relative to a
+ * centre-crop fit, a frame survives screens with other aspect ratios. `zoom = 1` with focus 0.5/0.5 is
+ * exactly a plain `ContentScale.Crop`.
+ */
+data class WallpaperFrame(val zoom: Float, val focusX: Float, val focusY: Float) {
+    /** A valid frame: a NaN or infinite part becomes its centred value, zoom is 1..[MAX_ZOOM], focus 0..1. */
+    fun sanitized(): WallpaperFrame = WallpaperFrame(
+        zoom = zoom.finiteOr(CENTERED.zoom).coerceIn(1f, MAX_ZOOM),
+        focusX = focusX.finiteOr(CENTERED.focusX).coerceIn(0f, 1f),
+        focusY = focusY.finiteOr(CENTERED.focusY).coerceIn(0f, 1f),
+    )
+
+    companion object {
+        val CENTERED = WallpaperFrame(1f, 0.5f, 0.5f)
+    }
+}
+
+private fun Float.finiteOr(default: Float): Float = if (isNaN() || isInfinite()) default else this
+
+/** Where the ringing screen's clock and label block sits. Stored and synced by name, so never rename a value. */
+enum class TextPosition { TOP, MIDDLE, BOTTOM }
 
 /**
  * The owner's answer to "should it still ring at the old time?" for a joined alarm moved earlier.
@@ -79,7 +113,9 @@ data class PendingBoth(
  * joiner's own on/off. [pendingBoth] is a both-of-us command not yet reflected in the owner's doc.
  * The override fields replace the owner's label, ringtone and wallpaper on this phone only.
  * [overrideVibration], [overrideVibrationOn] and [overrideSoundOn] do the same for the ring's
- * vibration and sound; null means use the copied value.
+ * vibration and sound; null means use the copied value. [overrideWallpaperFrame] frames
+ * [overrideWallpaperPath]. [overrideTextPosition] is independent of the wallpaper override; null means
+ * the copied owner's position.
  */
 data class AlarmLink(
     val ownerUid: String,
@@ -94,6 +130,8 @@ data class AlarmLink(
     val overrideVibration: VibrationPattern? = null,
     val overrideVibrationOn: Boolean? = null,
     val overrideSoundOn: Boolean? = null,
+    val overrideWallpaperFrame: WallpaperFrame? = null,
+    val overrideTextPosition: TextPosition? = null,
 )
 
 /** What a ring actually drives: sound, vibration, and the vibration's [vibration] pattern. At least one of the two is on. */
@@ -153,6 +191,9 @@ fun Alarm.effectiveOutputs(): RingOutputs {
     val pattern = link?.overrideVibration ?: vibration
     return if (!sound && !vibrate) RingOutputs(true, true, pattern) else RingOutputs(sound, vibrate, pattern)
 }
+
+/** The joiner's override else the row's own (or copied) text position. */
+fun Alarm.effectiveTextPosition(): TextPosition = link?.overrideTextPosition ?: textPosition
 
 /**
  * One alarm folded into a merged ring: [alarmId] at its scheduled [occurrenceAt]. Per I3

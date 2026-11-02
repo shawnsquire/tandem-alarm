@@ -2,11 +2,14 @@ package me.shawnsquire.tandem.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import java.io.File
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.schedule.MAX_ZOOM
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -93,5 +96,31 @@ class SettingsRepositoryImplTest {
         assertEquals(60, r.snoozeMinutes.first())
         ds.edit { it[key] = -5 }
         assertEquals(1, r.snoozeMinutes.first())
+    }
+
+    @Test
+    fun wallpaperFrameSetAndCleared() = runTest {
+        val r = repo()
+        assertNull(r.defaultWallpaperFrame.first())
+        r.setDefaultWallpaperFrame(WallpaperFrame(2f, 0.25f, 0.75f))
+        assertEquals(WallpaperFrame(2f, 0.25f, 0.75f), r.defaultWallpaperFrame.first())
+        r.setDefaultWallpaperFrame(null)
+        assertNull(r.defaultWallpaperFrame.first())
+    }
+
+    @Test
+    fun wallpaperFrameIsSanitizedOnReadAndNullUnlessAllPartsAreStored() = runTest {
+        val ds = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { File(tmp.root, "test.preferences_pb") },
+        )
+        val r = SettingsRepositoryImpl(ds)
+        val zoom = floatPreferencesKey("defaultWallpaperZoom")
+        val x = floatPreferencesKey("defaultWallpaperFocusX")
+        val y = floatPreferencesKey("defaultWallpaperFocusY")
+        ds.edit { it[zoom] = 9f; it[x] = 2f }
+        assertNull(r.defaultWallpaperFrame.first())
+        ds.edit { it[y] = Float.NaN }
+        assertEquals(WallpaperFrame(MAX_ZOOM, 1f, 0.5f), r.defaultWallpaperFrame.first())
     }
 }

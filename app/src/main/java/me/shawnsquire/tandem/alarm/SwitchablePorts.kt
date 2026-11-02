@@ -22,6 +22,7 @@ import me.shawnsquire.tandem.data.withoutExpiredSkip
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.LateRing
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -256,6 +257,9 @@ class SwitchableSettings(
     override val defaultWallpaperPath: Flow<String?> = real.flatMapLatest { it?.defaultWallpaperPath ?: flowOf(null) }
 
     @OptIn(ExperimentalCoroutinesApi::class)
+    override val defaultWallpaperFrame: Flow<WallpaperFrame?> = real.flatMapLatest { it?.defaultWallpaperFrame ?: flowOf(null) }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     override val defaultRingtoneUri: Flow<String?> = real.flatMapLatest {
         it?.defaultRingtoneUri ?: flow { emit(mirror.read().defaultRingtoneUri) }
     }
@@ -266,6 +270,8 @@ class SwitchableSettings(
     }
 
     override suspend fun setDefaultWallpaperPath(p: String?) = attached().setDefaultWallpaperPath(p)
+
+    override suspend fun setDefaultWallpaperFrame(f: WallpaperFrame?) = attached().setDefaultWallpaperFrame(f)
 
     override suspend fun setDefaultRingtoneUri(u: String?) {
         attached().setDefaultRingtoneUri(u)
