@@ -7,12 +7,18 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.AppContainer
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.TandemApp
+import me.shawnsquire.tandem.alarm.resolveRingMedia
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.media.RingtoneImporter
 import me.shawnsquire.tandem.media.WallpaperImporter
 import me.shawnsquire.tandem.media.ringtoneTitle
+import me.shawnsquire.tandem.media.sha256Hex
 import me.shawnsquire.tandem.sync.LiveZoneClock
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
 import me.shawnsquire.tandem.ui.alarms.AlarmsViewModel
@@ -25,6 +31,7 @@ import me.shawnsquire.tandem.ui.partner.PartnerViewModel
 import me.shawnsquire.tandem.ui.settings.SettingsViewModel
 import me.shawnsquire.tandem.ui.settings.health.AndroidHealthProbe
 import me.shawnsquire.tandem.ui.settings.health.HealthViewModel
+import java.io.File
 import java.util.UUID
 
 /** The only place ui touches [AppContainer]. */
@@ -70,6 +77,8 @@ val alarmEditViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             deleteRingtoneFile = { ringtones.delete(it) },
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
+            sameWallpaperContent = { a, b -> withContext(Dispatchers.IO) { sha256Hex(File(a)) == sha256Hex(File(b)) } },
+            settings = container.settingsRepository,
             newId = { UUID.randomUUID().toString() },
             preview = container.vibrationPreview,
             links = container.linkRepository,
@@ -101,6 +110,13 @@ fun linkedAlarmViewModelFactory(alarmId: String): ViewModelProvider.Factory = vi
             deleteRingtoneFile = { ringtones.delete(it) },
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
+            sameWallpaperContent = { a, b -> withContext(Dispatchers.IO) { sha256Hex(File(a)) == sha256Hex(File(b)) } },
+            wallpaperWithoutOverride = { alarm ->
+                // What would ring without the override: the owner's image and frame, else the Settings default.
+                val settings = container.settingsRepository
+                val default = settings.defaultWallpaperPath.first()?.let { RingWallpaper(it, settings.defaultWallpaperFrame.first()) }
+                resolveRingMedia(alarm, container.linkedMediaCache, null, default).wallpapers.firstOrNull()
+            },
             preview = container.vibrationPreview,
             rejectedReason = app.getString(R.string.link_both_rejected),
         )
@@ -139,6 +155,7 @@ val settingsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             deleteRingtoneFile = { ringtones.delete(it) },
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
+            sameWallpaperContent = { a, b -> withContext(Dispatchers.IO) { sha256Hex(File(a)) == sha256Hex(File(b)) } },
         )
     }
 }

@@ -15,8 +15,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
+import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
@@ -44,6 +47,14 @@ data class AlarmEditUiState(
     val ringtoneUri: String? = null,
     val ringtoneTitle: String = "",
     val wallpaperPath: String? = null,
+    /** Frames [wallpaperPath] on the ringing screen; null is the centred crop. */
+    val wallpaperFrame: WallpaperFrame? = null,
+    val textPosition: TextPosition = TextPosition.MIDDLE,
+    /** The Settings default wallpaper and its frame, which the preview shows while the alarm has no image of its own. */
+    val defaultWallpaperPath: String? = null,
+    val defaultWallpaperFrame: WallpaperFrame? = null,
+    /** Set after a successful image pick so the screen opens the preview; the screen clears it with [AlarmEditViewModel.previewRequestHandled]. */
+    val previewRequested: Boolean = false,
     /** Off keeps the chosen tone. At least one of [soundOn] and [vibrationOn] stays on. */
     val soundOn: Boolean = true,
     val vibrationOn: Boolean = true,
@@ -68,6 +79,9 @@ class AlarmEditViewModel(
     private val deleteRingtoneFile: (String) -> Unit,
     private val importWallpaper: suspend (String) -> String,
     private val deleteWallpaperFile: (String) -> Unit,
+    /** Whether two wallpaper files hold the same bytes; a throw counts as different. Runs off the main thread. */
+    private val sameWallpaperContent: suspend (String, String) -> Boolean,
+    private val settings: SettingsRepository,
     private val newId: () -> String,
     private val preview: VibrationPreview,
     private val links: LinkRepository,
@@ -121,6 +135,12 @@ class AlarmEditViewModel(
 
     init {
         viewModelScope.launch {
+            combine(settings.defaultWallpaperPath, settings.defaultWallpaperFrame) { path, frame -> path to frame }
+                .collect { (path, frame) ->
+                    _state.update { it.copy(defaultWallpaperPath = path, defaultWallpaperFrame = frame) }
+                }
+        }
+        viewModelScope.launch {
             combine(
                 invitable, pairing.status, partnerRepository.partner, links.openInvites,
                 combine(invitePending, inviteApplied, inviteRunning) { pending, applied, running -> Triple(pending, applied, running) },
@@ -158,6 +178,7 @@ class AlarmEditViewModel(
                             loaded = true, isNew = false, hour = alarm.hour, minute = alarm.minute,
                             days = alarm.days, label = alarm.label, ringtoneUri = alarm.ringtoneUri,
                             wallpaperPath = alarm.wallpaperPath,
+                            wallpaperFrame = alarm.wallpaperFrame, textPosition = alarm.textPosition,
                             soundOn = alarm.soundOn, vibrationOn = alarm.vibrationOn, vibration = alarm.vibration,
                             ringtoneTitle = ringtoneTitle(alarm.ringtoneUri),
                         )
@@ -276,22 +297,48 @@ class AlarmEditViewModel(
                 _state.update { it.copy(busy = false, error = EditError.WallpaperImport) }
                 return@launch
             }
-            if (finished) {
-                deleteWallpaperFile(path)
-                return@launch
+            // The imported file is the session's only once it is stored below; every other exit (a finished
+            // session, the VM cleared mid-compare) deletes it. The previous file stays until then.
+            var owned = false
+            try {
+                // The same picture again keeps its framing; anything else, or a comparison that fails, starts centred.
+                val current = _state.value.wallpaperPath
+                val same = current != null && try {
+                    sameWallpaperContent(current, path)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+                if (finished) return@launch
+                sessionWallpaper?.let(deleteWallpaperFile)
+                sessionWallpaper = path
+                owned = true
+                _state.update {
+                    it.copy(busy = false, wallpaperPath = path, wallpaperFrame = if (same) it.wallpaperFrame else null, previewRequested = true)
+                }
+            } finally {
+                if (!owned) deleteWallpaperFile(path)
             }
-            sessionWallpaper?.let(deleteWallpaperFile)
-            sessionWallpaper = path
-            _state.update { it.copy(busy = false, wallpaperPath = path) }
         }
     }
+
+    /** The preview's Save: the framing of the image and the text position, held until the alarm is saved. */
+    fun setFraming(frame: WallpaperFrame?, position: TextPosition) {
+        if (saving || finished) return
+        // The frame belongs to the image; without one only the position is the alarm's.
+        _state.update { it.copy(wallpaperFrame = if (it.wallpaperPath == null) null else frame, textPosition = position) }
+    }
+
+    /** The screen opened the preview that [AlarmEditUiState.previewRequested] asked for. */
+    fun previewRequestHandled() = _state.update { it.copy(previewRequested = false) }
 
     fun removeWallpaper() {
         if (saving || finished) return
         // A file imported this session was never saved, so drop it now; the original goes on save.
         sessionWallpaper?.let(deleteWallpaperFile)
         sessionWallpaper = null
-        _state.update { it.copy(wallpaperPath = null) }
+        _state.update { it.copy(wallpaperPath = null, wallpaperFrame = null) }
     }
 
     private fun replaceRingtone(uri: String, sessionImport: Boolean = false) {
@@ -334,6 +381,8 @@ class AlarmEditViewModel(
                     link = current?.link,
                     ringtoneUri = s.ringtoneUri,
                     wallpaperPath = s.wallpaperPath,
+                    wallpaperFrame = s.wallpaperFrame,
+                    textPosition = s.textPosition,
                     vibration = s.vibration,
                     // The setters keep one on; this holds even if a stray state says otherwise.
                     vibrationOn = s.vibrationOn || !s.soundOn,

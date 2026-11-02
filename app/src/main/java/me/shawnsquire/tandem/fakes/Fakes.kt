@@ -14,6 +14,7 @@ import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.media.DefaultLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.sync.LateRingNotifier
 import me.shawnsquire.tandem.sync.LateRingPrompt
 import me.shawnsquire.tandem.schedule.Alarm
@@ -27,7 +28,9 @@ import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.CommandApplier
 import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.sync.CommandSender
@@ -123,6 +126,8 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
                     vibration = alarm.vibration,
                     vibrationOn = alarm.vibrationOn,
                     soundOn = alarm.soundOn,
+                    wallpaperFrame = alarm.wallpaperFrame,
+                    textPosition = alarm.textPosition,
                     link = storedLink.copy(ownerSkippedOccurrenceAt = incoming.ownerSkippedOccurrenceAt),
                 )
                 list.map { if (it.id == alarm.id) merged else it }
@@ -157,12 +162,19 @@ class FakeSettingsRepository : SettingsRepository {
     private val snooze = MutableStateFlow(10)
     private val wallpaper = MutableStateFlow<String?>(null)
     private val ringtone = MutableStateFlow<String?>(null)
+    private val frame = MutableStateFlow<WallpaperFrame?>(null)
     override val snoozeMinutes: Flow<Int> = snooze
     override val defaultWallpaperPath: Flow<String?> = wallpaper
     override val defaultRingtoneUri: Flow<String?> = ringtone
+    override val defaultWallpaperFrame: Flow<WallpaperFrame?> = frame
     override suspend fun setSnoozeMinutes(m: Int) { snooze.value = m }
     override suspend fun setDefaultWallpaperPath(p: String?) { wallpaper.value = p }
     override suspend fun setDefaultRingtoneUri(u: String?) { ringtone.value = u }
+    override suspend fun setDefaultWallpaperFrame(f: WallpaperFrame?) { frame.value = f?.sanitized() }
+    override suspend fun setDefaultWallpaper(path: String?, frame: WallpaperFrame?) {
+        wallpaper.value = path
+        this.frame.value = frame?.sanitized()
+    }
 }
 
 class FakeAlarmScheduler : AlarmScheduler {
@@ -340,7 +352,9 @@ class FakeLinkRepository : LinkRepository {
             val label: String?,
             val ringtoneUri: String?,
             val wallpaperPath: String?,
+            val wallpaperFrame: WallpaperFrame? = null,
         ) : Call
+        data class SetOverrideFraming(val alarmId: String, val wallpaperFrame: WallpaperFrame?, val textPosition: TextPosition?) : Call
         data class SetOutputOverrides(
             val alarmId: String,
             val soundOn: Boolean?,
@@ -377,8 +391,14 @@ class FakeLinkRepository : LinkRepository {
     override suspend fun leave(alarmId: String) { calls += Call.Leave(alarmId) }
     override suspend fun setMode(alarmId: String, mode: LinkMode) { calls += Call.SetMode(alarmId, mode) }
 
-    override suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?) {
-        calls += Call.SetOverrides(alarmId, label, ringtoneUri, wallpaperPath)
+    override suspend fun setOverrides(
+        alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?, wallpaperFrame: WallpaperFrame?,
+    ) {
+        calls += Call.SetOverrides(alarmId, label, ringtoneUri, wallpaperPath, wallpaperFrame)
+    }
+
+    override suspend fun setOverrideFraming(alarmId: String, wallpaperFrame: WallpaperFrame?, textPosition: TextPosition?) {
+        calls += Call.SetOverrideFraming(alarmId, wallpaperFrame, textPosition)
     }
 
     override suspend fun setOutputOverrides(
@@ -432,13 +452,25 @@ class FakeMediaPublisher : MediaPublisher {
 
 /** Reproduces today's ring choice (no owner media), so L2 can call it before L5 exists. */
 class FakeLinkedMediaCache : LinkedMediaCache {
-    data class Update(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val defaultWallpaper: MediaRef?)
+    data class Update(
+        val ownerUid: String,
+        val alarms: Map<String, AlarmMedia>,
+        val defaultWallpaper: MediaRef?,
+        val defaultWallpaperFrame: WallpaperFrame? = null,
+    )
 
     val updates = mutableListOf<Update>()
 
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) {
-        updates += Update(ownerUid, alarms, defaultWallpaper)
+    /** Makes [update] throw, recording nothing, while set. */
+    var updateFailure: Throwable? = null
+
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) {
+        updateFailure?.let { throw it }
+        updates += Update(ownerUid, alarms, defaultWallpaper, defaultWallpaperFrame)
     }
+
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? =
+        updates.lastOrNull()?.takeIf { it.ownerUid == ownerUid }?.defaultWallpaperFrame
 
     /** Cached file paths by sha, for tests to populate. */
     val paths = mutableMapOf<String, String>()
@@ -449,7 +481,7 @@ class FakeLinkedMediaCache : LinkedMediaCache {
     override fun pathFor(sha: String): String? = paths[sha]
     override fun inUse(): Set<String> = inUseHashes.toSet()
 
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) =
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?) =
         DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
 }
 

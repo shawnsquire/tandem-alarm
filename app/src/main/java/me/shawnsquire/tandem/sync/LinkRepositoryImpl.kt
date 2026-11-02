@@ -29,7 +29,9 @@ import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -148,10 +150,20 @@ class LinkRepositoryImpl(
         scheduler.rescheduleAll()
     }
 
-    override suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?) {
+    override suspend fun setOverrides(
+        alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?, wallpaperFrame: WallpaperFrame?,
+    ) {
         alarms.updateLink(alarmId) {
-            it.copy(overrideLabel = label, overrideRingtoneUri = ringtoneUri, overrideWallpaperPath = wallpaperPath)
+            it.copy(
+                overrideLabel = label, overrideRingtoneUri = ringtoneUri,
+                overrideWallpaperPath = wallpaperPath, overrideWallpaperFrame = wallpaperFrame,
+            )
         }
+        scheduler.rescheduleAll()
+    }
+
+    override suspend fun setOverrideFraming(alarmId: String, wallpaperFrame: WallpaperFrame?, textPosition: TextPosition?) {
+        alarms.updateLink(alarmId) { it.copy(overrideWallpaperFrame = wallpaperFrame, overrideTextPosition = textPosition) }
         scheduler.rescheduleAll()
     }
 
@@ -322,6 +334,8 @@ class LinkRepositoryImpl(
                     vibration = owner.vibration,
                     vibrationOn = owner.vibrationOn,
                     soundOn = owner.soundOn,
+                    wallpaperFrame = owner.wallpaperFrame,
+                    textPosition = owner.textPosition,
                     skippedOccurrenceAt = null,
                     ringtoneUri = null,
                     wallpaperPath = null,

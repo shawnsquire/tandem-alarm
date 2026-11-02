@@ -17,7 +17,10 @@ import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.sync.PartnerAlarm
 import me.shawnsquire.tandem.sync.PartnerState
@@ -76,6 +79,10 @@ class LinkedAlarmViewModelTest {
         val deletedWallpapers = mutableListOf<String>()
         var ringtoneImport: () -> String = { "/files/new.mp3" }
         var wallpaperImport: () -> String = { "/files/new.jpg" }
+        /** What the content comparison says; a throw counts as different. */
+        var sameContent: () -> Boolean = { false }
+        /** The owner's image (and frame) the preview shows when this phone has none; receives the row it was asked for. */
+        var ownerWallpaper: (Alarm) -> RingWallpaper? = { null }
         private val vmLinks: me.shawnsquire.tandem.sync.LinkRepository =
             object : me.shawnsquire.tandem.sync.LinkRepository by links {
                 override suspend fun setOutputOverrides(
@@ -103,6 +110,8 @@ class LinkedAlarmViewModelTest {
             deleteRingtoneFile = { deletedRingtones += it },
             importWallpaper = { wallpaperImport() },
             deleteWallpaperFile = { deletedWallpapers += it },
+            sameWallpaperContent = { _, _ -> sameContent() },
+            wallpaperWithoutOverride = { ownerWallpaper(it) },
             preview = preview,
             rejectedReason = "rejected",
         )
@@ -622,7 +631,7 @@ class LinkedAlarmViewModelTest {
         val vm = LinkedAlarmViewModel(
             "j", repo, links, LinkedAlarmActions(links, AlarmEdits(repo, FakeAlarmScheduler())),
             FakePairingRepository(), FakePartnerRepository(partnerState()), clock,
-            { it ?: "Default" }, { "x" }, {}, { "x" }, {}, FakeVibrationPreview(), "rejected",
+            { it ?: "Default" }, { "x" }, {}, { "x" }, {}, { _, _ -> false }, { null }, FakeVibrationPreview(), "rejected",
         )
         val seen = mutableListOf<CommandUiStatus?>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect { seen += it.bothStatus } }
@@ -634,5 +643,103 @@ class LinkedAlarmViewModelTest {
         lagging.value = listOf(real.get("j")!!)
         assertEquals(CommandUiStatus.Applied, vm.state.value.bothStatus)
         assertFalse(seen.any { it is CommandUiStatus.Rejected })
+    }
+
+    private val framed = WallpaperFrame(2f, 0.3f, 0.6f)
+    private val ownersFrame = WallpaperFrame(1.5f, 0.4f, 0.4f)
+
+    private fun framedLink(position: TextPosition? = null) =
+        link(wallpaper = "/files/w.jpg").copy(overrideWallpaperFrame = framed, overrideTextPosition = position)
+
+    @Test fun textPositionIsTheOwnersUntilOverridden() = runTest {
+        val plain = Env(joined().copy(textPosition = TextPosition.TOP)).latest()
+        assertEquals(TextPosition.TOP, plain.textPosition)
+        assertEquals(TextPosition.TOP, plain.ownerTextPosition)
+        val over = Env(joined(link = framedLink(TextPosition.BOTTOM)).copy(textPosition = TextPosition.TOP)).latest()
+        assertEquals(TextPosition.BOTTOM, over.textPosition)
+        assertEquals(TextPosition.TOP, over.ownerTextPosition)
+        assertEquals(framed, over.overrideWallpaperFrame)
+    }
+
+    @Test fun savingFramingWithAnOverrideImageStoresFrameAndPosition() = runTest {
+        val e = Env(joined(link = framedLink()))
+        e.vm.setFraming(ownersFrame, TextPosition.BOTTOM)
+        assertEquals(listOf<Call>(Call.SetOverrideFraming("j", ownersFrame, TextPosition.BOTTOM)), e.links.calls)
+    }
+
+    @Test fun savingFramingWithoutAnOverrideImageStoresOnlyThePosition() = runTest {
+        val e = Env(joined())
+        e.vm.setFraming(ownersFrame, TextPosition.TOP)
+        assertEquals(listOf<Call>(Call.SetOverrideFraming("j", null, TextPosition.TOP)), e.links.calls)
+    }
+
+    @Test fun aPositionEqualToTheOwnersIsStoredAsNull() = runTest {
+        val e = Env(joined(link = framedLink(TextPosition.TOP)).copy(textPosition = TextPosition.BOTTOM))
+        e.vm.setFraming(framed, TextPosition.BOTTOM)
+        assertEquals(listOf<Call>(Call.SetOverrideFraming("j", framed, null)), e.links.calls)
+    }
+
+    @Test fun savingUnchangedFramingWritesNothing() = runTest {
+        val e = Env(joined(link = framedLink(TextPosition.TOP)))
+        e.vm.setFraming(framed, TextPosition.TOP)
+        assertTrue(e.links.calls.isEmpty())
+    }
+
+    @Test fun useOwnersWallpaperClearsPathAndFrameButKeepsThePosition() = runTest {
+        val e = Env(joined(link = framedLink(TextPosition.TOP)))
+        e.vm.useOwnersWallpaper()
+        assertEquals(listOf<Call>(Call.SetOverrides("j", null, null, null, null)), e.links.calls)
+        assertEquals(listOf("/files/w.jpg"), e.deletedWallpapers)
+    }
+
+    @Test fun repickingTheSameImageKeepsTheFrameAndRequestsThePreview() = runTest {
+        val e = Env(joined(link = framedLink()))
+        e.sameContent = { true }
+        e.vm.onWallpaperPicked("content://img/1")
+        assertEquals(listOf<Call>(Call.SetOverrides("j", null, null, "/files/new.jpg", framed)), e.links.calls)
+        assertTrue(e.latest().previewRequested)
+        e.vm.previewRequestHandled()
+        assertFalse(e.latest().previewRequested)
+    }
+
+    @Test fun repickingADifferentImageResetsTheFrame() = runTest {
+        val e = Env(joined(link = framedLink()))
+        e.vm.onWallpaperPicked("content://img/1")
+        assertEquals(listOf<Call>(Call.SetOverrides("j", null, null, "/files/new.jpg", null)), e.links.calls)
+    }
+
+    @Test fun aFailedComparisonResetsTheFrame() = runTest {
+        val e = Env(joined(link = framedLink()))
+        e.sameContent = { throw java.io.IOException("unreadable") }
+        e.vm.onWallpaperPicked("content://img/1")
+        assertEquals(listOf<Call>(Call.SetOverrides("j", null, null, "/files/new.jpg", null)), e.links.calls)
+    }
+
+    @Test fun otherOverrideWritesKeepTheFrame() = runTest {
+        val e = Env(joined(link = framedLink()))
+        e.vm.setMessage("Hi")
+        assertEquals(listOf<Call>(Call.SetOverrides("j", "Hi", null, "/files/w.jpg", framed)), e.links.calls)
+    }
+
+    @Test fun previewShowsTheOverrideImageWithItsFrameAndAllowsFraming() = runTest {
+        val e = Env(joined(link = framedLink()))
+        assertEquals(LinkedPreviewTarget(RingWallpaper("/files/w.jpg", framed), own = true), e.vm.previewTarget())
+    }
+
+    @Test fun previewWithoutAnOverrideShowsTheOwnersImageResolvedWithTheOverrideCleared() = runTest {
+        val row = joined(link = link(label = "Hi"))
+        var asked: Alarm? = null
+        val e = Env(row)
+        e.ownerWallpaper = { asked = it; RingWallpaper("/linked/abc", ownersFrame) }
+        assertEquals(LinkedPreviewTarget(RingWallpaper("/linked/abc", ownersFrame), own = false), e.vm.previewTarget())
+        assertNull(asked!!.link!!.overrideWallpaperPath)
+        assertNull(asked!!.link!!.overrideWallpaperFrame)
+        assertEquals("Hi", asked!!.link!!.overrideLabel)
+    }
+
+    @Test fun previewFallsBackToNoImageWhenResolvingFails() = runTest {
+        val e = Env(joined())
+        e.ownerWallpaper = { throw java.io.IOException("disk") }
+        assertEquals(LinkedPreviewTarget(null, own = false), e.vm.previewTarget())
     }
 }

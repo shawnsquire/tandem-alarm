@@ -161,7 +161,7 @@ class RingingControllerImplTest {
         h.settings.setSnoozeMinutes(7)
         h.controller().snooze()
         val until = Instant.parse("2026-03-02T10:07:00Z")
-        assertEquals(ringing.copy(snoozedUntil = until), h.store.state.first())
+        assertEquals(ringing.copy(snoozedUntil = until, snoozeCount = 1), h.store.state.first())
         assertEquals(1, h.scheduler.rescheduleCount)
         assertEquals(listOf("ring-1" to until), h.notifier.snoozed)
     }
@@ -172,7 +172,7 @@ class RingingControllerImplTest {
         h.settings.setSnoozeMinutes(7)
         h.controller(mirror).snooze(RingOrigin.REMOTE)
         val until = Instant.parse("2026-03-02T10:07:00Z")
-        assertEquals(ringing.copy(snoozedUntil = until), h.store.state.first())
+        assertEquals(ringing.copy(snoozedUntil = until, snoozeCount = 1), h.store.state.first())
         assertEquals(listOf("ring-1" to until), h.notifier.snoozed)
         assertTrue(mirror.calls.isEmpty())
     }
@@ -929,12 +929,12 @@ class RingingControllerImplTest {
         h.settings.setSnoozeMinutes(7)
         h.controller(mirror).snooze(RingOrigin.LOCAL)
         val t = Instant.parse("2026-03-02T10:07:00Z")
-        assertEquals(mergedRing.copy(snoozedUntil = t, merged = emptyList()), h.store.state.first())
+        assertEquals(mergedRing.copy(snoozedUntil = t, merged = emptyList(), snoozeCount = 1), h.store.state.first())
         assertEquals(
             setOf(
-                SnoozeEntry("ring-1", "a", t, occurrenceX),
-                SnoozeEntry("split-1", "b", t, occurrenceY),
-                SnoozeEntry("split-2", "c", t, occurrenceZ),
+                SnoozeEntry("ring-1", "a", t, occurrenceX, 1),
+                SnoozeEntry("split-1", "b", t, occurrenceY, 1),
+                SnoozeEntry("split-2", "c", t, occurrenceZ, 1),
             ),
             h.ledger.all().toSet(),
         )
@@ -1023,9 +1023,9 @@ class RingingControllerImplTest {
     @Test fun snoozeWritesLedgerBetweenArmAndState() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         val recordingLedger = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) {
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?, snoozeCount: Int) {
                 h.events += "ledger"
-                h.ledger.put(ringId, alarmId, until, occurrenceAt)
+                h.ledger.put(ringId, alarmId, until, occurrenceAt, snoozeCount)
             }
         }
         val recordingStore = object : RingStateStore by h.store {
@@ -1035,13 +1035,13 @@ class RingingControllerImplTest {
         RingingControllerImpl(h.repo, recordingStore, h.settings, h.scheduler, h.armer, h.notifier, recordingLedger) { now }.snooze()
         val until = Instant.parse("2026-03-02T10:07:00Z")
         assertEquals(listOf("arm", "ledger", "set"), h.events)
-        assertEquals(SnoozeEntry("ring-1", "a", until), h.ledger.get("ring-1"))
+        assertEquals(SnoozeEntry("ring-1", "a", until, null, 1), h.ledger.get("ring-1"))
     }
 
     @Test fun snoozeLedgerFailureWritesNothingAndCancelsArm() = runTest {
         val h = H(listOf(alarm("a", emptySet())), ringing)
         val failingLedger = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) { throw IllegalStateException("prefs") }
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?, snoozeCount: Int) { throw IllegalStateException("prefs") }
         }
         val c = RingingControllerImpl(h.repo, h.store, h.settings, h.scheduler, h.armer, h.notifier, failingLedger) { now }
         var thrown = false
@@ -1378,7 +1378,7 @@ class RingingControllerImplTest {
         val c = h.controller(mirror)
         c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
         assertEquals(promoted, h.store.state.first())
-        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX)), h.ledger.all())
+        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX, 1)), h.ledger.all())
         assertEquals(listOf(Triple("a", "split-1", tenOhFive)), h.armed)
         assertEquals(listOf("split-1" to tenOhFive), h.notifier.snoozed)
         assertTrue(h.repo.get("a")!!.enabled) // not a dismiss
@@ -1394,7 +1394,7 @@ class RingingControllerImplTest {
         val c = h.controller()
         c.snoozeOccurrence("c", occurrenceZ, tenOhFive, RingOrigin.REMOTE)
         assertEquals(mergedRing.copy(merged = listOf(RingMember("b", occurrenceY))), h.store.state.first())
-        assertEquals(listOf(SnoozeEntry("split-1", "c", tenOhFive, occurrenceZ)), h.ledger.all())
+        assertEquals(listOf(SnoozeEntry("split-1", "c", tenOhFive, occurrenceZ, 1)), h.ledger.all())
         assertEquals(listOf(Triple("c", "split-1", tenOhFive)), h.armed)
         assertEquals(listOf("split-1" to tenOhFive), h.notifier.snoozed)
         assertEquals(listOf(ParkedSnooze("c", occurrenceZ, tenOhFive)), c.ringContext("c").snoozes)
@@ -1437,8 +1437,8 @@ class RingingControllerImplTest {
         h.settings.setSnoozeMinutes(7)
         val mirror = RecordingMirror()
         h.controller(mirror).snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
-        assertEquals(soundingX.copy(snoozedUntil = tenOhFive), h.store.state.first())
-        assertEquals(listOf(SnoozeEntry("ring-1", "a", tenOhFive, occurrenceX)), h.ledger.all())
+        assertEquals(soundingX.copy(snoozedUntil = tenOhFive, snoozeCount = 1), h.store.state.first())
+        assertEquals(listOf(SnoozeEntry("ring-1", "a", tenOhFive, occurrenceX, 1)), h.ledger.all())
         assertEquals(listOf("ring-1" to tenOhFive), h.notifier.snoozed)
         assertTrue(mirror.calls.isEmpty())
     }
@@ -1498,9 +1498,9 @@ class RingingControllerImplTest {
         h.ledger.put("ring-A", "a", sevenTen, occurrenceX)
         var fail = true
         val flaky = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) {
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?, snoozeCount: Int) {
                 if (fail) { fail = false; throw IllegalStateException("prefs") }
-                h.ledger.put(ringId, alarmId, until, occurrenceAt)
+                h.ledger.put(ringId, alarmId, until, occurrenceAt, snoozeCount)
             }
         }
         val later = sevenTen.plusSeconds(300)
@@ -1545,7 +1545,7 @@ class RingingControllerImplTest {
         assertEquals(later, h.fired.lastRang("a"))
         c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
         assertEquals(later, h.fired.lastRang("a"))
-        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX)), h.ledger.all()) // the snooze still stands
+        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX, 1)), h.ledger.all()) // the snooze still stands
     }
 
     @Test fun earlyStopRecordsTheOccurrenceAndTurnsAOneShotOff() = runTest {
@@ -1569,7 +1569,7 @@ class RingingControllerImplTest {
         val c = h.controller()
         c.snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
         assertEquals(occurrenceX, h.fired.lastRang("a"))
-        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX)), h.ledger.all())
+        assertEquals(listOf(SnoozeEntry("split-1", "a", tenOhFive, occurrenceX, 1)), h.ledger.all())
         assertEquals(listOf(Triple("a", "split-1", tenOhFive)), h.armed)
         assertEquals(listOf("split-1" to tenOhFive), h.notifier.snoozed)
         assertTrue(h.repo.get("a")!!.enabled) // a snooze, not a dismiss
@@ -1592,7 +1592,7 @@ class RingingControllerImplTest {
     @Test fun earlySnoozeLedgerFailureCancelsTheArmAndLeavesTheOccurrenceUnresolved() = runTest {
         val h = H(listOf(alarm("a", emptySet())), null)
         val failing = object : SnoozeLedger by h.ledger {
-            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?) { throw IllegalStateException("prefs") }
+            override fun put(ringId: String, alarmId: String, until: Instant, occurrenceAt: Instant?, snoozeCount: Int) { throw IllegalStateException("prefs") }
         }
         val thrown = runCatching { h.controller(ledger = failing).snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE) }.exceptionOrNull()
         assertTrue(thrown is IllegalStateException)
@@ -1963,13 +1963,13 @@ class RingingControllerImplTest {
         val mirror = RecordingMirror()
         val (h, c) = snoozedGroup(mirror)
         c.snoozeOccurrence("c", occurrenceZ, laterT, RingOrigin.REMOTE)
-        assertEquals(SnoozeEntry("split-2", "c", laterT, occurrenceZ), h.ledger.get("split-2"))
+        assertEquals(SnoozeEntry("split-2", "c", laterT, occurrenceZ, 1), h.ledger.get("split-2"))
         assertEquals(mapOf("ring-1" to listOf("ring-1", "split-1")), h.groups.all())
         assertEquals(listOf("ring-1" to tenOhFive, "split-2" to laterT), h.notifier.snoozed.takeLast(2))
         assertEquals(listOf(listOf("a", "b"), listOf("c")), h.notifier.snoozedLabels.takeLast(2))
         assertEquals(1, mirror.calls.size)
         c.dismiss("ring-1", RingOrigin.LOCAL) // the group's Dismiss leaves c's own snooze alone
-        assertEquals(listOf(SnoozeEntry("split-2", "c", laterT, occurrenceZ)), h.ledger.all())
+        assertEquals(listOf(SnoozeEntry("split-2", "c", laterT, occurrenceZ, 1)), h.ledger.all())
         assertEquals(Triple(MirrorKind.DISMISS, listOf(RingMember("a", occurrenceX), bMember), null as Instant?), mirror.calls.last())
     }
 
@@ -2124,5 +2124,115 @@ class RingingControllerImplTest {
         assertEquals(laterT, h.store.state.first()!!.snoozedUntil) // moved all the same
         assertEquals(posted, h.notifier.snoozed.size) // the group's notification under ring-1 stays
         assertFalse("ring-1" in h.notifier.cancelledSnoozed)
+    }
+
+    // ---- snooze count: how many times this ring has been snoozed, LOCAL or REMOTE ----
+
+    @Test fun snoozeCountsEachSnoozeAndResumeKeepsIt() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        val c = h.controller()
+        c.snooze()
+        assertEquals(1, h.store.state.first()!!.snoozeCount)
+        assertEquals(1, h.ledger.get("ring-1")!!.snoozeCount)
+        assertEquals(SlotClaim.Claimed, c.claimSnoozeResume("ring-1", "a"))
+        assertEquals(1, h.store.state.first()!!.snoozeCount) // sounding again, same ring
+        c.snooze()
+        assertEquals(2, h.store.state.first()!!.snoozeCount)
+        assertEquals(2, h.ledger.get("ring-1")!!.snoozeCount)
+    }
+
+    @Test fun aMergedMembersSnoozeCountRaisesTheSoundingRingsAndTheNextSnoozeCountsOn() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(occurrenceAt = sevenOhFive))
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX, 2)
+        val c = h.controller()
+        assertEquals(SlotClaim.Merged, c.claimSnoozeResume("ring-A", "a"))
+        assertEquals(2, h.store.state.first()!!.snoozeCount) // the line still reads snoozed
+        c.snooze()
+        assertEquals(3, h.store.state.first()!!.snoozeCount)
+        assertEquals(3, h.ledger.get("ring-B")!!.snoozeCount)
+    }
+
+    @Test fun aMergedMemberWithAFewerSnoozesLeavesTheSoundingRingsCount() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(occurrenceAt = sevenOhFive, snoozeCount = 3))
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX, 1)
+        assertEquals(SlotClaim.Merged, h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(3, h.store.state.first()!!.snoozeCount)
+    }
+
+    @Test fun remoteSnoozeCountsToo() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), ringing)
+        h.controller().snooze(RingOrigin.REMOTE)
+        assertEquals(1, h.store.state.first()!!.snoozeCount)
+        val g = H(listOf(alarm("a", emptySet())), soundingX)
+        g.controller().snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(1, g.store.state.first()!!.snoozeCount)
+        assertEquals(1, g.ledger.get("ring-1")!!.snoozeCount)
+    }
+
+    @Test fun snoozeResumeParkedBehindANewerRingKeepsTheCountFromTheLedger() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringB.copy(snoozedUntil = sevenTen, occurrenceAt = Instant.EPOCH))
+        h.ledger.put("ring-A", "a", sevenTen, occurrenceX, 2)
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("ring-A", "a"))
+        assertEquals(RingState("a", "ring-A", now, null, occurrenceX, snoozeCount = 2), h.store.state.first())
+    }
+
+    @Test fun snoozeParkedBehindANewerRingThenResumedKeepsTheCount() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), ringing.copy(snoozeCount = 1))
+        val c = h.controller()
+        c.snooze() // second snooze
+        c.claimFire(ringB) // B takes the slot; ring-1 stays in the ledger
+        assertEquals(0, h.store.state.first()!!.snoozeCount) // a fresh ring starts at 0
+        h.store.set(ringB.copy(snoozedUntil = sevenTen))
+        assertEquals(SlotClaim.Claimed, c.claimSnoozeResume("ring-1", "a"))
+        assertEquals(2, h.store.state.first()!!.snoozeCount)
+    }
+
+    @Test fun snoozeSplitsMergedMembersOutWithTheCountOfTheSnoozeJustMade() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), linkedAlarm("b"), alarm("c", emptySet())), mergedRing.copy(snoozeCount = 2))
+        h.controller().snooze()
+        assertEquals(3, h.store.state.first()!!.snoozeCount)
+        assertEquals(listOf(3, 3, 3), h.ledger.all().map { it.snoozeCount })
+        // A split-out member resumes with it.
+        h.store.set(null)
+        assertEquals(SlotClaim.Claimed, h.controller().claimSnoozeResume("split-1", "b"))
+        assertEquals(3, h.store.state.first()!!.snoozeCount)
+    }
+
+    @Test fun snoozeOccurrenceSplitsAMemberOutWithTheRingsNextCount() = runTest {
+        val h = mergedH().also { it.store.set(mergedRing.copy(snoozeCount = 1)) }
+        h.controller().snoozeOccurrence("c", occurrenceZ, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(1, h.store.state.first()!!.snoozeCount) // the sounding ring is not snoozed
+        assertEquals(2, h.ledger.get("split-1")!!.snoozeCount)
+    }
+
+    @Test fun promotingAMemberKeepsTheRingsCount() = runTest {
+        val h = mergedH().also { it.store.set(mergedRing.copy(snoozeCount = 2)) }
+        h.controller().dismissOccurrence("a", occurrenceX, RingOrigin.REMOTE)
+        assertEquals(2, h.store.state.first()!!.snoozeCount)
+        h.controller().snoozeOccurrence("b", occurrenceY, tenOhFive, RingOrigin.REMOTE) // the new primary, with c merged
+        assertEquals(2, h.store.state.first()!!.snoozeCount)
+        assertEquals(3, h.ledger.get("split-1")!!.snoozeCount) // b's own snooze: the next one
+    }
+
+    @Test fun snoozeInAdvanceIsTheFirstSnooze() = runTest {
+        val h = H(listOf(alarm("a", emptySet())), null)
+        h.controller().snoozeOccurrence("a", occurrenceX, tenOhFive, RingOrigin.REMOTE)
+        assertEquals(1, h.ledger.all().single().snoozeCount)
+    }
+
+    @Test fun movingASnoozesEndIsNotANewSnooze() = runTest {
+        val snoozed = soundingX.copy(snoozedUntil = tenOhFive, snoozeCount = 1)
+        val h = H(listOf(alarm("a", emptySet())), snoozed)
+        h.ledger.put("ring-1", "a", tenOhFive, occurrenceX, 1)
+        val later = tenOhFive.plusSeconds(120)
+        h.controller().snoozeOccurrence("a", occurrenceX, later, RingOrigin.REMOTE)
+        assertEquals(snoozed.copy(snoozedUntil = later), h.store.state.first())
+        assertEquals(SnoozeEntry("ring-1", "a", later, occurrenceX, 1), h.ledger.get("ring-1"))
+    }
+
+    @Test fun mergingIntoASoundingRingKeepsItsCount() = runTest {
+        val h = H(listOf(alarm("a", emptySet()), alarm("b", emptySet())), soundingX.copy(snoozeCount = 2))
+        assertEquals(SlotClaim.Merged, h.controller().claimFire(RingState("b", "ring-B", sevenOhFive, null, occurrenceY)))
+        assertEquals(2, h.store.state.first()!!.snoozeCount)
     }
 }

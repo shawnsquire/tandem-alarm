@@ -6,8 +6,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -165,10 +167,15 @@ class RingingScreenModelTest {
     }
 
     @Test fun wallpaperFallbackOrder() {
-        assertEquals(listOf("a", "d"), chooseWallpaperPaths("a", "d"))
-        assertEquals(listOf("d"), chooseWallpaperPaths(null, "d"))
-        assertEquals(listOf("d"), chooseWallpaperPaths(" ", "d"))
-        assertEquals(emptyList<String>(), chooseWallpaperPaths(null, null))
+        val af = WallpaperFrame(2f, 0.3f, 0.6f)
+        val d = RingWallpaper("d", WallpaperFrame(3f, 0.4f, 0.4f))
+        assertEquals(listOf(RingWallpaper("a", af), d), chooseWallpapers("a", af, d))
+        assertEquals(listOf(d), chooseWallpapers(null, af, d))
+        assertEquals(listOf(d), chooseWallpapers(" ", af, d))
+        assertEquals(listOf(RingWallpaper("a", null)), chooseWallpapers("a", null, null))
+        assertEquals(listOf(RingWallpaper("a", af)), chooseWallpapers("a", af, RingWallpaper("a", null)))
+        assertEquals(emptyList<RingWallpaper>(), chooseWallpapers(null, null, null))
+        assertEquals(emptyList<RingWallpaper>(), chooseWallpapers(null, null, RingWallpaper(" ", null)))
     }
 
     @Test fun sampleSizeCapsPanoramaMemory() {

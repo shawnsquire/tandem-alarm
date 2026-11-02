@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.PairingException
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PairingStatus
@@ -33,6 +34,9 @@ class SettingsViewModelTest {
         override suspend fun setDefaultWallpaperPath(p: String?) {
             events += "set-wall:$p"; inner.setDefaultWallpaperPath(p)
         }
+        override suspend fun setDefaultWallpaper(path: String?, frame: WallpaperFrame?) {
+            events += "set-wall:$path"; inner.setDefaultWallpaper(path, frame)
+        }
     }
 
     private class ThrowingPairing(private val error: Exception) : PairingRepository by FakePairingRepository() {
@@ -48,6 +52,8 @@ class SettingsViewModelTest {
         val importedRingtones = mutableListOf<String>()
         val importedWallpapers = mutableListOf<String>()
         var failImport = false
+        /** What the content comparison says; a throw counts as different. */
+        var sameContent: () -> Boolean = { false }
         val vm = SettingsViewModel(
             settings = settings,
             pairing = pairing,
@@ -66,6 +72,7 @@ class SettingsViewModelTest {
                 "/wall-${importedWallpapers.size}"
             },
             deleteWallpaperFile = { events += "del-wall:$it" },
+            sameWallpaperContent = { _, _ -> sameContent() },
         )
     }
 
@@ -194,5 +201,61 @@ class SettingsViewModelTest {
         val env = Env(pairing = ThrowingPairing(IllegalStateException("secret internals"))); collect(env)
         env.vm.unpair()
         assertEquals(SettingsError.Unpair("Something went wrong. Try again."), env.vm.state.value.error)
+    }
+
+    private val framed = WallpaperFrame(2f, 0.3f, 0.6f)
+
+    @Test fun savingTheFrameStoresItForTheDefaultImage() = runTest {
+        val env = Env(); collect(env)
+        env.settings.setDefaultWallpaperPath("/old")
+        env.vm.setWallpaperFrame(framed)
+        assertEquals(framed, env.settings.defaultWallpaperFrame.first())
+        assertEquals(framed, env.vm.state.value.wallpaperFrame)
+    }
+
+    @Test fun savingTheFrameWithoutAnImageStoresNothing() = runTest {
+        val env = Env(); collect(env)
+        env.vm.setWallpaperFrame(framed)
+        assertNull(env.settings.defaultWallpaperFrame.first())
+    }
+
+    @Test fun repickingTheSameImageKeepsTheFrameAndOpensThePreview() = runTest {
+        val env = Env(); collect(env)
+        env.settings.setDefaultWallpaperPath("/old")
+        env.settings.setDefaultWallpaperFrame(framed)
+        env.sameContent = { true }
+        env.vm.onWallpaperPicked("content://photo/1")
+        assertEquals("/wall-1", env.settings.defaultWallpaperPath.first())
+        assertEquals(framed, env.settings.defaultWallpaperFrame.first())
+        assertTrue(env.vm.state.value.previewRequested)
+        env.vm.previewRequestHandled()
+        assertEquals(false, env.vm.state.value.previewRequested)
+    }
+
+    @Test fun repickingADifferentImageResetsTheFrame() = runTest {
+        val env = Env(); collect(env)
+        env.settings.setDefaultWallpaperPath("/old")
+        env.settings.setDefaultWallpaperFrame(framed)
+        env.vm.onWallpaperPicked("content://photo/1")
+        assertNull(env.settings.defaultWallpaperFrame.first())
+    }
+
+    @Test fun aFailedComparisonResetsTheFrame() = runTest {
+        val env = Env(); collect(env)
+        env.settings.setDefaultWallpaperPath("/old")
+        env.settings.setDefaultWallpaperFrame(framed)
+        env.sameContent = { error("unreadable") }
+        env.vm.onWallpaperPicked("content://photo/1")
+        assertEquals("/wall-1", env.settings.defaultWallpaperPath.first())
+        assertNull(env.settings.defaultWallpaperFrame.first())
+    }
+
+    @Test fun removingTheImageClearsTheFrame() = runTest {
+        val env = Env(); collect(env)
+        env.settings.setDefaultWallpaperPath("/old")
+        env.settings.setDefaultWallpaperFrame(framed)
+        env.vm.removeWallpaper()
+        assertNull(env.settings.defaultWallpaperPath.first())
+        assertNull(env.settings.defaultWallpaperFrame.first())
     }
 }

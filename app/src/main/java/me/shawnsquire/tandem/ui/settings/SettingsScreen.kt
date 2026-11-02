@@ -40,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,6 +58,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
+import me.shawnsquire.tandem.ui.RingPreview
 import me.shawnsquire.tandem.ui.alarms.edit.WallpaperThumbnail
 import me.shawnsquire.tandem.ui.settingsViewModelFactory
 import me.shawnsquire.tandem.ui.theme.TandemTheme
@@ -88,6 +92,8 @@ fun SettingsRoute(
         onResetRingtone = viewModel::resetRingtone,
         onPickWallpaper = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
         onRemoveWallpaper = viewModel::removeWallpaper,
+        onFramingChanged = viewModel::setWallpaperFrame,
+        onPreviewRequestHandled = viewModel::previewRequestHandled,
         onSaveName = viewModel::saveDisplayName,
         onUnpair = viewModel::unpair,
         onOpenHealth = onOpenHealth,
@@ -111,8 +117,18 @@ fun SettingsScreen(
     onOpenHealth: () -> Unit,
     onErrorShown: () -> Unit,
     modifier: Modifier = Modifier,
+    onFramingChanged: (WallpaperFrame?) -> Unit = {},
+    onPreviewRequestHandled: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    var showRingPreview by rememberSaveable { mutableStateOf(false) }
+    // A fresh pick opens the preview so the new image can be framed right away.
+    LaunchedEffect(state.previewRequested) {
+        if (state.previewRequested) {
+            showRingPreview = true
+            onPreviewRequestHandled()
+        }
+    }
     val errorText = when (val e = state.error) {
         SettingsError.RingtoneImport -> stringResource(R.string.settings_error_ringtone)
         SettingsError.WallpaperImport -> stringResource(R.string.settings_error_wallpaper)
@@ -191,6 +207,9 @@ fun SettingsScreen(
                                 Text(stringResource(R.string.edit_wallpaper_choose))
                             }
                             if (state.wallpaperPath != null) {
+                                TextButton(onClick = { showRingPreview = true }, enabled = !state.busy) {
+                                    Text(stringResource(R.string.edit_wallpaper_preview))
+                                }
                                 TextButton(onClick = onRemoveWallpaper) {
                                     Text(stringResource(R.string.edit_wallpaper_remove))
                                 }
@@ -198,8 +217,27 @@ fun SettingsScreen(
                         }
                     }
                 },
-                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path) } },
+                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path, state.wallpaperFrame) } },
+                modifier = if (state.wallpaperPath != null) Modifier.clickable(enabled = !state.busy) { showRingPreview = true } else Modifier,
             )
+            if (showRingPreview && state.wallpaperPath != null) {
+                // Text position is per alarm, so only the framing is set here.
+                RingPreview(
+                    wallpaperPath = state.wallpaperPath,
+                    initialFrame = state.wallpaperFrame,
+                    gesturesEnabled = true,
+                    initialTextPosition = TextPosition.MIDDLE,
+                    showPositionSelector = false,
+                    hour = 7,
+                    minute = 0,
+                    label = stringResource(R.string.alarm_no_label),
+                    onSave = { frame, _ ->
+                        onFramingChanged(frame)
+                        showRingPreview = false
+                    },
+                    onCancel = { showRingPreview = false },
+                )
+            }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionHeader(R.string.settings_section_you)

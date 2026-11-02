@@ -40,6 +40,8 @@ class MediaPublishStore(private val file: File) {
         s.published?.let { p ->
             put("published", JSONObject().apply {
                 p.defaultWallpaper?.let { put("defaultWallpaper", it.toJson()) }
+                p.defaultWallpaperSource?.let { put("defaultWallpaperSource", it) }
+                put("wallpaperSources", JSONObject().apply { p.wallpaperSources.forEach { (id, path) -> put(id, path) } })
                 put("alarms", JSONObject().apply {
                     p.alarms.forEach { (id, m) ->
                         put(id, JSONObject().apply {
@@ -65,12 +67,16 @@ class MediaPublishStore(private val file: File) {
     private fun decode(o: JSONObject): MediaPublishState {
         val published = o.optJSONObject("published")?.let { p ->
             val alarms = p.optJSONObject("alarms")
+            // Missing sources (an older file) are empty: frames stay withheld until the next media pass.
+            val sources = p.optJSONObject("wallpaperSources")
             PublishedMedia(
                 defaultWallpaper = p.optJSONObject("defaultWallpaper")?.let(::mediaRefFromJson),
                 alarms = alarms?.keys()?.asSequence()?.associateWith { id ->
                     val m = alarms.getJSONObject(id)
                     AlarmMedia(m.optJSONObject("wallpaper")?.let(::mediaRefFromJson), m.optJSONObject("ringtone")?.let(::mediaRefFromJson))
                 }.orEmpty(),
+                wallpaperSources = sources?.keys()?.asSequence()?.associateWith { sources.getString(it) }.orEmpty(),
+                defaultWallpaperSource = if (p.has("defaultWallpaperSource")) p.getString("defaultWallpaperSource") else null,
             )
         }
         // A missing pendingDelete (older file) is empty.

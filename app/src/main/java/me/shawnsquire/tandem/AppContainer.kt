@@ -195,7 +195,8 @@ class AppContainer private constructor(
     val preFireCheck: PreFireCheck = preFireCheckImpl
     val statePublisherImpl = StatePublisherImpl(
         alarmRepository, ringStateStore, householdFlow, authManager.displayName, fcmTokenStore.token,
-        linkRepository.links, mediaPublisher.published,
+        linkRepository.links, mediaPublisher.published, settingsRepository.defaultWallpaperFrame,
+        settingsRepository.defaultWallpaperPath,
         FirestoreDeviceDocWriter(firestore), LiveZoneClock, syncScope,
     )
     val statePublisher: StatePublisher = statePublisherImpl

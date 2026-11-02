@@ -1,19 +1,21 @@
 package me.shawnsquire.tandem.media
 
-import me.shawnsquire.tandem.alarm.chooseWallpaperPaths
+import me.shawnsquire.tandem.alarm.chooseWallpapers
 import me.shawnsquire.tandem.alarm.systemDefaultAlarmUri
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 
 /**
  * Before the real cache is attached: nothing cached, so a linked row resolves from its own media.
  * Both this and [LinkedMediaCacheImpl]'s error fallback use [resolveFromRow].
  */
 object DefaultLinkedMediaCache : LinkedMediaCache {
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) = Unit
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) = Unit
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? = null
     override fun pathFor(sha: String): String? = null
     override fun inUse(): Set<String> = emptySet()
 
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?) =
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?) =
         resolveFromRow(alarm, joinerDefaultRingtone, joinerDefaultWallpaper, systemDefaultAlarmUri())
 
     /**
@@ -22,18 +24,21 @@ object DefaultLinkedMediaCache : LinkedMediaCache {
      * nothing cached: sound the joiner's override, the alarm's, [systemAlarmUri], the joiner's default;
      * wallpaper the override, the alarm's, the joiner's default; label the override, else the alarm's.
      */
-    fun resolveFromRow(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?, systemAlarmUri: String?): RingMedia {
+    fun resolveFromRow(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?, systemAlarmUri: String?): RingMedia {
         val link = alarm.link ?: return RingMedia(
             label = alarm.label,
             soundCandidates = listOfNotNull(alarm.ringtoneUri, joinerDefaultRingtone),
-            wallpaperPaths = chooseWallpaperPaths(alarm.wallpaperPath, joinerDefaultWallpaper),
+            wallpapers = chooseWallpapers(alarm.wallpaperPath, alarm.wallpaperFrame, joinerDefaultWallpaper),
         )
         return RingMedia(
             label = link.overrideLabel?.takeIf { it.isNotBlank() } ?: alarm.label,
             soundCandidates = listOfNotNull(link.overrideRingtoneUri, alarm.ringtoneUri, systemAlarmUri, joinerDefaultRingtone)
                 .filter { it.isNotBlank() }.distinct(),
-            wallpaperPaths = listOfNotNull(link.overrideWallpaperPath, alarm.wallpaperPath, joinerDefaultWallpaper)
-                .filter { it.isNotBlank() }.distinct(),
+            wallpapers = listOfNotNull(
+                link.overrideWallpaperPath?.let { RingWallpaper(it, link.overrideWallpaperFrame) },
+                alarm.wallpaperPath?.let { RingWallpaper(it, alarm.wallpaperFrame) },
+                joinerDefaultWallpaper,
+            ).distinctWallpapers(),
         )
     }
 }
@@ -45,12 +50,14 @@ object DefaultLinkedMediaCache : LinkedMediaCache {
 class SwitchableLinkedMediaCache : LinkedMediaCache {
     @Volatile var delegate: LinkedMediaCache = DefaultLinkedMediaCache
 
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) =
-        delegate.update(ownerUid, alarms, defaultWallpaper)
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) =
+        delegate.update(ownerUid, alarms, defaultWallpaper, defaultWallpaperFrame)
+
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? = delegate.defaultWallpaperFrame(ownerUid)
 
     override fun pathFor(sha: String): String? = delegate.pathFor(sha)
     override fun inUse(): Set<String> = delegate.inUse()
 
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?): RingMedia =
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?): RingMedia =
         delegate.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
 }

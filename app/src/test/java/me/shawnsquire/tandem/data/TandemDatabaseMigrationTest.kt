@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import me.shawnsquire.tandem.schedule.LateRing
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -77,7 +78,7 @@ class TandemDatabaseMigrationTest {
 
         // The migrated file also opens through Room and the entity conversion.
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5, TandemDatabase.MIGRATION_5_6)
             .allowMainThreadQueries()
             .build()
         try {
@@ -129,7 +130,7 @@ class TandemDatabaseMigrationTest {
         migrated.close()
 
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5, TandemDatabase.MIGRATION_5_6)
             .allowMainThreadQueries()
             .build()
         try {
@@ -167,7 +168,7 @@ class TandemDatabaseMigrationTest {
         migrated.close()
 
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
-            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5)
+            .addMigrations(TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5, TandemDatabase.MIGRATION_5_6)
             .allowMainThreadQueries()
             .build()
         try {
@@ -226,6 +227,7 @@ class TandemDatabaseMigrationTest {
         val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
             .addMigrations(
                 TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5,
+                TandemDatabase.MIGRATION_5_6,
             )
             .allowMainThreadQueries()
             .build()
@@ -241,6 +243,38 @@ class TandemDatabaseMigrationTest {
                 assertNull(link.overrideVibration)
                 assertNull(link.overrideVibrationOn)
                 assertNull(link.overrideSoundOn)
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun migrate5To6LeavesFramesNullAndCentresTheText() {
+        helper.createDatabase(dbName, 5).apply {
+            insertV3Rows(this)
+            close()
+        }
+        val migrated = helper.runMigrationsAndValidate(dbName, 6, true, TandemDatabase.MIGRATION_5_6)
+        migrated.close()
+
+        val db = Room.databaseBuilder(RuntimeEnvironment.getApplication(), TandemDatabase::class.java, dbName)
+            .addMigrations(
+                TandemDatabase.MIGRATION_1_2, TandemDatabase.MIGRATION_2_3, TandemDatabase.MIGRATION_3_4, TandemDatabase.MIGRATION_4_5,
+                TandemDatabase.MIGRATION_5_6,
+            )
+            .allowMainThreadQueries()
+            .build()
+        try {
+            runBlocking {
+                for (id in listOf("own", "linked")) {
+                    val alarm = db.alarmDao().get(id)!!.toAlarm()
+                    assertNull(id, alarm.wallpaperFrame)
+                    assertEquals(id, TextPosition.MIDDLE, alarm.textPosition)
+                }
+                val link = db.alarmDao().get("linked")!!.toAlarm().link!!
+                assertNull(link.overrideWallpaperFrame)
+                assertNull(link.overrideTextPosition)
             }
         } finally {
             db.close()

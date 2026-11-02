@@ -11,7 +11,9 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 
 @Entity(tableName = "alarms")
 data class AlarmEntity(
@@ -58,6 +60,17 @@ data class AlarmEntity(
     val linkOverrideVibration: String? = null,
     val linkOverrideVibrationOn: Boolean? = null,
     val linkOverrideSoundOn: Boolean? = null,
+    // A frame is stored only when all three are present; see toWallpaperFrame.
+    val wallpaperZoom: Float? = null,
+    val wallpaperFocusX: Float? = null,
+    val wallpaperFocusY: Float? = null,
+    /** [TextPosition] name; see [toTextPosition]. */
+    @ColumnInfo(defaultValue = "MIDDLE") val textPosition: String = TextPosition.MIDDLE.name,
+    val linkOverrideWallpaperZoom: Float? = null,
+    val linkOverrideWallpaperFocusX: Float? = null,
+    val linkOverrideWallpaperFocusY: Float? = null,
+    /** [TextPosition] name; null means use the copied [textPosition]. */
+    val linkOverrideTextPosition: String? = null,
 )
 
 /** An unknown name (a newer build's pattern, or bad data) reads as the default pattern. */
@@ -65,6 +78,16 @@ fun String.toVibrationPattern(): VibrationPattern = toVibrationPatternOrNull() ?
 
 /** Null for an unknown name, which a link override reads as "use the owner's". */
 fun String.toVibrationPatternOrNull(): VibrationPattern? = VibrationPattern.entries.firstOrNull { it.name == this }
+
+/** An unknown name (a newer build's position, or bad data) reads as the default position. */
+fun String.toTextPosition(): TextPosition = toTextPositionOrNull() ?: TextPosition.MIDDLE
+
+/** Null for an unknown name, which a link override reads as "use the owner's". */
+fun String.toTextPositionOrNull(): TextPosition? = TextPosition.entries.firstOrNull { it.name == this }
+
+/** Null unless all three parts are stored; the frame is read through [WallpaperFrame.sanitized]. */
+private fun toWallpaperFrame(zoom: Float?, focusX: Float?, focusY: Float?): WallpaperFrame? =
+    if (zoom != null && focusX != null && focusY != null) WallpaperFrame(zoom, focusX, focusY).sanitized() else null
 
 fun AlarmEntity.toAlarm(): Alarm = Alarm(
     id = id,
@@ -84,6 +107,8 @@ fun AlarmEntity.toAlarm(): Alarm = Alarm(
     vibration = vibration.toVibrationPattern(),
     vibrationOn = vibrationOn,
     soundOn = soundOn,
+    wallpaperFrame = toWallpaperFrame(wallpaperZoom, wallpaperFocusX, wallpaperFocusY),
+    textPosition = textPosition.toTextPosition(),
 )
 
 /**
@@ -116,6 +141,8 @@ private fun AlarmEntity.toLink(): AlarmLink? {
         overrideVibration = linkOverrideVibration?.toVibrationPatternOrNull(),
         overrideVibrationOn = linkOverrideVibrationOn,
         overrideSoundOn = linkOverrideSoundOn,
+        overrideWallpaperFrame = toWallpaperFrame(linkOverrideWallpaperZoom, linkOverrideWallpaperFocusX, linkOverrideWallpaperFocusY),
+        overrideTextPosition = linkOverrideTextPosition?.toTextPositionOrNull(),
     )
 }
 
@@ -150,4 +177,12 @@ fun Alarm.toEntity(): AlarmEntity = AlarmEntity(
     linkOverrideVibration = link?.overrideVibration?.name,
     linkOverrideVibrationOn = link?.overrideVibrationOn,
     linkOverrideSoundOn = link?.overrideSoundOn,
+    wallpaperZoom = wallpaperFrame?.zoom,
+    wallpaperFocusX = wallpaperFrame?.focusX,
+    wallpaperFocusY = wallpaperFrame?.focusY,
+    textPosition = textPosition.name,
+    linkOverrideWallpaperZoom = link?.overrideWallpaperFrame?.zoom,
+    linkOverrideWallpaperFocusX = link?.overrideWallpaperFrame?.focusX,
+    linkOverrideWallpaperFocusY = link?.overrideWallpaperFrame?.focusY,
+    linkOverrideTextPosition = link?.overrideTextPosition?.name,
 )

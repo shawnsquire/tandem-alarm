@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.data
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import java.time.Instant
@@ -28,6 +29,7 @@ class RingStateStoreImpl(private val dataStore: DataStore<Preferences>) : RingSt
                 snoozedUntil = p[SNOOZED_UNTIL]?.let(Instant::ofEpochMilli),
                 occurrenceAt = p[OCCURRENCE_AT]?.let(Instant::ofEpochMilli),
                 merged = decodeMerged(p[MERGED]),
+                snoozeCount = decodeSnoozeCount(p),
             )
         }
     }
@@ -41,6 +43,7 @@ class RingStateStoreImpl(private val dataStore: DataStore<Preferences>) : RingSt
                 p.remove(SNOOZED_UNTIL)
                 p.remove(OCCURRENCE_AT)
                 p.remove(MERGED)
+                p.remove(SNOOZE_COUNT)
             } else {
                 p[ALARM_ID] = state.alarmId
                 p[RING_ID] = state.ringId
@@ -50,6 +53,7 @@ class RingStateStoreImpl(private val dataStore: DataStore<Preferences>) : RingSt
                 val occurrenceAt = state.occurrenceAt
                 if (occurrenceAt == null) p.remove(OCCURRENCE_AT) else p[OCCURRENCE_AT] = occurrenceAt.toEpochMilli()
                 if (state.merged.isEmpty()) p.remove(MERGED) else p[MERGED] = encodeMerged(state.merged)
+                if (state.snoozeCount > 0) p[SNOOZE_COUNT] = state.snoozeCount else p.remove(SNOOZE_COUNT)
             }
         }
     }
@@ -76,6 +80,11 @@ class RingStateStoreImpl(private val dataStore: DataStore<Preferences>) : RingSt
             }
         }
 
+        // A ring must never be lost to a bad count: a negative or wrongly typed value reads 0.
+        fun decodeSnoozeCount(p: Preferences): Int =
+            try { (p[SNOOZE_COUNT] ?: 0).coerceAtLeast(0) } catch (_: Exception) { 0 }
+
+        val SNOOZE_COUNT = intPreferencesKey("snoozeCount")
         val OCCURRENCE_AT = longPreferencesKey("occurrenceAt")
         val MERGED = stringPreferencesKey("merged")
         val ALARM_ID = stringPreferencesKey("alarmId")

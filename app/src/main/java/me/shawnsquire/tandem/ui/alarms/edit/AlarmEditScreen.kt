@@ -6,8 +6,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -26,7 +34,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,13 +62,22 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import kotlin.math.roundToInt
+import me.shawnsquire.tandem.alarm.frameTransform
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
+import me.shawnsquire.tandem.ui.RingPreview
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -120,6 +136,8 @@ fun AlarmEditRoute(
         onPickRingtoneFile = { filePicker.launch(Unit) },
         onPickWallpaper = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
         onRemoveWallpaper = viewModel::removeWallpaper,
+        onFramingChanged = viewModel::setFraming,
+        onPreviewRequestHandled = viewModel::previewRequestHandled,
         onDelete = {
             viewModel.existingId?.let { id ->
                 onDelete(id, viewModel::discardSession)
@@ -156,10 +174,20 @@ fun AlarmEditScreen(
     onVibrationOnChange: (Boolean) -> Unit = {},
     onSelectVibration: (VibrationPattern) -> Unit = {},
     onStopPreview: () -> Unit = {},
+    onFramingChanged: (WallpaperFrame?, TextPosition) -> Unit = { _, _ -> },
+    onPreviewRequestHandled: () -> Unit = {},
 ) {
     // Busy covers imports and saves; none of the controls may act while one is in flight.
     val locked = state.busy
     val snackbarHostState = remember { SnackbarHostState() }
+    var showRingPreview by rememberSaveable { mutableStateOf(false) }
+    // A fresh pick opens the preview so the new image can be framed right away.
+    LaunchedEffect(state.previewRequested) {
+        if (state.previewRequested) {
+            showRingPreview = true
+            onPreviewRequestHandled()
+        }
+    }
     val errorText = when (state.error) {
         EditError.RingtoneImport -> stringResource(R.string.edit_error_ringtone)
         EditError.WallpaperImport -> stringResource(R.string.edit_error_wallpaper)
@@ -220,16 +248,7 @@ fun AlarmEditScreen(
 
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(stringResource(R.string.edit_repeat), style = MaterialTheme.typography.titleSmall)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    DayOfWeek.entries.forEach { day ->
-                        FilterChip(
-                            selected = day in state.days,
-                            onClick = { onToggleDay(day) },
-                            label = { Text(dayLabel(day), maxLines = 1, softWrap = false) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
+                DayChips(days = state.days, onToggleDay = onToggleDay)
                 Text(
                     formatDays(state.days),
                     style = MaterialTheme.typography.bodyMedium,
@@ -311,9 +330,13 @@ fun AlarmEditScreen(
                                 if (state.wallpaperPath == null) R.string.edit_wallpaper_none else R.string.edit_wallpaper_set,
                             ),
                         )
+                        Text(stringResource(R.string.edit_text_position, textPositionName(state.textPosition)))
                         Row {
                             TextButton(onClick = onPickWallpaper, enabled = !locked) {
                                 Text(stringResource(R.string.edit_wallpaper_choose))
+                            }
+                            TextButton(onClick = { showRingPreview = true }, enabled = !locked) {
+                                Text(stringResource(R.string.edit_wallpaper_preview))
                             }
                             if (state.wallpaperPath != null) {
                                 TextButton(onClick = onRemoveWallpaper, enabled = !locked) {
@@ -323,8 +346,28 @@ fun AlarmEditScreen(
                         }
                     }
                 },
-                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path) } },
+                trailingContent = state.wallpaperPath?.let { path -> { WallpaperThumbnail(path, state.wallpaperFrame) } },
+                modifier = Modifier.clickable(enabled = !locked) { showRingPreview = true },
             )
+            if (showRingPreview) {
+                // Without an image of its own the preview shows the Settings default, whose frame is Settings' to change.
+                val own = state.wallpaperPath != null
+                RingPreview(
+                    wallpaperPath = state.wallpaperPath ?: state.defaultWallpaperPath,
+                    initialFrame = if (own) state.wallpaperFrame else state.defaultWallpaperFrame,
+                    gesturesEnabled = own,
+                    initialTextPosition = state.textPosition,
+                    showPositionSelector = true,
+                    hour = state.hour,
+                    minute = state.minute,
+                    label = state.label,
+                    onSave = { frame, position ->
+                        onFramingChanged(frame, position)
+                        showRingPreview = false
+                    },
+                    onCancel = { showRingPreview = false },
+                )
+            }
 
             InviteSection(state, locked, onInvite)
 
@@ -368,36 +411,135 @@ private fun InviteSection(state: AlarmEditUiState, locked: Boolean, onInvite: ()
     }
 }
 
+/**
+ * Seven equal-width day toggles in one row. The stock FilterChip pads ~16dp a side, which pushes
+ * the row past a 360dp screen; these use 4dp. Width at 360dp: (360 - 32 gutter - 6 * 4 gap) / 7
+ * = ~43dp per toggle, and a two-letter label at labelLarge is ~23dp (~35dp at 1.5x font scale)
+ * plus 8dp padding, so it fits on one line. Each reads to TalkBack as the full day name and
+ * "checked"/"not checked" via the Checkbox role.
+ * https://developer.android.com/develop/ui/compose/accessibility/api-defaults
+ */
+@Composable
+private fun DayChips(days: Set<DayOfWeek>, onToggleDay: (DayOfWeek) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        DayOfWeek.entries.forEach { day ->
+            val selected = day in days
+            val fullName = dayName(day)
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = fullName }
+                    .toggleable(value = selected, role = Role.Checkbox, onValueChange = { onToggleDay(day) }),
+                shape = RoundedCornerShape(50),
+                color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                contentColor = if (selected) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            ) {
+                Box(Modifier.padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        dayLabel(day),
+                        // The toggle's description already names the day, so TalkBack reads "Monday, checked", not "Mo" too.
+                        modifier = Modifier.clearAndSetSemantics {},
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        softWrap = false,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360)
+@Composable
+private fun DayChips360Preview() {
+    MaterialTheme {
+        Box(Modifier.padding(horizontal = 16.dp)) {
+            DayChips(days = setOf(DayOfWeek.MONDAY, DayOfWeek.THURSDAY, DayOfWeek.SUNDAY), onToggleDay = {})
+        }
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360, fontScale = 1.5f)
+@Composable
+private fun DayChipsLargeFontPreview() {
+    MaterialTheme {
+        Box(Modifier.padding(horizontal = 16.dp)) {
+            DayChips(days = setOf(DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY), onToggleDay = {})
+        }
+    }
+}
+
 @Composable
 private fun dayLabel(day: DayOfWeek): String = stringResource(
     when (day) {
-        DayOfWeek.MONDAY -> R.string.edit_day_mon
-        DayOfWeek.TUESDAY -> R.string.edit_day_tue
-        DayOfWeek.WEDNESDAY -> R.string.edit_day_wed
-        DayOfWeek.THURSDAY -> R.string.edit_day_thu
-        DayOfWeek.FRIDAY -> R.string.edit_day_fri
-        DayOfWeek.SATURDAY -> R.string.edit_day_sat
-        DayOfWeek.SUNDAY -> R.string.edit_day_sun
+        DayOfWeek.MONDAY -> R.string.edit_day_mon_short
+        DayOfWeek.TUESDAY -> R.string.edit_day_tue_short
+        DayOfWeek.WEDNESDAY -> R.string.edit_day_wed_short
+        DayOfWeek.THURSDAY -> R.string.edit_day_thu_short
+        DayOfWeek.FRIDAY -> R.string.edit_day_fri_short
+        DayOfWeek.SATURDAY -> R.string.edit_day_sat_short
+        DayOfWeek.SUNDAY -> R.string.edit_day_sun_short
     },
 )
 
 @Composable
-internal fun WallpaperThumbnail(path: String) {
+private fun dayName(day: DayOfWeek): String = stringResource(
+    when (day) {
+        DayOfWeek.MONDAY -> R.string.edit_day_mon_full
+        DayOfWeek.TUESDAY -> R.string.edit_day_tue_full
+        DayOfWeek.WEDNESDAY -> R.string.edit_day_wed_full
+        DayOfWeek.THURSDAY -> R.string.edit_day_thu_full
+        DayOfWeek.FRIDAY -> R.string.edit_day_fri_full
+        DayOfWeek.SATURDAY -> R.string.edit_day_sat_full
+        DayOfWeek.SUNDAY -> R.string.edit_day_sun_full
+    },
+)
+
+/**
+ * The wallpaper as the ringing screen draws it: a phone-shaped box at this screen's aspect ratio,
+ * with [frame] applied (null is the centred crop).
+ */
+@Composable
+internal fun WallpaperThumbnail(path: String, frame: WallpaperFrame?) {
     val bitmap by produceState<ImageBitmap?>(null, path) {
         value = withContext(Dispatchers.IO) { decodeThumbnail(path, 256) }
     }
-    val shape = MaterialTheme.shapes.small
-    Box(Modifier.size(width = 56.dp, height = 80.dp).clip(shape)) {
-        bitmap?.let {
-            Image(
-                it,
-                contentDescription = stringResource(R.string.edit_wallpaper_thumbnail),
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-    }
+    val metrics = LocalContext.current.resources.displayMetrics
+    val aspect = metrics.widthPixels.toFloat() / metrics.heightPixels
+    val description = stringResource(R.string.edit_wallpaper_thumbnail)
+    Box(
+        Modifier
+            .height(96.dp)
+            .aspectRatio(aspect)
+            .clip(MaterialTheme.shapes.small)
+            .semantics { contentDescription = description }
+            .drawBehind {
+                val image = bitmap ?: return@drawBehind
+                val t = frameTransform(frame, image.width.toFloat(), image.height.toFloat(), size.width, size.height)
+                drawImage(
+                    image,
+                    dstOffset = IntOffset(t.left.roundToInt(), t.top.roundToInt()),
+                    dstSize = IntSize((image.width * t.scale).roundToInt(), (image.height * t.scale).roundToInt()),
+                )
+            },
+    )
 }
+
+@Composable
+internal fun textPositionName(position: TextPosition): String = stringResource(
+    when (position) {
+        TextPosition.TOP -> R.string.ring_preview_top
+        TextPosition.MIDDLE -> R.string.ring_preview_middle
+        TextPosition.BOTTOM -> R.string.ring_preview_bottom
+    },
+).lowercase()
 
 private fun decodeThumbnail(path: String, maxSide: Int): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

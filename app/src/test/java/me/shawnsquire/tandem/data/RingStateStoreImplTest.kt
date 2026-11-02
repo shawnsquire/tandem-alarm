@@ -9,6 +9,7 @@ import java.time.Instant
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import me.shawnsquire.tandem.schedule.RingMember
@@ -154,6 +155,49 @@ class RingStateStoreImplTest {
     fun setNullClearsNewKeys() = runTest {
         val (s, ds) = store()
         s.set(RingState("a1", "r1", started, null, occ, members))
+        s.set(null)
+        assertNull(s.state.first())
+        assertEquals(0, ds.data.first().asMap().size)
+    }
+
+    @Test
+    fun snoozeCountRoundTripsAndAbsentReadsZero() = runTest {
+        val (s, ds) = store()
+        s.set(RingState("a1", "r1", started, null, snoozeCount = 3))
+        assertEquals(3, s.state.first()!!.snoozeCount)
+        s.set(RingState("a1", "r1", started, null))
+        assertEquals(0, s.state.first()!!.snoozeCount)
+        assertEquals(3, ds.data.first().asMap().size) // a zero count is not stored
+    }
+
+    @Test
+    fun oldVersionStoreWithoutCountReadsZero() = runTest {
+        val (s, ds) = store()
+        ds.edit { p ->
+            p[stringPreferencesKey("alarmId")] = "a1"
+            p[stringPreferencesKey("ringId")] = "r1"
+            p[longPreferencesKey("startedAt")] = started.toEpochMilli()
+        }
+        assertEquals(0, s.state.first()!!.snoozeCount)
+    }
+
+    @Test
+    fun negativeOrGarbledCountReadsZeroAndKeepsTheRing() = runTest {
+        val (s, ds) = store()
+        s.set(RingState("a1", "r1", started, null, occ, members, snoozeCount = 2))
+        ds.edit { p -> p[intPreferencesKey("snoozeCount")] = -4 }
+        assertEquals(RingState("a1", "r1", started, null, occ, members), s.state.first())
+        ds.edit { p ->
+            p.remove(intPreferencesKey("snoozeCount"))
+            p[stringPreferencesKey("snoozeCount")] = "oops"
+        }
+        assertEquals(RingState("a1", "r1", started, null, occ, members), s.state.first())
+    }
+
+    @Test
+    fun setNullClearsTheCount() = runTest {
+        val (s, ds) = store()
+        s.set(RingState("a1", "r1", started, null, snoozeCount = 2))
         s.set(null)
         assertNull(s.state.first())
         assertEquals(0, ds.data.first().asMap().size)

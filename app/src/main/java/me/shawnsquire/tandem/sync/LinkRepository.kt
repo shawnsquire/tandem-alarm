@@ -4,7 +4,9 @@ import kotlinx.coroutines.flow.Flow
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import java.time.Instant
 
 /** Outcome of joining a partner's alarm. */
@@ -36,8 +38,13 @@ interface LinkRepository {
     /** Applies from the next fire. */
     suspend fun setMode(alarmId: String, mode: LinkMode)
 
-    /** Null means "Use <owner>'s". */
-    suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?)
+    /** Null means "Use <owner>'s". [wallpaperFrame] frames [wallpaperPath] and is cleared with it. */
+    suspend fun setOverrides(
+        alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?, wallpaperFrame: WallpaperFrame?,
+    )
+
+    /** Replaces the joiner's override wallpaper frame and text position; null text position means "Use <owner>'s". */
+    suspend fun setOverrideFraming(alarmId: String, wallpaperFrame: WallpaperFrame?, textPosition: TextPosition?)
 
     /** Replaces the joiner's sound, vibration switch and vibration pattern overrides; null means "Use <owner>'s". */
     suspend fun setOutputOverrides(alarmId: String, soundOn: Boolean?, vibrationOn: Boolean?, vibration: VibrationPattern?)

@@ -142,25 +142,31 @@ class MediaPublisherImpl(
             state.value.pendingDelete[hh.id].orEmpty().toMutableSet(),
         )
 
-        suspend fun resolve(path: String?, kind: MediaKind, previous: MediaRef?): MediaRef? {
-            if (path == null) return null
+        /** The ref and, when it was made from [path] itself rather than kept from [previous], that path. */
+        suspend fun resolve(path: String?, kind: MediaKind, previous: MediaRef?, previousSource: String? = null): Pair<MediaRef?, String?> {
+            if (path == null) return null to null
             return when (val o = publish(hh, path, kind, tracked)) {
-                is Outcome.Ok -> o.ref
-                Outcome.Failed -> { failed = true; previous }
+                is Outcome.Ok -> o.ref to path.takeIf { o.ref != null }
+                Outcome.Failed -> { failed = true; previous to previousSource.takeIf { previous != null } }
             }
         }
 
-        val defaultWallpaper = resolve(input.defaultWallpaper, MediaKind.WALLPAPER, prev?.defaultWallpaper)
+        val (defaultWallpaper, defaultSource) =
+            resolve(input.defaultWallpaper, MediaKind.WALLPAPER, prev?.defaultWallpaper, prev?.defaultWallpaperSource)
         val perAlarm = mutableMapOf<String, AlarmMedia>()
+        val sources = mutableMapOf<String, String>()
         for (c in input.covered) {
             val before = prev?.alarms?.get(c.id)
-            val m = AlarmMedia(
-                wallpaper = resolve(c.wallpaperPath, MediaKind.WALLPAPER, before?.wallpaper),
-                ringtone = resolve(c.ringtoneUri, MediaKind.RINGTONE, before?.ringtone),
-            )
+            val (wallpaper, src) = resolve(c.wallpaperPath, MediaKind.WALLPAPER, before?.wallpaper, prev?.wallpaperSources?.get(c.id))
+            val m = AlarmMedia(wallpaper = wallpaper, ringtone = resolve(c.ringtoneUri, MediaKind.RINGTONE, before?.ringtone).first)
             if (m.wallpaper != null || m.ringtone != null) perAlarm[c.id] = m
+            if (m.wallpaper != null && src != null) sources[c.id] = src
         }
-        val refs = if (state.value.published == null && defaultWallpaper == null && perAlarm.isEmpty()) null else PublishedMedia(defaultWallpaper, perAlarm)
+        val refs = if (state.value.published == null && defaultWallpaper == null && perAlarm.isEmpty()) {
+            null
+        } else {
+            PublishedMedia(defaultWallpaper, perAlarm, sources, defaultSource)
+        }
 
         val referenced = buildSet {
             refs?.defaultWallpaper?.let { add(it.sha) }

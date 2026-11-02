@@ -1,8 +1,12 @@
 package me.shawnsquire.tandem.alarm
 
-/** Alarm wallpaper first, then the settings default, else null (plain gradient). Blank counts as absent. */
-fun chooseWallpaperPaths(alarmPath: String?, defaultPath: String?): List<String> =
-    listOfNotNull(alarmPath, defaultPath).filter { it.isNotBlank() }
+import me.shawnsquire.tandem.media.RingWallpaper
+import me.shawnsquire.tandem.media.distinctWallpapers
+import me.shawnsquire.tandem.schedule.WallpaperFrame
+
+/** Alarm wallpaper (with its [alarmFrame]) first, then the settings [default] (with its own frame), else empty (plain gradient). Blank counts as absent. */
+fun chooseWallpapers(alarmPath: String?, alarmFrame: WallpaperFrame?, default: RingWallpaper?): List<RingWallpaper> =
+    listOfNotNull(alarmPath?.let { RingWallpaper(it, alarmFrame) }, default).distinctWallpapers()
 
 /**
  * Power-of-two inSampleSize for an image of [w]x[h]: halve while both halved sides stay at or above

@@ -420,7 +420,7 @@ class TwoDeviceSmokeTest {
         val media = resolveRingMedia(b.alarms.get(row.id), b.linkedMediaCache, null, null, timeout = 5.seconds)
         assertEquals("Wake", media.label)
         assertEquals(Uri.fromFile(File(cachedTone)).toString(), media.soundCandidates.first())
-        assertEquals(cachedPhoto, media.wallpaperPaths.first())
+        assertEquals(cachedPhoto, media.wallpapers.first().path)
     }
 
     private data class Paired(val id: String, val aUid: String, val bUid: String)
@@ -701,7 +701,9 @@ private class SmokeDevice(context: Context, val name: String, displayName: Strin
     )
     val statePublisher = StatePublisherImpl(
         alarms, ringState, householdFlow, authManager.displayName, fcmTokenStore.token,
-        linkRepository.links, mediaPublisher.published, FirestoreDeviceDocWriter(firestore), LiveZoneClock, scope,
+        linkRepository.links, mediaPublisher.published, settings.defaultWallpaperFrame,
+        settings.defaultWallpaperPath,
+        FirestoreDeviceDocWriter(firestore), LiveZoneClock, scope,
     )
 
     /** As TandemApp does after sign-in. */

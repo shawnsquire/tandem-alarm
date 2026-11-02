@@ -5,8 +5,20 @@ import me.shawnsquire.tandem.media.MediaRef
 import me.shawnsquire.tandem.schedule.LinkMode
 import java.time.DayOfWeek
 
-/** Owner-side media refs to publish: [alarms] keyed by own alarm id. */
-data class PublishedMedia(val defaultWallpaper: MediaRef?, val alarms: Map<String, AlarmMedia>)
+/**
+ * Owner-side media refs to publish: [alarms] keyed by own alarm id.
+ *
+ * [wallpaperSources] and [defaultWallpaperSource] name the local path each published wallpaper ref was made
+ * from (absent when the ref is a fallback to an older one). They stay on this phone: they only let the
+ * publisher hold back a frame until the ref it frames is the one for the current path, and are never
+ * written to the doc or hashed.
+ */
+data class PublishedMedia(
+    val defaultWallpaper: MediaRef?,
+    val alarms: Map<String, AlarmMedia>,
+    val wallpaperSources: Map<String, String> = emptyMap(),
+    val defaultWallpaperSource: String? = null,
+)
 
 /**
  * One entry of the device doc's `links`, written by the joiner. [hour], [minute] and [days] are the joiner's

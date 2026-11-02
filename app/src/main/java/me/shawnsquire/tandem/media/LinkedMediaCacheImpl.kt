@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.schedule.Alarm
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -35,11 +36,12 @@ class LinkedMediaCacheImpl(
     private val lock = Any()
     private var cached: Refs? = null
 
-    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?) {
+    override fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame?) {
         val refs = Refs(
             ownerUid,
             alarms.mapValues { (_, m) -> AlarmMedia(m.wallpaper?.takeIf(::valid), m.ringtone?.takeIf(::valid)) },
             defaultWallpaper?.takeIf(::valid),
+            defaultWallpaperFrame?.sanitized(),
         )
         synchronized(lock) {
             cached = refs
@@ -68,6 +70,13 @@ class LinkedMediaCacheImpl(
         }
     }
 
+    override fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame? = try {
+        refs().takeIf { it.ownerUid == ownerUid }?.defaultWallpaperFrame
+    } catch (e: Exception) {
+        Log.w(TAG, "reading linked media refs failed", e)
+        null
+    }
+
     override fun pathFor(sha: String): String? {
         if (!SHA.matches(sha)) return null
         val f = File(linkedDir, sha)
@@ -77,7 +86,7 @@ class LinkedMediaCacheImpl(
     /** Throws if the store exists but cannot be read, so the orphan sweeper deletes nothing. */
     override fun inUse(): Set<String> = refs().shas()
 
-    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?): RingMedia {
+    override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?): RingMedia {
         val link = alarm.link ?: return DefaultLinkedMediaCache.resolve(alarm, joinerDefaultRingtone, joinerDefaultWallpaper)
         return withContext(io) {
             try {
@@ -86,9 +95,9 @@ class LinkedMediaCacheImpl(
                 val owner = refs?.alarms?.get(link.ownerAlarmId)
 
                 val photos = listOfNotNull(
-                    link.overrideWallpaperPath?.takeIf { readable(it) },
-                    owner?.wallpaper?.let { pathFor(it.sha) },
-                    refs?.defaultWallpaper?.let { pathFor(it.sha) },
+                    link.overrideWallpaperPath?.takeIf { readable(it) }?.let { RingWallpaper(it, link.overrideWallpaperFrame) },
+                    owner?.wallpaper?.let { pathFor(it.sha) }?.let { RingWallpaper(it, alarm.wallpaperFrame) },
+                    refs?.defaultWallpaper?.let { pathFor(it.sha) }?.let { RingWallpaper(it, ownerDefaultFrame(link.ownerUid)) },
                     joinerDefaultWallpaper,
                 )
                 val sounds = listOfNotNull(
@@ -100,7 +109,7 @@ class LinkedMediaCacheImpl(
                 RingMedia(
                     label = link.overrideLabel?.takeIf { it.isNotBlank() } ?: alarm.label,
                     soundCandidates = sounds.filter { it.isNotBlank() }.distinct(),
-                    wallpaperPaths = photos.filter { it.isNotBlank() }.distinct(),
+                    wallpapers = photos.distinctWallpapers(),
                 )
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -109,6 +118,10 @@ class LinkedMediaCacheImpl(
             }
         }
     }
+
+    /** The owner's default-wallpaper frame; a failure reading it is a centred frame, never a failed resolve. */
+    private fun ownerDefaultFrame(ownerUid: String): WallpaperFrame? =
+        try { defaultWallpaperFrame(ownerUid) } catch (e: Exception) { Log.w(TAG, "reading the default wallpaper frame failed", e); null }
 
     /**
      * Downloads every referenced blob that is not cached, re-reading the refs until nothing new is
@@ -170,7 +183,7 @@ class LinkedMediaCacheImpl(
     }
 
     private fun load(): Refs {
-        if (!storeFile.exists()) return Refs("", emptyMap(), null)
+        if (!storeFile.exists()) return Refs("", emptyMap(), null, null)
         return decode(JSONObject(storeFile.readText()))
     }
 
@@ -184,6 +197,9 @@ class LinkedMediaCacheImpl(
     private fun encode(r: Refs): JSONObject = JSONObject().apply {
         put("ownerUid", r.ownerUid)
         r.defaultWallpaper?.let { put("defaultWallpaper", it.toJson()) }
+        r.defaultWallpaperFrame?.let {
+            put("defaultWallpaperFrame", JSONObject().put("zoom", it.zoom.toDouble()).put("x", it.focusX.toDouble()).put("y", it.focusY.toDouble()))
+        }
         put("alarms", JSONObject().apply {
             r.alarms.forEach { (id, m) ->
                 put(id, JSONObject().apply {
@@ -203,7 +219,15 @@ class LinkedMediaCacheImpl(
                 AlarmMedia(m.optJSONObject("wallpaper")?.let(::mediaRefFromJson)?.takeIf(::valid), m.optJSONObject("ringtone")?.let(::mediaRefFromJson)?.takeIf(::valid))
             },
             defaultWallpaper = o.optJSONObject("defaultWallpaper")?.let(::mediaRefFromJson)?.takeIf(::valid),
+            defaultWallpaperFrame = frameFromJson(o.opt("defaultWallpaperFrame")),
         )
+    }
+
+    /** Null for an absent or garbled frame: it must never fail the rest of the read. */
+    private fun frameFromJson(v: Any?): WallpaperFrame? {
+        val o = v as? JSONObject ?: return null
+        fun part(key: String): Float? = (o.opt(key) as? Number)?.toFloat()?.takeIf { it.isFinite() }
+        return WallpaperFrame(part("zoom") ?: return null, part("x") ?: return null, part("y") ?: return null).sanitized()
     }
 
     /** Refs come from the partner's document: only a bare SHA-256 may become a file name. */
@@ -219,7 +243,12 @@ class LinkedMediaCacheImpl(
         else -> readable(s)
     }
 
-    private data class Refs(val ownerUid: String, val alarms: Map<String, AlarmMedia>, val defaultWallpaper: MediaRef?) {
+    private data class Refs(
+        val ownerUid: String,
+        val alarms: Map<String, AlarmMedia>,
+        val defaultWallpaper: MediaRef?,
+        val defaultWallpaperFrame: WallpaperFrame?,
+    ) {
         fun shas(): Set<String> = buildSet {
             alarms.values.forEach { m -> m.wallpaper?.let { add(it.sha) }; m.ringtone?.let { add(it.sha) } }
             defaultWallpaper?.let { add(it.sha) }

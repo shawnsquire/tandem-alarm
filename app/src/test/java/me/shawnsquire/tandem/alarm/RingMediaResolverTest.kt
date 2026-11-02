@@ -15,9 +15,11 @@ import kotlinx.coroutines.test.runTest
 import me.shawnsquire.tandem.fakes.FakeLinkedMediaCache
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.RingMedia
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -28,14 +30,17 @@ import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RingMediaResolverTest {
-    private val own = Alarm("a", "Wake", 6, 30, emptySet(), true, null, "content://own", "/wall/own")
+    private val ownFrame = WallpaperFrame(2f, 0.3f, 0.6f)
+    private val overrideFrame = WallpaperFrame(1.5f, 0.7f, 0.2f)
+    private val defFrame = WallpaperFrame(3f, 0.4f, 0.4f)
+    private val own = Alarm("a", "Wake", 6, 30, emptySet(), true, null, "content://own", "/wall/own", wallpaperFrame = ownFrame)
     private val linked = own.copy(
         link = AlarmLink("owner", "o1", LinkMode.RING, null, true, null, "Mine", null, null),
     )
 
     private class Cache(private val block: suspend () -> RingMedia) : LinkedMediaCache by FakeLinkedMediaCache() {
         var calls = 0
-        override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: String?): RingMedia {
+        override suspend fun resolve(alarm: Alarm, joinerDefaultRingtone: String?, joinerDefaultWallpaper: RingWallpaper?): RingMedia {
             calls++
             return block()
         }
@@ -49,12 +54,12 @@ class RingMediaResolverTest {
     private val system = { systemAlarm }
 
     /** A linked row with its own ringtone and wallpaper overrides. */
-    private val overridden = linked.copy(link = linked.link!!.copy(overrideRingtoneUri = "content://override", overrideWallpaperPath = "/wall/override"))
+    private val overridden = linked.copy(link = linked.link!!.copy(overrideRingtoneUri = "content://override", overrideWallpaperPath = "/wall/override", overrideWallpaperFrame = overrideFrame))
 
     @Test fun ownRingIgnoresTheCache() = runTest {
         val cache = Cache { error("must not be asked") }
-        val m = resolveRingMedia(own, cache, "content://def", "/wall/def", dispatcher = testIo(), systemAlarmUri = { error("own rings: the adapter appends it") })
-        assertEquals(RingMedia("Wake", listOf("content://own", "content://def"), listOf("/wall/own", "/wall/def")), m)
+        val m = resolveRingMedia(own, cache, "content://def", RingWallpaper("/wall/def", defFrame), dispatcher = testIo(), systemAlarmUri = { error("own rings: the adapter appends it") })
+        assertEquals(RingMedia("Wake", listOf("content://own", "content://def"), listOf(RingWallpaper("/wall/own", ownFrame), RingWallpaper("/wall/def", defFrame))), m)
         assertEquals(0, cache.calls)
     }
 
@@ -64,7 +69,7 @@ class RingMediaResolverTest {
     }
 
     @Test fun linkedRingUsesTheCacheResult() = runTest {
-        val result = RingMedia("Owner label", listOf("/linked/x"), listOf("/linked/w"))
+        val result = RingMedia("Owner label", listOf("/linked/x"), listOf(RingWallpaper("/linked/w", null)))
         assertEquals(result, resolveRingMedia(linked, Cache { result }, "content://def", null, dispatcher = testIo()))
     }
 
@@ -73,24 +78,30 @@ class RingMediaResolverTest {
         val m = resolveRingMedia(linked, cache, "content://def", null, timeout = 500.milliseconds, dispatcher = testIo(), systemAlarmUri = system)
         assertEquals(500, currentTime)
         // The cache's own order: joiner override, owner's, the system alarm, the joiner's default.
-        assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm, "content://def"), listOf("/wall/own")), m)
+        assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm, "content://def"), listOf(RingWallpaper("/wall/own", ownFrame))), m)
     }
 
     @Test fun throwingCacheFallsBack() = runTest {
         val m = resolveRingMedia(linked, Cache { throw IllegalStateException("disk") }, null, null, dispatcher = testIo(), systemAlarmUri = system)
-        assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm), listOf("/wall/own")), m)
+        assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm), listOf(RingWallpaper("/wall/own", ownFrame))), m)
     }
 
     @Test fun slowCacheKeepsTheOverrideRingtoneAndWallpaperFirst() = runTest {
-        val m = resolveRingMedia(overridden, Cache { awaitCancellation() }, "content://def", "/wall/def", timeout = 500.milliseconds, dispatcher = testIo(), systemAlarmUri = system)
+        val m = resolveRingMedia(overridden, Cache { awaitCancellation() }, "content://def", RingWallpaper("/wall/def", defFrame), timeout = 500.milliseconds, dispatcher = testIo(), systemAlarmUri = system)
         assertEquals(listOf("content://override", "content://own", systemAlarm, "content://def"), m.soundCandidates)
-        assertEquals(listOf("/wall/override", "/wall/own", "/wall/def"), m.wallpaperPaths)
+        assertEquals(
+            listOf(RingWallpaper("/wall/override", overrideFrame), RingWallpaper("/wall/own", ownFrame), RingWallpaper("/wall/def", defFrame)),
+            m.wallpapers,
+        )
     }
 
     @Test fun throwingCacheKeepsTheOverrideRingtoneAndWallpaperFirst() = runTest {
-        val m = resolveRingMedia(overridden, Cache { throw IllegalStateException("disk") }, "content://def", "/wall/def", dispatcher = testIo(), systemAlarmUri = system)
+        val m = resolveRingMedia(overridden, Cache { throw IllegalStateException("disk") }, "content://def", RingWallpaper("/wall/def", defFrame), dispatcher = testIo(), systemAlarmUri = system)
         assertEquals(listOf("content://override", "content://own", systemAlarm, "content://def"), m.soundCandidates)
-        assertEquals(listOf("/wall/override", "/wall/own", "/wall/def"), m.wallpaperPaths)
+        assertEquals(
+            listOf(RingWallpaper("/wall/override", overrideFrame), RingWallpaper("/wall/own", ownFrame), RingWallpaper("/wall/def", defFrame)),
+            m.wallpapers,
+        )
     }
 
     @Test fun anUnknownSystemAlarmIsLeftOutOfTheFallback() = runTest {
@@ -121,7 +132,7 @@ class RingMediaResolverTest {
             assertTrue(started.await(5, TimeUnit.SECONDS))
             advanceTimeBy(501); runCurrent()
             assertTrue(job.isCompleted)
-            assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm, "content://def"), listOf("/wall/own")), job.await())
+            assertEquals(RingMedia("Mine", listOf("content://own", systemAlarm, "content://def"), listOf(RingWallpaper("/wall/own", ownFrame))), job.await())
             assertNotEquals(callerThread, resolveThread)
         } finally {
             latch.countDown()

@@ -4,28 +4,14 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.os.Bundle
 import android.text.format.DateFormat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,17 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -51,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -58,8 +35,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.TandemApp
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
+import me.shawnsquire.tandem.schedule.effectiveTextPosition
 import me.shawnsquire.tandem.ui.theme.TandemTheme
 import java.io.File
 import java.time.Instant
@@ -98,7 +79,11 @@ class RingingActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true)
         setTurnScreenOn(true)
-        enableEdgeToEdge()
+        // The wallpaper is dark under the bars: dark() asks for light icons whatever the system theme (the preview's).
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+        )
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = Unit
         })
@@ -125,9 +110,11 @@ class RingingActivity : ComponentActivity() {
         setContent {
             TandemTheme {
                 val current = ring
-                val defaultPath by produceState<String?>(null) {
+                val defaultWallpaper by produceState<RingWallpaper?>(null) {
                     try {
-                        engine.settings.defaultWallpaperPath.collect { value = it }
+                        combine(engine.settings.defaultWallpaperPath, engine.settings.defaultWallpaperFrame) { path, frame ->
+                            path?.let { RingWallpaper(it, frame) }
+                        }.collect { value = it }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -137,11 +124,11 @@ class RingingActivity : ComponentActivity() {
                 val partnerName by produceState<String?>(null) { partnerNames().collect { value = it } }
                 // Keyed on the members as well as the ringId: a merge or a promotion changes what is shown.
                 val shown by produceState<ShownContent?>(
-                    null, current?.ringId, current?.alarmId, current?.occurrenceAt, current?.merged, defaultPath, partnerName,
+                    null, current?.ringId, current?.alarmId, current?.occurrenceAt, current?.merged, defaultWallpaper, partnerName,
                 ) {
                     val r = current ?: return@produceState
                     val content = try {
-                        ringScreenContent(r, engine.alarmRepository::get, engine.linkedMediaCache, defaultPath, partnerName)
+                        ringScreenContent(r, engine.alarmRepository::get, engine.linkedMediaCache, defaultWallpaper, partnerName)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
@@ -151,13 +138,39 @@ class RingingActivity : ComponentActivity() {
                     value = content?.let { ShownContent(r.ringId, it) }
                 }
                 val content = shown?.takeIf { it.ringId == current?.ringId }?.content
+                // The primary's position on its own, so it need not wait for the media bound in ringScreenContent
+                // (a late position would move the text). Display only: nothing here delays the ring.
+                val early by produceState<EarlyPosition?>(null, current?.ringId, current?.alarmId) {
+                    val r = current ?: return@produceState
+                    val position = try {
+                        withContext(Dispatchers.IO) { engine.alarmRepository.get(r.alarmId)?.effectiveTextPosition() }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        null
+                    }
+                    value = EarlyPosition(r.ringId, r.alarmId, position)
+                }
+                val earlyRead = early?.takeIf { it.ringId == current?.ringId && it.alarmId == current?.alarmId }
+                // Hidden (not removed, so the layout holds still) until the read returns; the cap keeps it from staying hidden.
+                // It carries the ring it timed: produceState keeps its last value across keys, so the first
+                // frame of a replacing ring must not count the previous ring's cap.
+                val cappedRingId by produceState<String?>(null, current?.ringId) {
+                    val id = current?.ringId ?: return@produceState
+                    delay(TEXT_POSITION_WAIT_MS)
+                    value = id
+                }
+                val capped = cappedRingId != null && cappedRingId == current?.ringId
                 val ended = notice?.endsRing == true
                 RingingScreen(
                     labels = content?.labels.orEmpty(),
                     withPartner = content?.withPartner,
                     notice = notice,
                     partnerName = partnerName,
-                    wallpaperPaths = content?.wallpaperPaths ?: chooseWallpaperPaths(null, defaultPath),
+                    wallpapers = content?.wallpapers ?: chooseWallpapers(null, null, defaultWallpaper),
+                    textPosition = earlyRead?.position ?: content?.textPosition ?: TextPosition.MIDDLE,
+                    textHidden = earlyRead == null && !capped,
+                    ring = current,
                     // The ring is over; the notice is only saying who ended it.
                     canAct = current != null && !ended,
                     onStop = {
@@ -222,16 +235,20 @@ private fun RingingScreen(
     withPartner: String?,
     notice: RemoteRingEnd?,
     partnerName: String?,
-    wallpaperPaths: List<String>,
+    wallpapers: List<RingWallpaper>,
+    textPosition: TextPosition,
+    textHidden: Boolean,
+    ring: RingState?,
     canAct: Boolean,
     onStop: () -> Unit,
     onSnooze: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val metrics = context.resources.displayMetrics
-    val wallpaper by produceState<Bitmap?>(null, wallpaperPaths) {
+    val decoded by produceState<DecodedWallpaper?>(null, wallpapers) {
         value = withContext(Dispatchers.IO) {
-            wallpaperPaths.firstNotNullOfOrNull { decodeSampled(it, metrics.widthPixels, metrics.heightPixels) }
+            firstDecoded(wallpapers) { decodeSampled(it, metrics.widthPixels, metrics.heightPixels) }
+                ?.let { (bitmap, frame) -> DecodedWallpaper(bitmap, frame) }
         }
     }
     val is24 = remember { DateFormat.is24HourFormat(context) }
@@ -246,74 +263,39 @@ private fun RingingScreen(
         }
     }
 
-    Box(
-        Modifier.fillMaxSize().background(
-            Brush.verticalGradient(listOf(Color(0xFF0B1020), Color(0xFF1B2440))),
-        ),
-    ) {
-        wallpaper?.let {
-            Image(
-                it.asImageBitmap(), contentDescription = null,
-                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-            )
-        }
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
-        Column(
-            Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.weight(1f))
-            Text(
-                formatter.format(time),
-                style = MaterialTheme.typography.displayLarge.copy(fontSize = 96.sp, lineHeight = 104.sp),
-                color = Color.White,
-                textAlign = TextAlign.Center,
-            )
-            for (label in labels) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    label, style = MaterialTheme.typography.headlineMedium,
-                    color = Color.White, textAlign = TextAlign.Center,
-                )
-            }
-            if (withPartner != null) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    stringResource(R.string.ringing_with_partner, withPartner), style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.85f), textAlign = TextAlign.Center,
-                )
-            }
-            if (notice != null) {
-                val text = remember(notice, partnerName, formatter) {
-                    remoteNoticeText(context, notice, partnerName) { formatter.format(it.atZone(ZoneId.systemDefault())) }
-                }
-                Spacer(Modifier.height(24.dp))
-                Text(
-                    text, style = MaterialTheme.typography.titleLarge,
-                    color = Color.White, textAlign = TextAlign.Center,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Column(
-                Modifier.fillMaxWidth().alpha(if (canAct) 1f else 0.5f),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = onSnooze, enabled = canAct,
-                    modifier = Modifier.fillMaxWidth().height(80.dp),
-                ) { Text(stringResource(R.string.alarm_action_snooze), fontSize = 24.sp) }
-                Button(
-                    onClick = onStop, enabled = canAct,
-                    modifier = Modifier.fillMaxWidth().height(96.dp),
-                    colors = ButtonDefaults.buttonColors(),
-                ) { Text(stringResource(R.string.alarm_action_stop), fontSize = 28.sp) }
-            }
+    val noticeText = notice?.let {
+        remember(it, partnerName, formatter) {
+            remoteNoticeText(context, it, partnerName) { at -> formatter.format(at.atZone(ZoneId.systemDefault())) }
         }
     }
+    val alarmLine = ring?.let {
+        remember(it, formatter) { alarmTimeLine(it) { at -> formatter.format(at.atZone(ZoneId.systemDefault())) } }
+    }
+
+    RingScreenLayout(
+        wallpaper = decoded?.bitmap?.let { remember(it) { it.asImageBitmap() } },
+        frame = decoded?.frame,
+        textPosition = textPosition,
+        textAlpha = if (textHidden) 0f else 1f,
+        text = { RingScreenText(formatter.format(time), alarmLine, labels, withPartner, noticeText) },
+        buttons = { RingScreenButtons(canAct, onSnooze, onStop) },
+    )
 }
 
+/** The first of [candidates] that [decode] can read, kept together with the frame it was imported with. */
+internal fun <T : Any> firstDecoded(candidates: List<RingWallpaper>, decode: (String) -> T?): Pair<T, WallpaperFrame?>? =
+    candidates.firstNotNullOfOrNull { c -> decode(c.path)?.let { it to c.frame } }
+
+/** [position] is null when the primary's row could not be read; the text is then placed by the resolved content. */
+private class EarlyPosition(val ringId: String, val alarmId: String, val position: TextPosition?)
+
+/** How long the text stays invisible waiting for its position before it shows where the content says. */
+private const val TEXT_POSITION_WAIT_MS = 300L
+
+private class DecodedWallpaper(val bitmap: Bitmap, val frame: WallpaperFrame?)
+
 /** Decodes [path] downsampled to fit the [reqW]x[reqH] memory budget; null if missing or unreadable. */
-private fun decodeSampled(path: String, reqW: Int, reqH: Int): Bitmap? = try {
+internal fun decodeSampled(path: String, reqW: Int, reqH: Int): Bitmap? = try {
     if (!File(path).canRead()) null else {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(path, bounds)
