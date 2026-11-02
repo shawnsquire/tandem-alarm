@@ -27,7 +27,6 @@ interface LinkedMediaCache {
     fun update(ownerUid: String, alarms: Map<String, AlarmMedia>, defaultWallpaper: MediaRef?, defaultWallpaperFrame: WallpaperFrame? = null)
 
     /** The frame of [ownerUid]'s default wallpaper as last passed to [update]; null (centred) when none, another owner's, or unreadable. Never throws. */
-
     fun defaultWallpaperFrame(ownerUid: String): WallpaperFrame?
 
     /** Cached file path (filesDir/linked/{sha}) for [sha], or null. */

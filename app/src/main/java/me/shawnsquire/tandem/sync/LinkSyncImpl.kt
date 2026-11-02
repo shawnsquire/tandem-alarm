@@ -34,13 +34,13 @@ import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.media.AlarmMedia
 import me.shawnsquire.tandem.media.LinkedMediaCache
 import me.shawnsquire.tandem.media.MediaRef
-import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 
 /**
  * Joiner side of linked alarms: keeps each linked row's copied fields in step with the owner's
