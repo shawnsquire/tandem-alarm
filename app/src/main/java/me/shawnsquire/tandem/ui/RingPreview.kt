@@ -6,6 +6,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -50,6 +56,12 @@ import me.shawnsquire.tandem.schedule.WallpaperFrame
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+
+/**
+ * The room [RingScreenLayout] keeps at the bottom of its safe-drawing area for the buttons: Snooze
+ * (80dp), the gap (16dp), Stop (96dp), the spacer above them (16dp) and the layout's 24dp padding.
+ */
+private val BUTTONS_CLEARANCE = 80.dp + 16.dp + 96.dp + 16.dp + 24.dp
 
 /**
  * A full-screen preview of the ringing screen for framing a wallpaper: the image, scrim, a live
@@ -138,7 +150,10 @@ private fun RingPreviewContent(
             textPosition = position,
             text = { RingScreenText(formatter.format(clock), alarmLine, listOfNotNull(label.ifBlank { null }), null, null) },
             buttons = { RingScreenButtons(canAct = false, onSnooze = {}, onStop = {}) },
-            modifier = Modifier.pointerInput(gesturesEnabled) {
+        )
+        // Above the layout so its text scroll never sees the pointer: a drag anywhere moves the image.
+        Box(
+            Modifier.fillMaxSize().pointerInput(gesturesEnabled) {
                 if (!gesturesEnabled) return@pointerInput
                 detectTransformGestures { centroid, pan, zoom, _ ->
                     val b = currentBitmap ?: return@detectTransformGestures
@@ -151,13 +166,20 @@ private fun RingPreviewContent(
                 }
             },
         )
-        // Top, so Snooze and Stop stay in view; with the text at the top the bar moves to the middle instead.
+        // At the end the text isn't: the top, or just above the buttons when the text is at the top.
         Surface(
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
             shape = MaterialTheme.shapes.large,
             modifier = Modifier
-                .align(if (position == TextPosition.TOP) Alignment.Center else Alignment.TopCenter)
-                .then(if (position == TextPosition.TOP) Modifier else Modifier.statusBarsPadding())
+                .align(if (position == TextPosition.TOP) Alignment.BottomCenter else Alignment.TopCenter)
+                .then(
+                    if (position == TextPosition.TOP) {
+                        Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                            .padding(bottom = BUTTONS_CLEARANCE)
+                    } else {
+                        Modifier.statusBarsPadding()
+                    },
+                )
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

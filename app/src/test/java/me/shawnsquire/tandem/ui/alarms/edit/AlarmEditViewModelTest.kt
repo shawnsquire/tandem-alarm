@@ -67,6 +67,7 @@ class AlarmEditViewModelTest {
         val settings = FakeSettingsRepository()
         /** What the re-pick comparison answers; null throws, as an unreadable file would. */
         var sameContent: Boolean? = false
+        var cancelCompare = false
         val compared = mutableListOf<Pair<String, String>>()
         val links = FakeLinkRepository()
         val preview = FakeVibrationPreview()
@@ -90,7 +91,7 @@ class AlarmEditViewModelTest {
                 "/wall-${importedWallpapers.size}"
             },
             deleteWallpaperFile = { deletedWallpapers += it },
-            sameWallpaperContent = { a, b -> compared += a to b; sameContent ?: error("unreadable") },
+            sameWallpaperContent = { a, b -> compared += a to b; if (cancelCompare) throw kotlinx.coroutines.CancellationException("cleared"); sameContent ?: error("unreadable") },
             settings = settings,
             newId = { "new-id" },
             preview = preview,
@@ -395,6 +396,25 @@ class AlarmEditViewModelTest {
         e.vm.onWallpaperPicked("content://img/1")
         assertEquals("/wall-1", e.vm.state.value.wallpaperPath)
         assertNull(e.vm.state.value.wallpaperFrame)
+    }
+
+    @Test fun aPickCancelledMidCompareDeletesTheImportedFileAndKeepsTheOld() = runTest {
+        val e = Env("a1", listOf(withFrame))
+        e.cancelCompare = true
+        e.vm.onWallpaperPicked("content://img/1")
+        assertEquals(listOf("/wall-1"), e.deletedWallpapers)
+        assertEquals("/old-wall", e.vm.state.value.wallpaperPath)
+    }
+
+    @Test fun setFramingThenSaveOnANewAlarmPersistsBoth() = runTest {
+        val e = fresh()
+        e.vm.onWallpaperPicked("content://img/1")
+        e.vm.setFraming(framed, TextPosition.BOTTOM)
+        e.vm.save()
+        val saved = e.repo.get("new-id")!!
+        assertEquals("/wall-1", saved.wallpaperPath)
+        assertEquals(framed, saved.wallpaperFrame)
+        assertEquals(TextPosition.BOTTOM, saved.textPosition)
     }
 
     @Test fun aPickAsksForThePreviewUntilItIsHandled() = runTest {

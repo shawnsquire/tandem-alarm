@@ -68,6 +68,7 @@ import me.shawnsquire.tandem.ui.alarms.VibrationPatternDialog
 import me.shawnsquire.tandem.ui.alarms.vibrationPatternName
 import me.shawnsquire.tandem.ui.RingPreview
 import me.shawnsquire.tandem.ui.alarms.edit.WallpaperThumbnail
+import me.shawnsquire.tandem.ui.alarms.edit.textPositionName
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
 import me.shawnsquire.tandem.ui.linkedAlarmViewModelFactory
@@ -426,15 +427,6 @@ private fun PhotoRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCa
         modifier = Modifier.clickable(enabled = !locked, onClick = cb.onPreviewWallpaper),
     )
 }
-
-@Composable
-private fun textPositionName(position: TextPosition): String = stringResource(
-    when (position) {
-        TextPosition.TOP -> R.string.ring_preview_top
-        TextPosition.MIDDLE -> R.string.ring_preview_middle
-        TextPosition.BOTTOM -> R.string.ring_preview_bottom
-    },
-).lowercase()
 
 @Composable
 private fun SkipSection(state: LinkedSheetState, cb: LinkedSheetCallbacks) {

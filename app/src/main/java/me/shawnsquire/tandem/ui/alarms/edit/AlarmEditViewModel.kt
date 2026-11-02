@@ -297,23 +297,28 @@ class AlarmEditViewModel(
                 _state.update { it.copy(busy = false, error = EditError.WallpaperImport) }
                 return@launch
             }
-            // The same picture again keeps its framing; anything else, or a comparison that fails, starts centred.
-            val current = _state.value.wallpaperPath
-            val same = current != null && try {
-                sameWallpaperContent(current, path)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                false
-            }
-            if (finished) {
-                deleteWallpaperFile(path)
-                return@launch
-            }
-            sessionWallpaper?.let(deleteWallpaperFile)
-            sessionWallpaper = path
-            _state.update {
-                it.copy(busy = false, wallpaperPath = path, wallpaperFrame = if (same) it.wallpaperFrame else null, previewRequested = true)
+            // The imported file is the session's only once it is stored below; every other exit (a finished
+            // session, the VM cleared mid-compare) deletes it. The previous file stays until then.
+            var owned = false
+            try {
+                // The same picture again keeps its framing; anything else, or a comparison that fails, starts centred.
+                val current = _state.value.wallpaperPath
+                val same = current != null && try {
+                    sameWallpaperContent(current, path)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+                if (finished) return@launch
+                sessionWallpaper?.let(deleteWallpaperFile)
+                sessionWallpaper = path
+                owned = true
+                _state.update {
+                    it.copy(busy = false, wallpaperPath = path, wallpaperFrame = if (same) it.wallpaperFrame else null, previewRequested = true)
+                }
+            } finally {
+                if (!owned) deleteWallpaperFile(path)
             }
         }
     }

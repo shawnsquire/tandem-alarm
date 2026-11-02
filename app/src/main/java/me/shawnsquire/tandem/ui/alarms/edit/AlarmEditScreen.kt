@@ -456,7 +456,7 @@ internal fun WallpaperThumbnail(path: String, frame: WallpaperFrame?) {
 }
 
 @Composable
-private fun textPositionName(position: TextPosition): String = stringResource(
+internal fun textPositionName(position: TextPosition): String = stringResource(
     when (position) {
         TextPosition.TOP -> R.string.ring_preview_top
         TextPosition.MIDDLE -> R.string.ring_preview_middle
