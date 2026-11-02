@@ -17,6 +17,7 @@
     <string name="link_mode_title">When it goes off</string>
     <string name="link_override_message">Message</string>
     <string name="link_override_sound">Sound</string>
+    <string name="link_override_vibration">Vibration</string>
     <string name="link_override_photo">Photo</string>
     <string name="link_photo_custom">Custom image</string>
     <string name="link_unskip_just_me">Unskip (just me)</string>

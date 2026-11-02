@@ -248,6 +248,20 @@ class LinkRepositoryImplTest {
     }
 
     @Test
+    fun outputOverridesWriteOnlyTheLinkAndReschedule() = runTest {
+        val e = env(rows = listOf(linked()))
+        val before = e.rows().single()
+        e.repo.setOutputOverrides("row1", false, true, me.shawnsquire.tandem.schedule.VibrationPattern.RAPID)
+        val after = e.rows().single()
+        val l = after.link!!
+        assertEquals(Triple(false, true, me.shawnsquire.tandem.schedule.VibrationPattern.RAPID), Triple(l.overrideSoundOn, l.overrideVibrationOn, l.overrideVibration))
+        assertEquals(before.copy(link = l.copy(overrideSoundOn = null, overrideVibrationOn = null, overrideVibration = null)), after.copy(link = before.link))
+        assertEquals(1, e.scheduler.rescheduleCount)
+        e.repo.setOutputOverrides("row1", null, null, null)
+        assertNull(e.rows().single().link!!.overrideSoundOn)
+    }
+
+    @Test
     fun settersWriteAndReschedule() = runTest {
         val e = env(rows = listOf(linked()))
         e.repo.setMode("row1", LinkMode.RING)

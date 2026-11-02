@@ -124,6 +124,7 @@ class AppContainer private constructor(
         else withTimeoutOrNull(15.seconds) { householdOnServer(firestore, uid) } ?: HouseholdCheck.Unknown
     }
     // L8: asks the owner whether a joiner that hasn't picked up an earlier move should ring late.
+    val vibrationPreview: me.shawnsquire.tandem.ui.VibrationPreview = me.shawnsquire.tandem.ui.ArbiterVibrationPreview(context)
     val lateRingPrompts = LateRingPrompts(
         alarmRepository, partnerRepository, householdFlow, confirmHousehold, AndroidLateRingNotifier(context),
         { LateRingCheckWorker.enqueue(context, it) }, { LateRingCheckWorker.cancel(context, it) }, LiveZoneClock, syncScope,

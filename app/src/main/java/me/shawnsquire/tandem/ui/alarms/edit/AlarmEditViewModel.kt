@@ -17,11 +17,13 @@ import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.CommandStatus
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PairingStatus
 import me.shawnsquire.tandem.sync.PartnerRepository
 import me.shawnsquire.tandem.ui.alarms.AlarmEdits
+import me.shawnsquire.tandem.ui.VibrationPreview
 import me.shawnsquire.tandem.ui.partner.CommandUiStatus
 import me.shawnsquire.tandem.ui.partner.FALLBACK_NAME
 import me.shawnsquire.tandem.ui.resolvePartnerName
@@ -42,6 +44,10 @@ data class AlarmEditUiState(
     val ringtoneUri: String? = null,
     val ringtoneTitle: String = "",
     val wallpaperPath: String? = null,
+    /** Off keeps the chosen tone. At least one of [soundOn] and [vibrationOn] stays on. */
+    val soundOn: Boolean = true,
+    val vibrationOn: Boolean = true,
+    val vibration: VibrationPattern = VibrationPattern.PULSE,
     val busy: Boolean = false,
     val error: EditError? = null,
     /** Set once the screen should close (saved, cancelled, or the alarm vanished). */
@@ -63,6 +69,7 @@ class AlarmEditViewModel(
     private val importWallpaper: suspend (String) -> String,
     private val deleteWallpaperFile: (String) -> Unit,
     private val newId: () -> String,
+    private val preview: VibrationPreview,
     private val links: LinkRepository,
     pairing: PairingRepository,
     partnerRepository: PartnerRepository,
@@ -151,6 +158,7 @@ class AlarmEditViewModel(
                             loaded = true, isNew = false, hour = alarm.hour, minute = alarm.minute,
                             days = alarm.days, label = alarm.label, ringtoneUri = alarm.ringtoneUri,
                             wallpaperPath = alarm.wallpaperPath,
+                            soundOn = alarm.soundOn, vibrationOn = alarm.vibrationOn, vibration = alarm.vibration,
                             ringtoneTitle = ringtoneTitle(alarm.ringtoneUri),
                         )
                     }
@@ -205,6 +213,24 @@ class AlarmEditViewModel(
     }
 
     fun setLabel(label: String) = _state.update { it.copy(label = label) }
+
+    /** Refused while it would leave vibration off too: the alarm must make some output. */
+    fun setSoundOn(on: Boolean) = _state.update { if (!on && !it.vibrationOn) it else it.copy(soundOn = on) }
+
+    /** Refused while it would leave sound off too. */
+    fun setVibrationOn(on: Boolean) {
+        _state.update { if (!on && !it.soundOn) it else it.copy(vibrationOn = on) }
+        if (!_state.value.vibrationOn) preview.stop()
+    }
+
+    /** Picks [pattern] and plays one cycle of it, unless vibration is off. */
+    fun selectVibration(pattern: VibrationPattern) {
+        _state.update { it.copy(vibration = pattern) }
+        if (_state.value.vibrationOn) preview.play(pattern)
+    }
+
+    /** The preset list closed. */
+    fun stopPreview() = preview.stop()
 
     fun dismissError() = _state.update { it.copy(error = null) }
 
@@ -308,6 +334,10 @@ class AlarmEditViewModel(
                     link = current?.link,
                     ringtoneUri = s.ringtoneUri,
                     wallpaperPath = s.wallpaperPath,
+                    vibration = s.vibration,
+                    // The setters keep one on; this holds even if a stray state says otherwise.
+                    vibrationOn = s.vibrationOn || !s.soundOn,
+                    soundOn = s.soundOn || !s.vibrationOn,
                 )
                 edits.upsert(alarm)
             } catch (e: CancellationException) {
@@ -375,6 +405,7 @@ class AlarmEditViewModel(
 
     /** The editor can be destroyed without Save or Cancel (e.g. a tab switch); drop unsaved imports then. */
     public override fun onCleared() {
+        preview.stop()
         discardSession()
     }
 

@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.AlarmRepository
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.effectiveOutputs
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
@@ -53,6 +54,8 @@ data class AlarmRowState(
     val partnerJoined: String? = null,
     /** On an own row: [skipped] only because of the owner's "just me" skip, shown as "Skipped for you". */
     val skippedSolo: Boolean = false,
+    /** Sound is off for this phone (a joined row counts its overrides), so the alarm only vibrates. */
+    val vibrateOnly: Boolean = false,
 )
 
 /** What a joined row shows beyond a plain alarm. At most one of the skip flags is shown, in this order. */
@@ -122,6 +125,7 @@ internal fun buildAlarmsState(
                 linked = linked,
                 partnerJoined = partnerName.takeIf { link == null && a.id in joinedIds },
                 skippedSolo = soloSkip && !ownSkip,
+                vibrateOnly = !a.effectiveOutputs().soundOn,
             )
         }
     return AlarmsUiState(loaded = true, rows = rows, zone = zone)

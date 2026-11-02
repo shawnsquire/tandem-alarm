@@ -297,6 +297,14 @@ private fun AlarmRow(
                         label = { Text(stringResource(R.string.link_joined, name)) },
                     )
                 }
+                if (row.vibrateOnly) {
+                    Icon(
+                        painterResource(R.drawable.ic_vibrate),
+                        contentDescription = stringResource(R.string.alarm_vibrate_only),
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Text(
                 row.ringsInText ?: when {
@@ -438,7 +446,7 @@ private val previewState = AlarmsUiState(
     rows = listOf(
         AlarmRowState("1", 6, 30, "Work", "Mon–Fri", true, Instant.parse("2026-11-02T06:30:00Z"), "Rings in 7 h 12 min", false, false),
         AlarmRowState("2", 7, 0, "Gym", "Mon, Wed, Fri", true, Instant.parse("2026-11-04T07:00:00Z"), "Rings in 2 d 3 h", true, false),
-        AlarmRowState("3", 8, 0, "Weekend", "Weekends", false, null, null, false, false),
+        AlarmRowState("3", 8, 0, "Weekend", "Weekends", false, null, null, false, false, vibrateOnly = true),
     ),
 )
 

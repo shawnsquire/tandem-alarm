@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.Flow
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import java.time.Instant
 
 /** Outcome of joining a partner's alarm. */
@@ -37,6 +38,9 @@ interface LinkRepository {
 
     /** Null means "Use <owner>'s". */
     suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?)
+
+    /** Replaces the joiner's sound, vibration switch and vibration pattern overrides; null means "Use <owner>'s". */
+    suspend fun setOutputOverrides(alarmId: String, soundOn: Boolean?, vibrationOn: Boolean?, vibration: VibrationPattern?)
 
     /**
      * Joiner "just me" on/off (link.joinerEnabled). A "just me" skip is AlarmRepository.setSkip.

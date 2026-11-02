@@ -230,6 +230,21 @@ class AlarmsViewModelTest {
     private val future = Instant.parse("2026-11-02T06:30:00Z")
     private val past = Instant.parse("2026-11-02T04:00:00Z")
 
+    @Test fun vibrateOnlyFollowsTheEffectiveSound() {
+        val own = alarm("own").copy(soundOn = false)
+        val loud = alarm("loud")
+        val joined = linkedAlarm("j")
+        val silencedHere = linkedAlarm("s").let { it.copy(link = it.link!!.copy(overrideSoundOn = false)) }
+        val ownersSoundOff = linkedAlarm("o").copy(soundOn = false)
+        val restored = linkedAlarm("r").let { it.copy(soundOn = false, link = it.link!!.copy(overrideSoundOn = true)) }
+        val rows = buildAlarmsState(listOf(own, loud, joined, silencedHere, ownersSoundOff, restored), now, ZoneOffset.UTC)
+            .rows.associate { it.id to it.vibrateOnly }
+        assertEquals(
+            mapOf("own" to true, "loud" to false, "j" to false, "s" to true, "o" to true, "r" to false),
+            rows,
+        )
+    }
+
     @Test fun joinedRowCarriesModeAndPartnerName() {
         val rows = buildAlarmsState(
             listOf(linkedAlarm("j", mode = LinkMode.NOTIFY), alarm("own", hour = 7)), now, ZoneOffset.UTC, "Sam",

@@ -22,6 +22,17 @@
     <string name="edit_ringtone">Sound</string>
     <string name="edit_ringtone_system">System sounds</string>
     <string name="edit_ringtone_file">Choose file…</string>
+    <string name="edit_vibration">Vibration</string>
+    <string name="vibration_title">Vibration pattern</string>
+    <string name="vibration_done">Done</string>
+    <string name="vibration_pulse">Pulse</string>
+    <string name="vibration_heartbeat">Heartbeat</string>
+    <string name="vibration_rapid">Rapid</string>
+    <string name="vibration_slow_wave">Slow wave</string>
+    <string name="vibration_escalating">Escalating</string>
+    <string name="output_keep_one_on">Sound or vibration must stay on</string>
+    <string name="output_vibrate_only_hint">If the phone\'s Alarm vibration setting is off, this alarm makes no noise</string>
+    <string name="alarm_vibrate_only">Vibrate only</string>
     <string name="edit_wallpaper">Wallpaper</string>
     <string name="edit_wallpaper_none">None</string>
     <string name="edit_wallpaper_set">Custom image</string>
