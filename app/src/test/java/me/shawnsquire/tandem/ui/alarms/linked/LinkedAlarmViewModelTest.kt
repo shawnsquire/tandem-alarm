@@ -158,6 +158,7 @@ class LinkedAlarmViewModelTest {
 
     @Test fun patternWhileVibrationIsOffIsSavedWithoutAPreview() = runTest {
         val e = Env(joined().copy(vibrationOn = false))
+        e.latest()
         e.vm.selectVibration(VibrationPattern.RAPID)
         assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, null, VibrationPattern.RAPID)), e.links.calls)
         assertTrue(e.preview.played.isEmpty())
@@ -261,11 +262,40 @@ class LinkedAlarmViewModelTest {
         assertEquals(listOf<Call>(Call.SetOutputOverrides("j", null, true, null)), e.links.calls)
     }
 
-    @Test fun previewPlaysBeforeASlowWriteSoAStopCannotBeOvertaken() = runTest {
+    @Test fun clearingOnlyThePatternNeverTouchesTheSound() = runTest {
+        val e = Env(
+            joined(link = outputLink(sound = false, vibration = VibrationPattern.RAPID)).copy(vibrationOn = false),
+            applyWrites = true,
+        )
+        e.vm.useOwnersVibration()
+        assertEquals(listOf<Call>(Call.SetOutputOverrides("j", false, null, null)), e.links.calls)
+        val s = e.latest()
+        assertFalse(s.soundOn)
+        assertFalse(s.vibrationOn)
+    }
+
+    @Test fun quickTapsSaveInTapOrderAndPlayAtTapTime() = runTest {
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
         val e = Env(joined(), gate = gate)
+        e.latest()
         e.vm.selectVibration(VibrationPattern.RAPID)
-        assertEquals(listOf(VibrationPattern.RAPID), e.preview.played) // the write is still held
+        e.vm.selectVibration(VibrationPattern.HEARTBEAT)
+        assertEquals(listOf(VibrationPattern.RAPID, VibrationPattern.HEARTBEAT), e.preview.played) // writes still held
+        gate.complete(Unit)
+        assertEquals(
+            listOf<Call>(
+                Call.SetOutputOverrides("j", null, null, VibrationPattern.RAPID),
+                Call.SetOutputOverrides("j", null, null, VibrationPattern.HEARTBEAT),
+            ),
+            e.links.calls,
+        )
+    }
+
+    @Test fun stopAfterATapStopsAndNothingPlaysLater() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val e = Env(joined(), gate = gate)
+        e.latest()
+        e.vm.selectVibration(VibrationPattern.RAPID)
         e.vm.stopPreview()
         gate.complete(Unit)
         assertEquals(listOf(VibrationPattern.RAPID), e.preview.played)

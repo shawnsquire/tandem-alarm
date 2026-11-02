@@ -343,27 +343,19 @@ class LinkedAlarmViewModel(
 
     /** Picks [pattern] for this phone and plays one cycle of it, unless vibration is off. */
     fun selectVibration(pattern: VibrationPattern) {
-        val generation = previewGeneration
+        // Decided and played at tap time, before any suspension: a stop can't be overtaken, and the lock
+        // below (a fair Mutex) saves quick taps in tap order.
+        if (state.value.vibrationOn) preview.play(pattern)
         viewModelScope.launch {
-            val row = currentRow() ?: return@launch
-            val link = row.link ?: return@launch
-            // Played before the write and outside the lock, so a slow write can't delay it past a stop.
-            if (generation == previewGeneration && (link.overrideVibrationOn ?: row.vibrationOn)) preview.play(pattern)
             overrideLock.withLock {
-                val fresh = currentRow()?.link ?: return@withLock
-                saveOutputOverrides(fresh, vibration = pattern)
+                val link = currentRow()?.link ?: return@withLock
+                saveOutputOverrides(link, vibration = pattern)
             }
         }
     }
 
     /** The preset list closed. */
-    fun stopPreview() {
-        previewGeneration++
-        preview.stop()
-    }
-
-    /** Bumped by every stop, so a tap still waiting to play when the list closed stays silent. */
-    private var previewGeneration = 0
+    fun stopPreview() = preview.stop()
 
     /** Clears the tone and the sound switch overrides, whichever are set. */
     fun useOwnersSound() {
@@ -391,11 +383,13 @@ class LinkedAlarmViewModel(
                 val row = currentRow() ?: return@withLock
                 val link = row.link ?: return@withLock
                 if (link.overrideVibration != null || link.overrideVibrationOn != null) {
-                    // If the owner's vibration is off and sound is off here, keep sound on rather than show both off.
-                    val soundOn = (link.overrideSoundOn ?: row.soundOn) || row.vibrationOn
+                    // Only clearing the switch can leave both off (the owner's vibration off, sound off here); then
+                    // keep sound on rather than show both off. Clearing the pattern alone never touches the sound.
+                    val bothOff = link.overrideVibrationOn != null && !row.vibrationOn &&
+                        !(link.overrideSoundOn ?: row.soundOn)
                     saveOutputOverrides(
                         link, vibrationOn = null, vibration = null,
-                        soundOn = if (soundOn) link.overrideSoundOn else true,
+                        soundOn = if (bothOff) true else link.overrideSoundOn,
                     )
                 }
             }
