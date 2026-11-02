@@ -56,6 +56,8 @@ fun RingScreenLayout(
     text: @Composable ColumnScope.() -> Unit,
     buttons: @Composable ColumnScope.() -> Unit,
     modifier: Modifier = Modifier,
+    /** 0 hides the [text] while keeping its room, so the layout does not jump when it appears. */
+    textAlpha: Float = 1f,
 ) {
     Box(
         modifier.fillMaxSize()
@@ -86,7 +88,7 @@ fun RingScreenLayout(
                 },
             ) {
                 Column(
-                    Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                    Modifier.fillMaxWidth().alpha(textAlpha).verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     content = text,
                 )

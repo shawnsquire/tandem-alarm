@@ -38,6 +38,7 @@ import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
 import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.WallpaperFrame
+import me.shawnsquire.tandem.schedule.effectiveTextPosition
 import me.shawnsquire.tandem.ui.theme.TandemTheme
 import java.io.File
 import java.time.Instant
@@ -131,6 +132,25 @@ class RingingActivity : ComponentActivity() {
                     value = content?.let { ShownContent(r.ringId, it) }
                 }
                 val content = shown?.takeIf { it.ringId == current?.ringId }?.content
+                // The primary's position on its own, so it need not wait for the media bound in ringScreenContent
+                // (a late position would move the text). Display only: nothing here delays the ring.
+                val early by produceState<EarlyPosition?>(null, current?.ringId, current?.alarmId) {
+                    val r = current ?: return@produceState
+                    val position = try {
+                        engine.alarmRepository.get(r.alarmId)?.effectiveTextPosition()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        null
+                    }
+                    value = EarlyPosition(r.ringId, position)
+                }
+                val earlyRead = early?.takeIf { it.ringId == current?.ringId }
+                // Hidden (not removed, so the layout holds still) until the read returns; the cap keeps it from staying hidden.
+                val capped by produceState(false, current?.ringId) {
+                    delay(TEXT_POSITION_WAIT_MS)
+                    value = true
+                }
                 val ended = notice?.endsRing == true
                 RingingScreen(
                     labels = content?.labels.orEmpty(),
@@ -138,7 +158,8 @@ class RingingActivity : ComponentActivity() {
                     notice = notice,
                     partnerName = partnerName,
                     wallpapers = content?.wallpapers ?: chooseWallpapers(null, null, defaultWallpaper),
-                    textPosition = content?.textPosition ?: TextPosition.MIDDLE,
+                    textPosition = earlyRead?.position ?: content?.textPosition ?: TextPosition.MIDDLE,
+                    textHidden = earlyRead == null && !capped,
                     ring = current,
                     // The ring is over; the notice is only saying who ended it.
                     canAct = current != null && !ended,
@@ -206,6 +227,7 @@ private fun RingingScreen(
     partnerName: String?,
     wallpapers: List<RingWallpaper>,
     textPosition: TextPosition,
+    textHidden: Boolean,
     ring: RingState?,
     canAct: Boolean,
     onStop: () -> Unit,
@@ -241,9 +263,10 @@ private fun RingingScreen(
     }
 
     RingScreenLayout(
-        wallpaper = decoded?.bitmap?.asImageBitmap(),
+        wallpaper = decoded?.bitmap?.let { remember(it) { it.asImageBitmap() } },
         frame = decoded?.frame,
         textPosition = textPosition,
+        textAlpha = if (textHidden) 0f else 1f,
         text = { RingScreenText(formatter.format(time), alarmLine, labels, withPartner, noticeText) },
         buttons = { RingScreenButtons(canAct, onSnooze, onStop) },
     )
@@ -252,6 +275,12 @@ private fun RingingScreen(
 /** The first of [candidates] that [decode] can read, kept together with the frame it was imported with. */
 internal fun <T : Any> firstDecoded(candidates: List<RingWallpaper>, decode: (String) -> T?): Pair<T, WallpaperFrame?>? =
     candidates.firstNotNullOfOrNull { c -> decode(c.path)?.let { it to c.frame } }
+
+/** [position] is null when the primary's row could not be read; the text is then placed by the resolved content. */
+private class EarlyPosition(val ringId: String, val position: TextPosition?)
+
+/** How long the text stays invisible waiting for its position before it shows where the content says. */
+private const val TEXT_POSITION_WAIT_MS = 300L
 
 private class DecodedWallpaper(val bitmap: Bitmap, val frame: WallpaperFrame?)
 
