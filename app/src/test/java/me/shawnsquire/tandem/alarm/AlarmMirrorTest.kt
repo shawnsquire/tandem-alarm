@@ -7,6 +7,7 @@ import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -87,6 +88,52 @@ class AlarmMirrorTest {
         val snap = MirrorSnapshot(alarms, null, null)
         SharedPrefsAlarmMirror(context).write(snap)
         assertEquals(snap, SharedPrefsAlarmMirror(context).readOrNull())
+    }
+
+    @Test fun vibrationAndSoundSettingsAndOverridesRoundTrip() {
+        val link = plainLink.copy(overrideVibration = VibrationPattern.ESCALATING, overrideVibrationOn = false, overrideSoundOn = true)
+        val alarms = listOf(
+            MirroredAlarm(full.alarm.copy(id = "v1", vibration = VibrationPattern.HEARTBEAT, vibrationOn = false, soundOn = true), null),
+            MirroredAlarm(full.alarm.copy(id = "v2", vibration = VibrationPattern.SLOW_WAVE, vibrationOn = true, soundOn = false, link = link), null),
+            MirroredAlarm(full.alarm.copy(id = "v3", link = plainLink.copy(overrideSoundOn = false)), null),
+        )
+        val snap = MirrorSnapshot(alarms, null, null)
+        SharedPrefsAlarmMirror(context).write(snap)
+        assertEquals(snap, SharedPrefsAlarmMirror(context).readOrNull())
+    }
+
+    @Test fun mirrorWrittenBeforeVibrationDecodesWithDefaults() {
+        val link = plainLink.copy(overrideLabel = "Mine")
+        SharedPrefsAlarmMirror(context).write(MirrorSnapshot(listOf(MirroredAlarm(full.alarm.copy(link = link), null)), null, null))
+        // Strip every v5 key, as an upgraded phone that has not opened the app still has the old record.
+        val root = org.json.JSONObject(raw()!!)
+        val o = root.getJSONArray("alarms").getJSONObject(0)
+        listOf("vibration", "vibrationOn", "soundOn").forEach { o.remove(it) }
+        o.getJSONObject("link").let { l -> listOf("overrideVibration", "overrideVibrationOn", "overrideSoundOn").forEach { l.remove(it) } }
+        putRaw(root.toString())
+
+        val alarm = SharedPrefsAlarmMirror(context).readOrNull()!!.alarms.single().alarm
+        assertEquals(VibrationPattern.PULSE, alarm.vibration)
+        assertTrue(alarm.vibrationOn)
+        assertTrue(alarm.soundOn)
+        assertEquals(link, alarm.link)
+        assertNull(alarm.link!!.overrideVibration)
+        assertNull(alarm.link!!.overrideVibrationOn)
+        assertNull(alarm.link!!.overrideSoundOn)
+    }
+
+    @Test fun unknownPatternNamesDecodeAsPulse() {
+        val link = plainLink.copy(overrideVibration = VibrationPattern.RAPID)
+        SharedPrefsAlarmMirror(context).write(MirrorSnapshot(listOf(MirroredAlarm(full.alarm.copy(vibration = VibrationPattern.RAPID, link = link), null)), null, null))
+        val root = org.json.JSONObject(raw()!!)
+        val o = root.getJSONArray("alarms").getJSONObject(0)
+        o.put("vibration", "FROM_THE_FUTURE")
+        o.getJSONObject("link").put("overrideVibration", "FROM_THE_FUTURE")
+        putRaw(root.toString())
+
+        val alarm = SharedPrefsAlarmMirror(context).readOrNull()!!.alarms.single().alarm
+        assertEquals(VibrationPattern.PULSE, alarm.vibration)
+        assertEquals(VibrationPattern.PULSE, alarm.link!!.overrideVibration)
     }
 
     @Test fun linkOverrideWallpaperIsNeverMirrored() {
