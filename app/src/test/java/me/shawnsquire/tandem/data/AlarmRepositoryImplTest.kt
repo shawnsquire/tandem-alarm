@@ -16,6 +16,7 @@ import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.schedule.LateRing
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -478,6 +479,18 @@ class AlarmRepositoryImplTest {
         assertEquals(late, repo.get("l")!!.lateRing)
         repo.upsertLinked(linked())
         assertNull(repo.get("l")!!.lateRing)
+    }
+
+    @Test
+    fun upsertLinkedCopiesVibrationAndSwitchesButKeepsTheJoinersOverrides() = runTest {
+        val own = linked().link!!.copy(overrideVibration = VibrationPattern.RAPID, overrideVibrationOn = false, overrideSoundOn = false)
+        repo.upsertLinked(linked().copy(link = own))
+        repo.upsertLinked(linked().copy(vibration = VibrationPattern.SLOW_WAVE, vibrationOn = false, soundOn = false))
+        val stored = repo.get("l")!!
+        assertEquals(VibrationPattern.SLOW_WAVE, stored.vibration)
+        assertFalse(stored.vibrationOn)
+        assertFalse(stored.soundOn)
+        assertEquals(own, stored.link)
     }
 
     @Test

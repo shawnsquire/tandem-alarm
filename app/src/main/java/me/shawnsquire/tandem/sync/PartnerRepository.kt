@@ -5,6 +5,7 @@ import me.shawnsquire.tandem.media.MediaRef
 import kotlinx.coroutines.flow.Flow
 import me.shawnsquire.tandem.schedule.LateRing
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import java.time.DayOfWeek
 import java.time.Instant
 
@@ -21,6 +22,9 @@ data class PartnerAlarm(
     val media: AlarmMedia? = null,
     val soloSkippedOccurrenceAt: Instant? = null,
     val lateRing: LateRing? = null,
+    val vibration: VibrationPattern = VibrationPattern.PULSE,
+    val vibrationOn: Boolean = true,
+    val soundOn: Boolean = true,
 )
 
 /** Read-only mirror of the partner's state; commands target [PartnerAlarm.nextOccurrenceAt] / [ringing] (I3). */

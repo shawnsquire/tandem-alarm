@@ -36,7 +36,7 @@ interface AlarmRepository {
     /**
      * Writes a linked row; [alarm].link must be non-null (IllegalArgumentException otherwise).
      * Inserts it if absent. If a row with that id exists, replaces only the owner-copied fields
-     * (label, hour, minute, days, enabled, lateRing, link.ownerSkippedOccurrenceAt) and keeps every joiner-owned
+     * (label, hour, minute, days, enabled, lateRing, vibration, vibrationOn, soundOn, link.ownerSkippedOccurrenceAt) and keeps every joiner-owned
      * field (skippedOccurrenceAt, soloSkippedOccurrenceAt, ringtoneUri, wallpaperPath and the rest of link),
      * so a sync never overwrites the joiner's own state. If an existing row with that id is not linked,
      * throws IllegalStateException without writing: an id collision or LinkSync bug must never turn an

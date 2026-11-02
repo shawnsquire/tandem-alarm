@@ -33,6 +33,7 @@ import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingState
 import org.junit.Assert.assertEquals
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -145,6 +146,22 @@ class LinkSyncImplTest {
     }
 
     // --- copy ---
+
+    @Test fun `copies the owner's vibration and switches and keeps the joiner's overrides`() = runTest {
+        val overrides = row().link!!.copy(
+            overrideVibration = VibrationPattern.RAPID, overrideVibrationOn = false, overrideSoundOn = true,
+        )
+        val e = started(env(partner = null, rows = listOf(row().copy(link = overrides))))
+        e.partner.value = state(owner().copy(vibration = VibrationPattern.SLOW_WAVE, vibrationOn = false, soundOn = false))
+        runCurrent()
+        val r = e.row()!!
+        assertEquals(VibrationPattern.SLOW_WAVE, r.vibration)
+        assertFalse(r.vibrationOn)
+        assertFalse(r.soundOn)
+        assertEquals(VibrationPattern.RAPID, r.link!!.overrideVibration)
+        assertEquals(false, r.link!!.overrideVibrationOn)
+        assertEquals(true, r.link!!.overrideSoundOn)
+    }
 
     @Test fun `copies the owner's late ring and a later doc without it clears it`() = runTest {
         val e = started(env(partner = null))

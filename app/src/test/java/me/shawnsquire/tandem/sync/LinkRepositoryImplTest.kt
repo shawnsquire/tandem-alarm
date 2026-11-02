@@ -33,6 +33,7 @@ import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.PendingBoth
 import org.junit.Assert.assertEquals
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -145,6 +146,20 @@ class LinkRepositoryImplTest {
         assertEquals(now.plusSeconds(5), l.ownerSkippedOccurrenceAt)
         assertNull(l.pendingBoth)
         assertEquals(1, e.scheduler.rescheduleCount)
+    }
+
+    @Test
+    fun joinCopiesVibrationAndSwitchesWithNoOverrides() = runTest {
+        val loud = ownerAlarm().copy(vibration = VibrationPattern.ESCALATING, vibrationOn = false, soundOn = false)
+        val e = env(partner = state(loud))
+        e.repo.join("o1")
+        val row = e.rows().single()
+        assertEquals(VibrationPattern.ESCALATING, row.vibration)
+        assertFalse(row.vibrationOn)
+        assertFalse(row.soundOn)
+        assertNull(row.link!!.overrideVibration)
+        assertNull(row.link!!.overrideVibrationOn)
+        assertNull(row.link!!.overrideSoundOn)
     }
 
     @Test

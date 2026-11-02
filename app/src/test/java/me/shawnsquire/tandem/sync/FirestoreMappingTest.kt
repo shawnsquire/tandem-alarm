@@ -13,6 +13,7 @@ import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.FIRE_GRACE
 import me.shawnsquire.tandem.schedule.LateRing
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import kotlin.time.toJavaDuration
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
@@ -121,7 +122,8 @@ class FirestoreMappingTest {
         assertFalse(s.contains("secret"))
         val a = (m["alarms"] as List<*>).single() as Map<*, *>
         assertEquals(
-            setOf("id", "label", "hour", "minute", "days", "enabled", "nextOccurrenceAt", "skippedOccurrenceAt"),
+            setOf("id", "label", "hour", "minute", "days", "enabled", "nextOccurrenceAt", "skippedOccurrenceAt",
+                "vibration", "vibrationOn", "soundOn"),
             a.keys,
         )
     }
@@ -343,6 +345,36 @@ class FirestoreMappingTest {
         val gone = deviceDocMap("P", null, listOf(yes), null, at, zone)
         assertFalse((gone["alarms"] as List<*>).first().let { (it as Map<*, *>).containsKey("lateRing") })
         assertFalse((deviceDocMap("P", null, listOf(alarm), null, now, zone)["alarms"] as List<*>).first().let { (it as Map<*, *>).containsKey("lateRing") })
+    }
+
+    @Test
+    fun vibrationAndSwitchesRoundTrip() {
+        val a = alarm.copy(vibration = VibrationPattern.HEARTBEAT, vibrationOn = false, soundOn = false)
+        val entry = (deviceDocMap("P", null, listOf(a), null, now, zone)["alarms"] as List<*>).first() as Map<*, *>
+        assertEquals("HEARTBEAT", entry["vibration"])
+        assertEquals(false, entry["vibrationOn"])
+        assertEquals(false, entry["soundOn"])
+        val p = partnerStateFromDoc(deviceDocMap("P", null, listOf(a), null, now, zone))!!.alarms.single()
+        assertEquals(VibrationPattern.HEARTBEAT, p.vibration)
+        assertFalse(p.vibrationOn)
+        assertFalse(p.soundOn)
+    }
+
+    @Test
+    fun missingOrUnreadableVibrationFieldsDefaultToPulseAndOn() {
+        val base = mapOf("id" to "a", "hour" to 6L, "minute" to 5L, "enabled" to true)
+        val s = partnerStateFromDoc(
+            mapOf(
+                "displayName" to "P",
+                "alarms" to listOf(
+                    base,
+                    base + mapOf("vibration" to "TSUNAMI", "vibrationOn" to "no", "soundOn" to 0L),
+                    base + mapOf("vibration" to 3L),
+                ),
+            ),
+        )!!
+        assertEquals(3, s.alarms.size)
+        assertTrue(s.alarms.all { it.vibration == VibrationPattern.PULSE && it.vibrationOn && it.soundOn })
     }
 
     @Test

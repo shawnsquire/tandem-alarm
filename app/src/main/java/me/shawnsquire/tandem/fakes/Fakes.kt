@@ -119,6 +119,9 @@ class FakeAlarmRepository(initial: List<Alarm> = SAMPLE_ALARMS) : AlarmRepositor
                     days = alarm.days,
                     enabled = alarm.enabled,
                     lateRing = alarm.lateRing,
+                    vibration = alarm.vibration,
+                    vibrationOn = alarm.vibrationOn,
+                    soundOn = alarm.soundOn,
                     link = storedLink.copy(ownerSkippedOccurrenceAt = incoming.ownerSkippedOccurrenceAt),
                 )
                 list.map { if (it.id == alarm.id) merged else it }
