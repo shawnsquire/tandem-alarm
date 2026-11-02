@@ -10,22 +10,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,17 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -62,6 +36,8 @@ import me.shawnsquire.tandem.TandemApp
 import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.ui.theme.TandemTheme
 import java.io.File
 import java.time.Instant
@@ -162,6 +138,8 @@ class RingingActivity : ComponentActivity() {
                     notice = notice,
                     partnerName = partnerName,
                     wallpapers = content?.wallpapers ?: chooseWallpapers(null, null, defaultWallpaper),
+                    textPosition = content?.textPosition ?: TextPosition.MIDDLE,
+                    ring = current,
                     // The ring is over; the notice is only saying who ended it.
                     canAct = current != null && !ended,
                     onStop = {
@@ -227,15 +205,18 @@ private fun RingingScreen(
     notice: RemoteRingEnd?,
     partnerName: String?,
     wallpapers: List<RingWallpaper>,
+    textPosition: TextPosition,
+    ring: RingState?,
     canAct: Boolean,
     onStop: () -> Unit,
     onSnooze: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val metrics = context.resources.displayMetrics
-    val wallpaper by produceState<Bitmap?>(null, wallpapers) {
+    val decoded by produceState<DecodedWallpaper?>(null, wallpapers) {
         value = withContext(Dispatchers.IO) {
-            wallpapers.firstNotNullOfOrNull { decodeSampled(it.path, metrics.widthPixels, metrics.heightPixels) }
+            firstDecoded(wallpapers) { decodeSampled(it, metrics.widthPixels, metrics.heightPixels) }
+                ?.let { (bitmap, frame) -> DecodedWallpaper(bitmap, frame) }
         }
     }
     val is24 = remember { DateFormat.is24HourFormat(context) }
@@ -250,71 +231,29 @@ private fun RingingScreen(
         }
     }
 
-    Box(
-        Modifier.fillMaxSize().background(
-            Brush.verticalGradient(listOf(Color(0xFF0B1020), Color(0xFF1B2440))),
-        ),
-    ) {
-        wallpaper?.let {
-            Image(
-                it.asImageBitmap(), contentDescription = null,
-                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-            )
-        }
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
-        Column(
-            Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.weight(1f))
-            Text(
-                formatter.format(time),
-                style = MaterialTheme.typography.displayLarge.copy(fontSize = 96.sp, lineHeight = 104.sp),
-                color = Color.White,
-                textAlign = TextAlign.Center,
-            )
-            for (label in labels) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    label, style = MaterialTheme.typography.headlineMedium,
-                    color = Color.White, textAlign = TextAlign.Center,
-                )
-            }
-            if (withPartner != null) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    stringResource(R.string.ringing_with_partner, withPartner), style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.85f), textAlign = TextAlign.Center,
-                )
-            }
-            if (notice != null) {
-                val text = remember(notice, partnerName, formatter) {
-                    remoteNoticeText(context, notice, partnerName) { formatter.format(it.atZone(ZoneId.systemDefault())) }
-                }
-                Spacer(Modifier.height(24.dp))
-                Text(
-                    text, style = MaterialTheme.typography.titleLarge,
-                    color = Color.White, textAlign = TextAlign.Center,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Column(
-                Modifier.fillMaxWidth().alpha(if (canAct) 1f else 0.5f),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = onSnooze, enabled = canAct,
-                    modifier = Modifier.fillMaxWidth().height(80.dp),
-                ) { Text(stringResource(R.string.alarm_action_snooze), fontSize = 24.sp) }
-                Button(
-                    onClick = onStop, enabled = canAct,
-                    modifier = Modifier.fillMaxWidth().height(96.dp),
-                    colors = ButtonDefaults.buttonColors(),
-                ) { Text(stringResource(R.string.alarm_action_stop), fontSize = 28.sp) }
-            }
+    val noticeText = notice?.let {
+        remember(it, partnerName, formatter) {
+            remoteNoticeText(context, it, partnerName) { at -> formatter.format(at.atZone(ZoneId.systemDefault())) }
         }
     }
+    val alarmLine = ring?.let {
+        remember(it, formatter) { alarmTimeLine(it) { at -> formatter.format(at.atZone(ZoneId.systemDefault())) } }
+    }
+
+    RingScreenLayout(
+        wallpaper = decoded?.bitmap?.asImageBitmap(),
+        frame = decoded?.frame,
+        textPosition = textPosition,
+        text = { RingScreenText(formatter.format(time), alarmLine, labels, withPartner, noticeText) },
+        buttons = { RingScreenButtons(canAct, onSnooze, onStop) },
+    )
 }
+
+/** The first of [candidates] that [decode] can read, kept together with the frame it was imported with. */
+internal fun <T : Any> firstDecoded(candidates: List<RingWallpaper>, decode: (String) -> T?): Pair<T, WallpaperFrame?>? =
+    candidates.firstNotNullOfOrNull { c -> decode(c.path)?.let { it to c.frame } }
+
+private class DecodedWallpaper(val bitmap: Bitmap, val frame: WallpaperFrame?)
 
 /** Decodes [path] downsampled to fit the [reqW]x[reqH] memory budget; null if missing or unreadable. */
 private fun decodeSampled(path: String, reqW: Int, reqH: Int): Bitmap? = try {
