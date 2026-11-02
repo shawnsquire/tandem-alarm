@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.data.SettingsRepository
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.PairingException
 import me.shawnsquire.tandem.sync.PairingRepository
 import me.shawnsquire.tandem.sync.PairingStatus
@@ -36,6 +37,10 @@ data class SettingsUiState(
     val ringtoneUri: String? = null,
     val ringtoneTitle: String = "",
     val wallpaperPath: String? = null,
+    /** Frames [wallpaperPath] on the ringing screen; null is the centred crop. */
+    val wallpaperFrame: WallpaperFrame? = null,
+    /** Set after a successful image pick so the screen opens the preview; the screen clears it with [SettingsViewModel.previewRequestHandled]. */
+    val previewRequested: Boolean = false,
     val paired: Boolean = false,
     val partnerName: String? = null,
     val unpairing: Boolean = false,
@@ -56,9 +61,16 @@ class SettingsViewModel(
     private val deleteRingtoneFile: (String) -> Unit,
     private val importWallpaper: suspend (String) -> String,
     private val deleteWallpaperFile: (String) -> Unit,
+    /** Whether two wallpaper files hold the same bytes; a throw counts as different. Runs off the main thread. */
+    private val sameWallpaperContent: suspend (String, String) -> Boolean,
 ) : ViewModel() {
 
-    private data class Local(val unpairing: Boolean = false, val busy: Boolean = false, val error: SettingsError? = null)
+    private data class Local(
+        val unpairing: Boolean = false,
+        val busy: Boolean = false,
+        val previewRequested: Boolean = false,
+        val error: SettingsError? = null,
+    )
 
     private val local = MutableStateFlow(Local())
 
@@ -73,6 +85,7 @@ class SettingsViewModel(
         settings.defaultWallpaperPath,
         pairing.status,
         local,
+        settings.defaultWallpaperFrame,
     ) { values ->
         @Suppress("UNCHECKED_CAST")
         val ring = values[2] as Pair<String?, String>
@@ -84,6 +97,8 @@ class SettingsViewModel(
             ringtoneUri = ring.first,
             ringtoneTitle = ring.second,
             wallpaperPath = values[3] as String?,
+            wallpaperFrame = values[6] as WallpaperFrame?,
+            previewRequested = loc.previewRequested,
             paired = status is PairingStatus.Paired,
             partnerName = (status as? PairingStatus.Paired)?.partnerName,
             unpairing = loc.unpairing,
@@ -151,7 +166,17 @@ class SettingsViewModel(
                 return@launch
             }
             try {
-                replaceWallpaper(path)
+                // The same picture again keeps its framing; anything else, or a comparison that fails, starts centred.
+                val current = settings.defaultWallpaperPath.first()
+                val same = current != null && try {
+                    sameWallpaperContent(current, path)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+                replaceWallpaper(path, keepFrame = same)
+                local.update { it.copy(previewRequested = true) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -164,8 +189,18 @@ class SettingsViewModel(
     }
 
     fun removeWallpaper() {
-        viewModelScope.launch { guarded { replaceWallpaper(null) } }
+        viewModelScope.launch { guarded { replaceWallpaper(null, keepFrame = false) } }
     }
+
+    /** The preview's Save; the frame belongs to the default image, so without one there is nothing to frame. */
+    fun setWallpaperFrame(frame: WallpaperFrame?) {
+        viewModelScope.launch {
+            guarded { if (settings.defaultWallpaperPath.first() != null) settings.setDefaultWallpaperFrame(frame) }
+        }
+    }
+
+    /** The screen opened the preview that [SettingsUiState.previewRequested] asked for. */
+    fun previewRequestHandled() = local.update { it.copy(previewRequested = false) }
 
     fun unpair() {
         if (local.value.unpairing) return
@@ -192,9 +227,10 @@ class SettingsViewModel(
         if (old != null && old != new) deleteRingtoneFile(old)
     }
 
-    private suspend fun replaceWallpaper(new: String?) {
+    private suspend fun replaceWallpaper(new: String?, keepFrame: Boolean) {
         val old = settings.defaultWallpaperPath.first()
         settings.setDefaultWallpaperPath(new)
+        if (!keepFrame) settings.setDefaultWallpaperFrame(null)
         if (old != null && old != new) deleteWallpaperFile(old)
     }
 

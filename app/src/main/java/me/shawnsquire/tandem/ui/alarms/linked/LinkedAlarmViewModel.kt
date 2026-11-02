@@ -16,12 +16,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import me.shawnsquire.tandem.data.AlarmRepository
+import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.AlarmLink
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.effectiveOutputs
+import me.shawnsquire.tandem.schedule.effectiveTextPosition
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.sync.LinkRepository
 import me.shawnsquire.tandem.sync.PairingRepository
@@ -52,6 +56,13 @@ data class LinkedSheetState(
     val overrideRingtone: String? = null,
     val ringtoneTitle: String = "",
     val overrideWallpaper: String? = null,
+    /** Frames [overrideWallpaper]; null is the centred crop. */
+    val overrideWallpaperFrame: WallpaperFrame? = null,
+    /** Where the text sits when it rings here: the override, else the owner's [ownerTextPosition]. */
+    val textPosition: TextPosition = TextPosition.MIDDLE,
+    val ownerTextPosition: TextPosition = TextPosition.MIDDLE,
+    /** Set after a successful image pick so the sheet opens the preview; the sheet clears it with [LinkedAlarmViewModel.previewRequestHandled]. */
+    val previewRequested: Boolean = false,
     /** The switches as set on this phone: each override, else the owner's. Both can read off if the owner caused it; a ring then uses both on. */
     val soundOn: Boolean = true,
     val vibrationOn: Boolean = true,
@@ -71,7 +82,11 @@ data class LinkedSheetState(
     val error: LinkedError? = null,
 )
 
+/** What the ringing-screen preview opens on: [wallpaper] with its frame, and whether that framing is this phone's to change. */
+data class LinkedPreviewTarget(val wallpaper: RingWallpaper?, val own: Boolean)
+
 private data class SheetLocal(
+    val previewRequested: Boolean = false,
     val askingSkip: Boolean = false,
     val confirmingLeave: Boolean = false,
     val busy: Boolean = false,
@@ -92,6 +107,10 @@ class LinkedAlarmViewModel(
     private val deleteRingtoneFile: (String) -> Unit,
     private val importWallpaper: suspend (String) -> String,
     private val deleteWallpaperFile: (String) -> Unit,
+    /** Whether two wallpaper files hold the same bytes; a throw counts as different. Runs off the main thread. */
+    private val sameWallpaperContent: suspend (String, String) -> Boolean,
+    /** The wallpaper that rings for [Alarm] (whose override is cleared) without this phone's image: the owner's, else the default. */
+    private val wallpaperWithoutOverride: suspend (Alarm) -> RingWallpaper?,
     private val preview: VibrationPreview,
     /** Shown when a "both of us" command did not take effect. */
     private val rejectedReason: String,
@@ -158,6 +177,9 @@ class LinkedAlarmViewModel(
                 overrideLabel = link.overrideLabel,
                 overrideRingtone = link.overrideRingtoneUri,
                 overrideWallpaper = link.overrideWallpaperPath,
+                overrideWallpaperFrame = link.overrideWallpaperFrame,
+                textPosition = alarm.effectiveTextPosition(), ownerTextPosition = alarm.textPosition,
+                previewRequested = local.previewRequested,
                 soundOn = soundOn, vibrationOn = vibrationOn, vibration = outputs.vibration,
                 overrideSoundOn = link.overrideSoundOn, overrideVibrationOn = link.overrideVibrationOn,
                 overrideVibration = link.overrideVibration,
@@ -303,7 +325,59 @@ class LinkedAlarmViewModel(
                 importThenSave(
                     import = { importWallpaper(contentUri) }, delete = deleteWallpaperFile,
                     failure = LinkedError.WallpaperImport,
-                ) { link, path -> saveOverrides(link, wallpaper = path) }
+                ) { link, path ->
+                    // The same picture again keeps its framing; anything else, or a comparison that fails, starts centred.
+                    val current = link.overrideWallpaperPath
+                    val same = current != null && try {
+                        sameWallpaperContent(current, path)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        false
+                    }
+                    val saved = saveOverrides(link, wallpaper = path, wallpaperFrame = if (same) link.overrideWallpaperFrame else null)
+                    if (saved) local.update { it.copy(previewRequested = true) }
+                    saved
+                }
+            }
+        }
+    }
+
+    /** The sheet opened the preview that [LinkedSheetState.previewRequested] asked for. */
+    fun previewRequestHandled() = local.update { it.copy(previewRequested = false) }
+
+    /**
+     * What the preview should show: this phone's image with its frame when there is one, else what would ring
+     * without it (the owner's image and frame), which is the owner's to frame.
+     */
+    suspend fun previewTarget(): LinkedPreviewTarget {
+        val row = currentRow() ?: return LinkedPreviewTarget(null, own = false)
+        val link = row.link ?: return LinkedPreviewTarget(null, own = false)
+        link.overrideWallpaperPath?.let { return LinkedPreviewTarget(RingWallpaper(it, link.overrideWallpaperFrame), own = true) }
+        val wallpaper = try {
+            wallpaperWithoutOverride(row.copy(link = link.copy(overrideWallpaperPath = null, overrideWallpaperFrame = null)))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        return LinkedPreviewTarget(wallpaper, own = false)
+    }
+
+    /**
+     * The preview's Save. The frame belongs to this phone's image, so without one it is dropped. A text position
+     * equal to the owner's is stored as "Use <owner>'s" so a later change of the owner's still carries over.
+     */
+    fun setFraming(frame: WallpaperFrame?, position: TextPosition) {
+        viewModelScope.launch {
+            overrideLock.withLock {
+                val row = currentRow() ?: return@withLock
+                val link = row.link ?: return@withLock
+                val newFrame = if (link.overrideWallpaperPath == null) null else frame
+                val newPosition = position.takeIf { it != row.textPosition }
+                if (newFrame != link.overrideWallpaperFrame || newPosition != link.overrideTextPosition) {
+                    runSaving { links.setOverrideFraming(alarmId, newFrame, newPosition) }
+                }
             }
         }
     }
@@ -445,7 +519,7 @@ class LinkedAlarmViewModel(
     }
 
     /**
-     * Writes the three overrides, defaulting each field to the row's current value (setOverrides resets any
+     * Writes the label, tone and wallpaper overrides (the frame goes with its image), defaulting each field to the row's current value (setOverrides resets any
      * field it is not given). Files the row no longer references are deleted once the write has returned.
      */
     private suspend fun saveOverrides(
@@ -453,8 +527,9 @@ class LinkedAlarmViewModel(
         label: String? = link.overrideLabel,
         ringtone: String? = link.overrideRingtoneUri,
         wallpaper: String? = link.overrideWallpaperPath,
+        wallpaperFrame: WallpaperFrame? = link.overrideWallpaperFrame.takeIf { wallpaper == link.overrideWallpaperPath },
     ): Boolean {
-        if (!runSaving { links.setOverrides(alarmId, label, ringtone, wallpaper) }) return false
+        if (!runSaving { links.setOverrides(alarmId, label, ringtone, wallpaper, wallpaperFrame) }) return false
         if (link.overrideRingtoneUri != ringtone) link.overrideRingtoneUri?.let(deleteRingtoneFile)
         if (link.overrideWallpaperPath != wallpaper) link.overrideWallpaperPath?.let(deleteWallpaperFile)
         return true

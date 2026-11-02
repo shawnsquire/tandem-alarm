@@ -61,10 +61,12 @@ import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.ui.alarms.OutputHints
 import me.shawnsquire.tandem.ui.alarms.VibrationPatternDialog
 import me.shawnsquire.tandem.ui.alarms.vibrationPatternName
+import me.shawnsquire.tandem.ui.RingPreview
 import me.shawnsquire.tandem.ui.alarms.edit.WallpaperThumbnail
 import me.shawnsquire.tandem.ui.amPm
 import me.shawnsquire.tandem.ui.formatClock
@@ -87,6 +89,7 @@ class LinkedSheetCallbacks(
     val onUseOwnersVibration: () -> Unit = {},
     val onPickWallpaper: () -> Unit = {},
     val onUseOwnersWallpaper: () -> Unit = {},
+    val onPreviewWallpaper: () -> Unit = {},
     val onAskSkip: () -> Unit = {},
     val onCancelSkip: () -> Unit = {},
     val onSkipJustMe: () -> Unit = {},
@@ -139,6 +142,18 @@ fun LinkedAlarmSheetRoute(
         if (uri != null) viewModel.onWallpaperPicked(uri.toString())
     }
 
+    var showRingPreview by rememberSaveable { mutableStateOf(false) }
+    // What the preview opens on; resolved off the main thread each time it opens, so a pick or a sync in between shows.
+    var previewTarget by remember { mutableStateOf<LinkedPreviewTarget?>(null) }
+    LaunchedEffect(showRingPreview) { previewTarget = if (showRingPreview) viewModel.previewTarget() else null }
+    // A fresh pick opens the preview so the new image can be framed right away.
+    LaunchedEffect(state.previewRequested) {
+        if (state.previewRequested) {
+            showRingPreview = true
+            viewModel.previewRequestHandled()
+        }
+    }
+
     val snackbarHostState = remember { SnackbarHostState() }
     val errorText = when (state.error) {
         LinkedError.RingtoneImport -> stringResource(R.string.edit_error_ringtone)
@@ -176,6 +191,7 @@ fun LinkedAlarmSheetRoute(
                 onUseOwnersVibration = viewModel::useOwnersVibration,
                 onPickWallpaper = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onUseOwnersWallpaper = viewModel::useOwnersWallpaper,
+                onPreviewWallpaper = { showRingPreview = true },
                 onAskSkip = viewModel::askSkip,
                 onCancelSkip = viewModel::cancelSkip,
                 onSkipJustMe = viewModel::skipJustMe,
@@ -187,6 +203,25 @@ fun LinkedAlarmSheetRoute(
             ),
         )
         SnackbarHost(snackbarHostState)
+    }
+    previewTarget?.takeIf { showRingPreview }?.let { target ->
+        RingPreview(
+            wallpaperPath = target.wallpaper?.path,
+            initialFrame = target.wallpaper?.frame,
+            // Without an image of its own the framing is the owner's to change.
+            gesturesEnabled = target.own,
+            initialTextPosition = state.textPosition,
+            showPositionSelector = true,
+            hour = state.hour,
+            minute = state.minute,
+            label = state.label,
+            onSave = { frame, position ->
+                viewModel.setFraming(frame, position)
+                showRingPreview = false
+            },
+            onCancel = { showRingPreview = false },
+            resetTextPosition = state.ownerTextPosition,
+        )
     }
 }
 
@@ -371,9 +406,13 @@ private fun PhotoRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCa
                     if (state.overrideWallpaper == null) stringResource(R.string.link_use_partners, state.partnerName)
                     else stringResource(R.string.link_photo_custom),
                 )
+                Text(stringResource(R.string.edit_text_position, textPositionName(state.textPosition)))
                 Row {
                     TextButton(onClick = cb.onPickWallpaper, enabled = !locked) {
                         Text(stringResource(R.string.edit_wallpaper_choose))
+                    }
+                    TextButton(onClick = cb.onPreviewWallpaper, enabled = !locked) {
+                        Text(stringResource(R.string.edit_wallpaper_preview))
                     }
                     if (state.overrideWallpaper != null) {
                         TextButton(onClick = cb.onUseOwnersWallpaper, enabled = !locked) {
@@ -383,9 +422,19 @@ private fun PhotoRow(state: LinkedSheetState, locked: Boolean, cb: LinkedSheetCa
                 }
             }
         },
-        trailingContent = state.overrideWallpaper?.let { path -> { WallpaperThumbnail(path, frame = null) } },
+        trailingContent = state.overrideWallpaper?.let { path -> { WallpaperThumbnail(path, state.overrideWallpaperFrame) } },
+        modifier = Modifier.clickable(enabled = !locked, onClick = cb.onPreviewWallpaper),
     )
 }
+
+@Composable
+private fun textPositionName(position: TextPosition): String = stringResource(
+    when (position) {
+        TextPosition.TOP -> R.string.ring_preview_top
+        TextPosition.MIDDLE -> R.string.ring_preview_middle
+        TextPosition.BOTTOM -> R.string.ring_preview_bottom
+    },
+).lowercase()
 
 @Composable
 private fun SkipSection(state: LinkedSheetState, cb: LinkedSheetCallbacks) {

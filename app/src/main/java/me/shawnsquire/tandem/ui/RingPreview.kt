@@ -57,7 +57,7 @@ import java.time.format.FormatStyle
  * laid out exactly as the ringing activity does. Drag and pinch move the image when [gesturesEnabled];
  * [showPositionSelector] offers Top/Middle/Bottom for the text block. Save reports the draft frame
  * (null while untouched or reset, and [initialFrame] unchanged without gestures) and position;
- * Cancel and Back discard it. The wallpaper is [wallpaperPath], or the plain gradient when null or unreadable.
+ * Reset returns the position to [resetTextPosition]. Cancel and Back discard it. The wallpaper is [wallpaperPath], or the plain gradient when null or unreadable.
  *
  * It is a [Dialog] drawn edge-to-edge (`usePlatformDefaultWidth = false`, `decorFitsSystemWindows = false`),
  * so it has the bounds of the ringing activity's window and the frame it saves is what rings.
@@ -74,6 +74,7 @@ fun RingPreview(
     label: String,
     onSave: (frame: WallpaperFrame?, position: TextPosition) -> Unit,
     onCancel: () -> Unit,
+    resetTextPosition: TextPosition = TextPosition.MIDDLE,
 ) {
     Dialog(
         onDismissRequest = onCancel,
@@ -85,7 +86,7 @@ fun RingPreview(
     ) {
         RingPreviewContent(
             wallpaperPath, initialFrame, gesturesEnabled, initialTextPosition, showPositionSelector,
-            hour, minute, label, onSave, onCancel,
+            hour, minute, label, onSave, onCancel, resetTextPosition,
         )
     }
 }
@@ -102,6 +103,7 @@ private fun RingPreviewContent(
     label: String,
     onSave: (WallpaperFrame?, TextPosition) -> Unit,
     onCancel: () -> Unit,
+    resetTextPosition: TextPosition,
 ) {
     val context = LocalContext.current
     val metrics = context.resources.displayMetrics
@@ -185,7 +187,7 @@ private fun RingPreviewContent(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     TextButton(onClick = {
                         if (gesturesEnabled) frame = null
-                        if (showPositionSelector) position = TextPosition.MIDDLE
+                        if (showPositionSelector) position = resetTextPosition
                     }) { Text(stringResource(R.string.ring_preview_reset)) }
                     Row {
                         TextButton(onClick = onCancel) { Text(stringResource(R.string.ring_preview_cancel)) }

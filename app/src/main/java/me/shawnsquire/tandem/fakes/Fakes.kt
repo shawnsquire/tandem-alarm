@@ -28,6 +28,7 @@ import me.shawnsquire.tandem.schedule.RingContext
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.CommandApplier
@@ -347,7 +348,9 @@ class FakeLinkRepository : LinkRepository {
             val label: String?,
             val ringtoneUri: String?,
             val wallpaperPath: String?,
+            val wallpaperFrame: WallpaperFrame? = null,
         ) : Call
+        data class SetOverrideFraming(val alarmId: String, val wallpaperFrame: WallpaperFrame?, val textPosition: TextPosition?) : Call
         data class SetOutputOverrides(
             val alarmId: String,
             val soundOn: Boolean?,
@@ -384,8 +387,14 @@ class FakeLinkRepository : LinkRepository {
     override suspend fun leave(alarmId: String) { calls += Call.Leave(alarmId) }
     override suspend fun setMode(alarmId: String, mode: LinkMode) { calls += Call.SetMode(alarmId, mode) }
 
-    override suspend fun setOverrides(alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?) {
-        calls += Call.SetOverrides(alarmId, label, ringtoneUri, wallpaperPath)
+    override suspend fun setOverrides(
+        alarmId: String, label: String?, ringtoneUri: String?, wallpaperPath: String?, wallpaperFrame: WallpaperFrame?,
+    ) {
+        calls += Call.SetOverrides(alarmId, label, ringtoneUri, wallpaperPath, wallpaperFrame)
+    }
+
+    override suspend fun setOverrideFraming(alarmId: String, wallpaperFrame: WallpaperFrame?, textPosition: TextPosition?) {
+        calls += Call.SetOverrideFraming(alarmId, wallpaperFrame, textPosition)
     }
 
     override suspend fun setOutputOverrides(

@@ -31,6 +31,8 @@ import me.shawnsquire.tandem.schedule.Command
 import me.shawnsquire.tandem.schedule.CommandStatus
 import me.shawnsquire.tandem.schedule.CommandType
 import me.shawnsquire.tandem.schedule.LinkMode
+import me.shawnsquire.tandem.schedule.TextPosition
+import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.schedule.PendingBoth
 import org.junit.Assert.assertEquals
 import me.shawnsquire.tandem.schedule.VibrationPattern
@@ -265,15 +267,33 @@ class LinkRepositoryImplTest {
     fun settersWriteAndReschedule() = runTest {
         val e = env(rows = listOf(linked()))
         e.repo.setMode("row1", LinkMode.RING)
-        e.repo.setOverrides("row1", "L", "R", "W")
+        e.repo.setOverrides("row1", "L", "R", "W", WallpaperFrame(2f, 0.3f, 0.6f))
         e.repo.setJoinerEnabled("row1", false)
         val l = e.rows().single().link!!
         assertEquals(LinkMode.RING, l.mode)
         assertEquals(Triple("L", "R", "W"), Triple(l.overrideLabel, l.overrideRingtoneUri, l.overrideWallpaperPath))
+        assertEquals(WallpaperFrame(2f, 0.3f, 0.6f), l.overrideWallpaperFrame)
         assertFalse(l.joinerEnabled)
         assertEquals(3, e.scheduler.rescheduleCount)
-        e.repo.setOverrides("row1", null, null, null)
+        e.repo.setOverrides("row1", null, null, null, null)
         assertNull(e.rows().single().link!!.overrideLabel)
+        assertNull(e.rows().single().link!!.overrideWallpaperFrame)
+    }
+
+    @Test
+    fun setOverrideFramingWritesFrameAndPositionApartFromTheOtherOverridesAndReschedules() = runTest {
+        val e = env(rows = listOf(linked()))
+        e.repo.setOverrides("row1", "L", "R", "W", null)
+        e.repo.setOverrideFraming("row1", WallpaperFrame(2f, 0.3f, 0.6f), TextPosition.TOP)
+        var l = e.rows().single().link!!
+        assertEquals(WallpaperFrame(2f, 0.3f, 0.6f), l.overrideWallpaperFrame)
+        assertEquals(TextPosition.TOP, l.overrideTextPosition)
+        assertEquals(Triple("L", "R", "W"), Triple(l.overrideLabel, l.overrideRingtoneUri, l.overrideWallpaperPath))
+        assertEquals(2, e.scheduler.rescheduleCount)
+        e.repo.setOverrideFraming("row1", null, null)
+        l = e.rows().single().link!!
+        assertNull(l.overrideWallpaperFrame)
+        assertNull(l.overrideTextPosition)
     }
 
     @Test
