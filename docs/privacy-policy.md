@@ -28,13 +28,15 @@ The three items under "On every start" in the next section are sent regardless.
 
 - **Pairing records.** Showing a pairing code creates a household record (the member IDs
   and a creation time), a user record that holds the household ID, and the code itself,
-  which lasts 10 minutes and holds the household ID, your ID and its expiry time. Joining
+  which can be used for 10 minutes and holds the household ID, your ID and its expiry time. Joining
   the other person's code adds you to their household.
 - **Display name.** The name set in Settings. If none is set, it is the phone's model
   name. The paired phone shows it.
 - **Alarms.** For each of your alarms: label, time, days, on or off, next ring time,
-  skips, vibration and sound settings, text position and wallpaper framing. The paired
-  phone shows them. It cannot change your alarm times.
+  skips, the answer to a late-ring question, vibration and sound settings, text position
+  and wallpaper framing. For an alarm you join from the other phone, a link record holds
+  the owner's alarm ID, ring or notify mode, and the time and days copied from it. The
+  paired phone shows them. It cannot change your alarm times.
 - **Ring state.** While an alarm rings or is snoozed: which alarm, when it started and
   when the snooze ends, so the other phone can follow a joined alarm.
 - **Commands.** Skip, undo skip, turn off, turn on, stop ringing, snooze and invite. Each
