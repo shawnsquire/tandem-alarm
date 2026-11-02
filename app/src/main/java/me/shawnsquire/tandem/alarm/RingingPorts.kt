@@ -3,6 +3,7 @@ package me.shawnsquire.tandem.alarm
 import android.util.Log
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.RingMember
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import java.time.Instant
 
 enum class MirrorKind { SNOOZE, DISMISS }
@@ -102,8 +103,13 @@ interface AlarmSound {
     fun stop()
 }
 
+/**
+ * The ring's vibration. [start] vibrates with [pattern] (again with a new one switches it) and
+ * returns whether it is vibrating: false when the phone has no vibrator. It may throw when the
+ * vibrate itself fails. Either way the ring plays sound, even when the alarm is vibrate-only (I1).
+ */
 interface AlarmVibration {
-    fun start()
+    fun start(pattern: VibrationPattern): Boolean
     fun stop()
 }
 

@@ -28,7 +28,7 @@ open class RingingService : Service() {
 
     /** Tests only: the service's own wake lock, independent of other locks the process creates. */
     internal fun wakeLockForTest(): PowerManager.WakeLock? = wakeLock
-    private val vibrationArbiter by lazy { VibrationArbiter.forContext(this) }
+    private val vibrationArbiter by lazy { VibrationArbiter.get(this) }
     private lateinit var notifier: AndroidRingingNotifier
 
     /** ringId to (notification id, notification) for sessions that have started ringing. */

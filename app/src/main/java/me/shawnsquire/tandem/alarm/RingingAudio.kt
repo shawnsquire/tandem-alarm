@@ -14,8 +14,7 @@ import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.util.Log
 import me.shawnsquire.tandem.R
-import java.util.Collections
-import java.util.IdentityHashMap
+import me.shawnsquire.tandem.schedule.VibrationPattern
 
 /**
  * Loops the first candidate that prepares, then falls back to the system alarm, ringtone and
@@ -203,49 +202,126 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
 }
 
 /**
- * Service-level vibration ownership. `Vibrator.cancel()` cancels all of the app's vibration, so it
- * runs only when the last session that started vibrating stops: a superseded session's late
- * `stop()`, or a session that merged into a sounding ring, must not silence the one still ringing.
+ * Process-wide vibration ownership: the app has one vibrator and
+ * [`Vibrator.cancel()`](https://developer.android.com/reference/android/os/Vibrator#cancel()) turns
+ * all of it off, so several sessions share it through owners. A superseded session's late `stop()`,
+ * or a session that merged into a sounding ring, must not silence or change the one still ringing.
+ *
+ * Each owner holds a pattern; the earliest owner still holding is the one that plays. It re-vibrates
+ * only when that pattern changes (its owner switched, or it stopped and the next owner's differs) and
+ * cancels only when the last owner stops. So a merging fire's early vibration and its `finish()`
+ * leave the primary's pattern alone.
+ *
+ * [start] returns false, owning nothing, when
+ * [`Vibrator.hasVibrator()`](https://developer.android.com/reference/android/os/Vibrator#hasVibrator())
+ * says there is no vibrator, and rethrows a vibrate that throws (the owner is recorded first, so its
+ * stop still undoes it). Either way the session rings with sound (I1). A failed vibrate is never
+ * taken as playing: the next start or stop tries again. When the earliest owner stops and the next
+ * one's pattern throws, Pulse plays instead: that owner's session was told it vibrates.
+ *
+ * [preview] is the editor's: one non-repeating pass, only while no ring owns the vibrator, and a
+ * ring's start replaces it. [stopPreview] cancels only a preview, never a ring.
  */
 class VibrationArbiter(
-    private val startVibration: () -> Unit,
+    private val hasVibrator: () -> Boolean,
+    /** Vibrates [VibrationPattern]'s waveform: looped for a ring, once (`repeating = false`) for a preview. */
+    private val vibrate: (VibrationPattern, repeating: Boolean) -> Unit,
     private val cancelVibration: () -> Unit,
 ) {
-    private val owners: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap())
+    /** In start order, compared by identity. */
+    private val owners = mutableListOf<Pair<Any, VibrationPattern>>()
+    private var playing: VibrationPattern? = null
+    private var previewing = false
 
     @Synchronized
-    fun start(owner: Any) {
-        // Before starting: a start that throws is still undone by the owner's stop.
-        owners += owner
-        startVibration()
+    fun start(owner: Any, pattern: VibrationPattern): Boolean {
+        if (!hasVibrator()) return false
+        // Before vibrating: a start that throws is still undone by the owner's stop.
+        val i = owners.indexOfFirst { it.first === owner }
+        if (i >= 0) owners[i] = owner to pattern else owners += owner to pattern
+        play(owners.first().second)
+        return true
     }
 
     @Synchronized
     fun stop(owner: Any) {
-        if (!owners.remove(owner) || owners.isNotEmpty()) return
+        val i = owners.indexOfFirst { it.first === owner }
+        if (i < 0) return
+        owners.removeAt(i)
+        if (owners.isNotEmpty()) {
+            val next = owners.first().second
+            try {
+                play(next)
+            } catch (e: Throwable) {
+                // The next owner's session believes it vibrates (its start found another pattern
+                // playing), so it won't ring with sound instead: keep the phone vibrating (I1).
+                if (next != VibrationPattern.PULSE) runCatching { play(VibrationPattern.PULSE) }
+                throw e
+            }
+            return
+        }
+        playing = null
         cancelVibration()
     }
 
-    companion object {
-        private val PATTERN = longArrayOf(0, 800, 600)
+    /** One pass of [pattern] for the editor. False, playing nothing, while a ring vibrates or with no vibrator. */
+    @Synchronized
+    fun preview(pattern: VibrationPattern): Boolean {
+        if (owners.isNotEmpty() || !hasVibrator()) return false
+        previewing = true
+        vibrate(pattern, false)
+        return true
+    }
 
-        fun forContext(context: Context): VibrationArbiter {
+    /** Ends a preview early; a no-op once a ring owns the vibrator. */
+    @Synchronized
+    fun stopPreview() {
+        if (!previewing || owners.isNotEmpty()) return
+        previewing = false
+        cancelVibration()
+    }
+
+    private fun play(pattern: VibrationPattern) {
+        if (pattern == playing) return
+        if (previewing) {
+            previewing = false
+            runCatching { cancelVibration() }
+        }
+        playing = null // until the vibrate below succeeds
+        vibrate(pattern, true)
+        playing = pattern
+    }
+
+    companion object {
+        @Volatile private var shared: VibrationArbiter? = null
+
+        /** The process's one arbiter: the ringing service's sessions and the editor's preview share it. */
+        fun get(context: Context): VibrationArbiter =
+            shared ?: synchronized(this) { shared ?: forContext(context.applicationContext).also { shared = it } }
+
+        private fun forContext(context: Context): VibrationArbiter {
             val vibrator = context.getSystemService(VibratorManager::class.java).defaultVibrator
+            // Read once: a capability of the hardware, not something that changes while ringing.
+            val amplitudeControl = runCatching { vibrator.hasAmplitudeControl() }.getOrDefault(false)
+            // Here, not in the companion: android.os classes can't initialize in a JVM test.
+            val alarm = VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM)
             return VibrationArbiter(
-                startVibration = {
-                    vibrator.vibrate(
-                        VibrationEffect.createWaveform(PATTERN, 0),
-                        VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM),
-                    )
+                hasVibrator = { vibrator.hasVibrator() },
+                vibrate = { pattern, repeating ->
+                    vibrator.vibrate(vibrationWaveform(pattern, amplitudeControl, repeating).toEffect(), alarm)
                 },
                 cancelVibration = { vibrator.cancel() },
             )
         }
+
+        private fun Waveform.toEffect(): VibrationEffect =
+            if (amplitudes == null) VibrationEffect.createWaveform(timings.toLongArray(), repeat)
+            else VibrationEffect.createWaveform(timings.toLongArray(), amplitudes.toIntArray(), repeat)
     }
 }
 
-/** One instance per [RingingSession]; all instances of a service share one [VibrationArbiter]. */
+/** One instance per [RingingSession]; all instances share the process's [VibrationArbiter]. */
 class SystemAlarmVibration(private val arbiter: VibrationArbiter) : AlarmVibration {
-    override fun start() = arbiter.start(this)
+    override fun start(pattern: VibrationPattern): Boolean = arbiter.start(this, pattern)
     override fun stop() = arbiter.stop(this)
 }

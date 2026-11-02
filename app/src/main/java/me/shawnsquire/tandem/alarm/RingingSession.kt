@@ -22,10 +22,14 @@ import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
+import me.shawnsquire.tandem.schedule.RingOutputs
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.VibrationPattern
+import me.shawnsquire.tandem.schedule.effectiveOutputs
 import me.shawnsquire.tandem.schedule.earlierOccurrenceThatDay
 import me.shawnsquire.tandem.schedule.fallsOnSchedule
 import me.shawnsquire.tandem.schedule.isArmed
+import me.shawnsquire.tandem.schedule.mergedOutputs
 import me.shawnsquire.tandem.schedule.skippedOccurrences
 import me.shawnsquire.tandem.sync.PreFireCheck
 import java.time.Instant
@@ -72,7 +76,9 @@ class RingingSession(
     private var finished = false
     private var ringStarted = false
     private var autoSilence: Job? = null
-    private var vibrationStarted = false
+    /** The pattern this session's vibration is running with; null while it isn't (stopped, failed, no vibrator). */
+    private var vibratingWith: VibrationPattern? = null
+    private var soundStarted = false
     private var silencing = false
 
     /**
@@ -86,6 +92,22 @@ class RingingSession(
     private var surfaceAlarm: Alarm? = null
     /** What the surface plays and shows (sound candidates, notification label); set before its first output. */
     private var surfaceMedia: RingMedia? = null
+
+    /**
+     * What the full surface drives: the ring's [mergedOutputs],
+     * first the own alarm's [effectiveOutputs] (unknown rings in full, I1), then each member change's.
+     * Kept while on the Notify surface or silent, for the full surface or an un-silence to start.
+     */
+    private var outputs: RingOutputs = RingOutputs.UNKNOWN
+    /**
+     * The member whose sound plays (alarm id, and its row, null when unreadable) once a member change
+     * named one; null means the surface's own media. A vibrate-only ring joined by a member with sound
+     * starts that member's.
+     */
+    private var soundFrom: Pair<String, Alarm?>? = null
+    /** The alarm ids (primary first) [outputs] were combined from; see [reconcileOutputs]. */
+    private var outputIds: List<String>? = null
+    private var outputsJob: Job? = null
 
     /** The alarm ids (primary first) the posted label names; null until known. See [relabelIfChanged]. */
     private var labelledIds: List<String>? = null
@@ -147,9 +169,10 @@ class RingingSession(
     private suspend fun fallbackRing(fire: Pair<String, Instant>? = null, snoozeRingId: String? = null) {
         currentCoroutineContext().ensureActive()
         ringStarted = true
-        // Vibration first: sound setup must never delay or prevent it.
-        startVibration("fallback vibration")
-        guarded("fallback sound", Unit) { sound.start(emptyList()) }
+        // Vibration first: sound setup must never delay or prevent it. The alarm is unknown here, so
+        // Pulse and sound whatever its settings (I1); a vibration already running keeps its pattern.
+        if (vibratingWith == null) startVibration("fallback vibration", VibrationPattern.PULSE)
+        guarded("fallback sound", Unit) { sound.start(emptyList()); soundStarted = true }
         // The ring decision is made, so the full-screen intent is fine; no actions without a RingState.
         val notifyId = snoozeRingId ?: "fallback-" + UUID.randomUUID()
         fallbackNotifiedId = notifyId
@@ -165,10 +188,17 @@ class RingingSession(
         guardedNow("fired ledger write") { firedLedger.markRang(alarmId, occurrence) }
     }
 
-    /** Idempotent: the fire path vibrates before claiming the slot, and ring() must not start it again. */
-    private suspend fun startVibration(what: String) {
-        if (vibrationStarted) return
-        guarded(what, Unit) { vibration.start(); vibrationStarted = true }
+    /**
+     * Whether the vibration now runs with [pattern]. Idempotent per pattern: the fire path vibrates
+     * before claiming the slot, and ring() must not start it again; another pattern switches it. False
+     * (no vibrator, or the start threw) makes the caller ring with sound (I1).
+     */
+    private suspend fun startVibration(what: String, pattern: VibrationPattern): Boolean {
+        if (vibratingWith == pattern) return true
+        val started = guarded(what, false) { vibration.start(pattern) }
+        vibratingWith = pattern.takeIf { started }
+        if (!started) log("$what did not start; ringing with sound", null)
+        return started
     }
 
     /** Arms auto-silence once per ring; see [silence]. */
@@ -209,7 +239,8 @@ class RingingSession(
         val wasFull = fullSurface
         guardedNow("sound stop") { sound.stop() }
         guardedNow("vibration stop") { vibration.stop() }
-        vibrationStarted = false
+        vibratingWith = null
+        soundStarted = false
         if (ringId != null) {
             // The dismiss's clear must not end the session before the dismiss is done.
             observeJob?.cancel()
@@ -249,7 +280,7 @@ class RingingSession(
         silencing = false
         currentCoroutineContext().ensureActive()
         if (fullSurface) {
-            startRingOutputs(surfaceMedia?.soundCandidates.orEmpty(), surfaceAlarm)
+            startRingOutputs() // the same outputs as before: a vibrate-only ring stays silent
             // The refusal proves the slot holds this ring, so a claim that landed while silent
             // (never adopted) gets its actions now.
             if (!wasFull || !actionsPosted) showRinging(surfaceAlarm, ringId)
@@ -421,8 +452,11 @@ class RingingSession(
 
         // The ring is decided. Vibrate now: nothing below (lock, disk, audio) may delay it. A Notify
         // link read successfully doesn't vibrate; ring() still starts it if the ring turns out full.
+        // With the alarm's own pattern; none when its vibration is off (ring() then plays sound). A
+        // failed read is unknown: Pulse, and sound (I1).
         currentCoroutineContext().ensureActive()
-        if (!isNotifyLink(alarm)) startVibration("vibration")
+        val early = alarm?.effectiveOutputs() ?: RingOutputs.UNKNOWN
+        if (!isNotifyLink(alarm) && early.vibrationOn) startVibration("vibration", early.vibration)
         // After the vibration: a disk write mustn't delay it. A failed write only uses up a one-shot.
         if (alarm != null && ringsLate(alarm, occurrence, armedZone)) {
             guarded("late ring mark", Unit) { firedLedger.markLate(alarmId, occurrence) }
@@ -466,7 +500,7 @@ class RingingSession(
         }
         // No claim, so ring() rings in full: a Notify fire skipped the early vibration, start it now
         // rather than after the default-ringtone read and the media resolve.
-        if (claim !is Claim.Done) startVibration("vibration")
+        if (claim !is Claim.Done && early.vibrationOn) startVibration("vibration", early.vibration)
         if (claim is Claim.Done && claim.value == SlotClaim.Merged) {
             // The sounding ring's session plays for both, and its auto-silence covers this one too.
             // Recorded so a replay stays quiet. Not markRang: the claim is done, so no late re-check can see it.
@@ -571,7 +605,10 @@ class RingingSession(
         surfaceMedia = media
         fullSurface = !notify
         labelledIds = (fire?.first ?: alarm?.id)?.let { listOf(it) }
-        if (!notify) startRingOutputs(media.soundCandidates, alarm)
+        // Read again on every ring, a snooze resume included: the alarm's settings now, overrides first.
+        outputs = alarm?.effectiveOutputs() ?: RingOutputs.UNKNOWN
+        outputIds = labelledIds
+        if (!notify) startRingOutputs()
         // Marked after the ring has begun, so a process death before this point still gets a boot replay.
         if (fire != null) markRang(fire.first, fire.second)
         // Without a stored RingState, Stop and Snooze would be silently ignored: post no actions.
@@ -606,16 +643,39 @@ class RingingSession(
         resolveRingMedia(alarm, linkedMediaCache, default, null, dispatcher = ioDispatcher, systemAlarmUri = systemAlarmUri)
 
     /**
-     * The Ring surface's outputs. Vibration first: sound setup must never delay or prevent it.
-     * [candidates] were resolved for [primary]. A linked one's, from the real cache, the default
-     * cache or the fallback, already carry the system alarm Uri in the design's order, so the adapter
-     * adds none of its own; an own ring's get the adapter's defaults.
+     * The Ring surface's [outputs], started where not yet running; a running vibration switches only
+     * when the pattern differs. Vibration first: sound setup must never delay or prevent it. A
+     * vibrate-only ring plays no sound at all (no candidates, no system defaults, no bundled tone)
+     * only while its vibration actually runs: with no vibrator, or a start that threw, it rings with
+     * sound (I1). Never stops an output: a member leaving doesn't quiet a ring that is sounding.
      */
-    private suspend fun startRingOutputs(candidates: List<String>, primary: Alarm?) {
-        startVibration("vibration")
+    private suspend fun startRingOutputs() {
+        val out = outputs
+        val vibrating = out.vibrationOn && startVibration("vibration", out.vibration)
+        if (out.soundOn || !vibrating) startSound()
+    }
+
+    /**
+     * Sound from [soundFrom]'s media, else the surface's. A member other than the surface's primary
+     * is resolved here the way [ring] resolves its own. Candidates from a linked alarm (the real
+     * cache, the default cache or the fallback) already carry the system alarm Uri in the design's
+     * order, so the adapter adds none of its own; an own alarm's get the adapter's defaults.
+     */
+    private suspend fun startSound() {
+        if (soundStarted) return
+        val from = soundFrom
+        val (alarm, candidates) = if (from == null || from.first == surfaceAlarm?.id) {
+            surfaceAlarm to surfaceMedia?.soundCandidates.orEmpty()
+        } else {
+            from.second to resolveMedia(from.second, readDefaultRingtone()).soundCandidates
+        }
+        // Rechecked across the resolve: another path may have started it, or the ring ended or went silent.
+        if (soundStarted || finished || silencing) return
+        currentCoroutineContext().ensureActive()
         guarded("sound", Unit) {
-            val ordered = primary?.link != null && runCatching(systemAlarmUri).getOrNull() in candidates
+            val ordered = alarm?.link != null && runCatching(systemAlarmUri).getOrNull() in candidates
             sound.start(candidates, appendSystemDefaults = !ordered)
+            soundStarted = true
         }
     }
 
@@ -625,7 +685,7 @@ class RingingSession(
      */
     private suspend fun ringInFull(primary: Alarm?, ringId: String) {
         // Ringing in full is decided: vibrate before the media resolve, which can take a while (I1).
-        if (!finished && !silencing && !fullSurface) startVibration("vibration")
+        if (!finished && !silencing && !fullSurface && outputs.vibrationOn) startVibration("vibration", outputs.vibration)
         val media = resolveMedia(primary, readDefaultRingtone())
         // Once only: the member watch and a relabel that can't alert may both get here, each across the resolve.
         if (finished || fullSurface) return
@@ -635,7 +695,7 @@ class RingingSession(
         surfaceMedia = media
         if (silencing) return
         currentCoroutineContext().ensureActive()
-        startRingOutputs(media.soundCandidates, primary)
+        startRingOutputs() // the merged outputs as last combined
         showRinging(primary, ringId)
     }
 
@@ -730,6 +790,7 @@ class RingingSession(
                     if (s != null && !ended) {
                         noteMembers(ringId, s.members().toSet())
                         relabelIfChanged(ringId, s)
+                        reconcileOutputs(s)
                     }
                     ended
                 }
@@ -739,6 +800,38 @@ class RingingSession(
                 ok = false
             }
             if (ok) finish()
+        }.also { jobs += it }
+    }
+
+    /**
+     * A merge, promotion or split-out changed who rings ([s]'s alarm ids differ from those [outputs]
+     * came from): reads each member (bounded by [RELABEL_TIMEOUT]; one unread or unreadable counts as
+     * [RingOutputs.UNKNOWN], I1, as in [watchMembers]), combines them with [mergedOutputs] and starts
+     * what the result adds on the full surface: sound from the first member with it on, or vibration
+     * with the result's pattern. An unchanged result changes nothing, so no re-vibrate. On the Notify
+     * surface or while silent the result is only kept, for [ringInFull] or [unsilence]. Latest wins.
+     */
+    private fun reconcileOutputs(s: RingState) {
+        val ids = listOf(s.alarmId) + s.merged.map { it.alarmId }
+        if (ids == outputIds) return
+        outputIds = ids
+        outputsJob?.let { it.cancel(); jobs -= it }
+        outputsJob = scope.launch {
+            val members = arrayOfNulls<Alarm>(ids.size)
+            guarded("member outputs", Unit) {
+                withTimeoutOrNull(RELABEL_TIMEOUT) {
+                    ids.forEachIndexed { i, id ->
+                        // The surface's own row as already read: a failed re-read must not turn its sound on.
+                        members[i] = surfaceAlarm?.takeIf { it.id == id }
+                            ?: guarded("member alarm read", null as Alarm?) { alarmRepository.get(id) }
+                    }
+                } ?: log("member reads timed out; unread members ring in full", null)
+            }
+            val merged = mergedOutputs(members.map { it?.effectiveOutputs() })
+            outputs = merged.outputs
+            soundFrom = merged.soundFrom?.let { ids[it] to members[it] }
+            if (finished || silencing || !fullSurface) return@launch
+            startRingOutputs()
         }.also { jobs += it }
     }
 

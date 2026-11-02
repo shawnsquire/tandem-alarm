@@ -41,6 +41,7 @@ import me.shawnsquire.tandem.schedule.PendingBoth
 import me.shawnsquire.tandem.schedule.RingMember
 import me.shawnsquire.tandem.schedule.RingOrigin
 import me.shawnsquire.tandem.schedule.RingState
+import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.isArmed
 import me.shawnsquire.tandem.schedule.nextOccurrence
 import me.shawnsquire.tandem.sync.PreFireCheck
@@ -78,9 +79,19 @@ class RecordingSound(private val clock: () -> Long) : AlarmSound {
 
 class RecordingVibration : AlarmVibration {
     var starts = 0
+    /** Each start's pattern, in order. */
+    val patterns = mutableListOf<VibrationPattern>()
     var stops = 0
     var events: MutableList<String>? = null
-    override fun start() { starts++; events?.add("vibration") }
+    /** False: a phone without a vibrator. */
+    var hasVibrator = true
+    /** Thrown by every start: a vibrate that fails. */
+    var failure: Throwable? = null
+    override fun start(pattern: VibrationPattern): Boolean {
+        starts++; patterns += pattern; events?.add("vibration")
+        failure?.let { throw it }
+        return hasVibrator
+    }
     override fun stop() { stops++ }
 }
 
@@ -2636,5 +2647,249 @@ class RingingSessionTest {
         h.controller.dismissOccurrence("b", bOccurrence, RingOrigin.REMOTE)
         runCurrent()
         assertEquals(Triple("ring-1", listOf("a"), false), h.notifier.relabels.last())
+    }
+
+    // ---- vibration patterns and the sound switch ----
+
+    private fun outputs(
+        id: String = "a",
+        sound: Boolean = true,
+        vibrate: Boolean = true,
+        pattern: VibrationPattern = VibrationPattern.PULSE,
+        ringtone: String = "content://tone/$id",
+    ) = alarm(id, ringtone = ringtone).copy(soundOn = sound, vibrationOn = vibrate, vibration = pattern)
+
+    @Test fun ringsWithTheAlarmsPattern() = runTest {
+        val h = harness(alarms = listOf(outputs(pattern = VibrationPattern.HEARTBEAT)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.HEARTBEAT), h.vibration.patterns)
+        assertEquals(listOf(listOf("content://tone/a")), h.sound.starts)
+    }
+
+    @Test fun aJoinersOverrideWinsAtRingTime() = runTest {
+        val copied = linkedAs(LinkMode.RING).copy(soundOn = true, vibration = VibrationPattern.HEARTBEAT)
+        val row = copied.copy(link = copied.link!!.copy(overrideVibration = VibrationPattern.RAPID, overrideSoundOn = false))
+        val h = harness(alarms = listOf(row))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.RAPID), h.vibration.patterns)
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+    }
+
+    @Test fun vibrateOnlyPlaysNoSoundAtAll() = runTest {
+        val h = harness(alarms = listOf(outputs(sound = false, pattern = VibrationPattern.SLOW_WAVE)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        // No candidates, no system defaults, no bundled tone: the sound port is never started.
+        assertTrue(h.sound.starts.isEmpty())
+        assertEquals(listOf(VibrationPattern.SLOW_WAVE), h.vibration.patterns)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertEquals(occurrence, h.fired.lastRang("a"))
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(1, h.finished) // auto-silence as usual
+        assertTrue(h.sound.starts.isEmpty())
+    }
+
+    @Test fun vibrateOnlyWithoutAVibratorRingsWithSound() = runTest {
+        val h = harness(alarms = listOf(outputs(sound = false, pattern = VibrationPattern.RAPID)))
+        h.vibration.hasVibrator = false
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("content://tone/a")), h.sound.starts)
+        assertEquals(listOf(true), h.sound.appendsDefaults)
+    }
+
+    @Test fun vibrateOnlyWhoseVibrationThrowsRingsWithSound() = runTest {
+        val h = harness(alarms = listOf(outputs(sound = false, pattern = VibrationPattern.ESCALATING)))
+        h.vibration.failure = IllegalArgumentException("waveform")
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("content://tone/a")), h.sound.starts)
+        assertEquals(listOf("ring-1"), h.notifier.ringing)
+        assertEquals(0, h.finished)
+    }
+
+    @Test fun bothOffRingsWithSoundAndTheAlarmsPattern() = runTest {
+        val h = harness(alarms = listOf(outputs(sound = false, vibrate = false, pattern = VibrationPattern.HEARTBEAT)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("content://tone/a")), h.sound.starts)
+        assertEquals(listOf(VibrationPattern.HEARTBEAT), h.vibration.patterns)
+    }
+
+    @Test fun soundOnlyRingsWithoutVibration() = runTest {
+        val h = harness(alarms = listOf(outputs(vibrate = false)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.vibration.starts)
+    }
+
+    @Test fun fallbackRingKeepsItsSoundAndPulseForAVibrateOnlyAlarm() = runTest {
+        // An unexpected failure before sound (here the armed check) falls back to ringing in full.
+        val h = harness(
+            alarms = listOf(outputs(sound = false, pattern = VibrationPattern.SLOW_WAVE)),
+            isArmed = { throw IllegalStateException("bug") },
+        )
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(listOf(emptyList<String>()), h.sound.starts)
+        assertEquals(listOf(VibrationPattern.PULSE), h.vibration.patterns)
+        assertEquals(1, h.notifier.fallback.size) // the inert fallback notification
+    }
+
+    @Test fun failedAlarmReadRingsWithPulseAndSound() = runTest {
+        val h = harness(alarms = listOf(outputs(sound = false, pattern = VibrationPattern.RAPID)))
+        val failingRepo = object : me.shawnsquire.tandem.data.AlarmRepository by h.repo {
+            override suspend fun get(id: String): Alarm? = throw IllegalStateException("db")
+        }
+        val session = RingingSession(
+            failingRepo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler,
+            h.controller, h.sound, h.vibration, h.notifier, backgroundScope,
+            StandardTestDispatcher(testScheduler), { clockNow }, { "ring-9" }, onFinished = {},
+        )
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.PULSE), h.vibration.patterns)
+        assertEquals(1, h.sound.starts.size)
+    }
+
+    @Test fun earlyVibrationUsesTheAlarmsPattern() = runTest {
+        val h = harness(alarms = listOf(outputs(pattern = VibrationPattern.ESCALATING)))
+        val session = slotSession(h, GatedSlot(h.controller)) // gate never opens
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.ESCALATING), h.vibration.patterns) // before the claim
+        assertTrue(h.sound.starts.isEmpty())
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(listOf(VibrationPattern.ESCALATING), h.vibration.patterns) // not started again
+    }
+
+    @Test fun vibrationOffStartsNoEarlyVibrationButRingsWithSound() = runTest {
+        val h = harness(alarms = listOf(outputs(vibrate = false)))
+        val session = slotSession(h, GatedSlot(h.controller)) // gate never opens
+        session.start("a", occurrence, false, null)
+        runCurrent()
+        assertEquals(0, h.vibration.starts)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.vibration.starts)
+    }
+
+    @Test fun snoozeResumeReadsTheAlarmsSettingsAgain() = runTest {
+        val h = harness(alarms = listOf(outputs(sound = false, pattern = VibrationPattern.RAPID)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        h.controller.snooze(RingOrigin.LOCAL, snoozeEnd)
+        runCurrent()
+        val entry = h.ledger.all().single()
+        h.repo.upsert(outputs(sound = true, pattern = VibrationPattern.HEARTBEAT)) // edited while snoozed
+
+        h.clock = snoozeEnd
+        slotSession(h, h.controller).start("a", snoozeEnd, true, entry.ringId)
+        runCurrent()
+        assertEquals(listOf(listOf("content://tone/a")), h.sound.starts)
+        assertEquals(listOf(VibrationPattern.RAPID, VibrationPattern.HEARTBEAT), h.vibration.patterns)
+    }
+
+    @Test fun unsilenceRestartsAVibrateOnlyRingWithoutSound() = runTest {
+        val a = outputs("a", sound = false, pattern = VibrationPattern.SLOW_WAVE)
+        val b = outputs("b", sound = false, pattern = VibrationPattern.RAPID)
+        val h = harness(alarms = listOf(a, b))
+        val bAt = occurrence.plusSeconds(600)
+        // b's claim lands on the lock just before auto-silence's dismiss, so the ring sounds on for it.
+        val slot = AutoSilenceSlot(h.controller) { ringId, expected ->
+            h.controller.claimFire(RingState("b", "ring-b", h.clock, null, bAt))
+            h.controller.autoSilence(ringId, expected)
+        }
+        slotSession(h, slot).start("a", occurrence, false, null)
+        runCurrent()
+        advanceTimeBy(10.minutes + 1.seconds); runCurrent()
+        assertEquals(0, h.finished)
+        assertTrue(h.vibration.stops >= 1) // it did go still first
+        // Back with the same outputs (the primary's pattern; b's vibrate-only adds no sound).
+        assertEquals(listOf(VibrationPattern.SLOW_WAVE, VibrationPattern.SLOW_WAVE), h.vibration.patterns)
+        assertTrue(h.sound.starts.isEmpty())
+    }
+
+    // ---- merged rings ----
+
+    @Test fun soundMemberMergingIntoAVibrateOnlyRingStartsThatMembersSound() = runTest {
+        val h = harness(alarms = listOf(outputs("a", sound = false, pattern = VibrationPattern.HEARTBEAT), outputs("b")))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertTrue(h.sound.starts.isEmpty())
+        val b = join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(RingMember("b", bOccurrence)), h.rawStore.state.first()!!.merged)
+        // The ring's own session starts b's sound, resolved as b's own ring would.
+        assertEquals(listOf(listOf("content://tone/b")), h.sound.starts)
+        assertEquals(listOf(true), h.sound.appendsDefaults)
+        assertEquals(listOf(VibrationPattern.HEARTBEAT), h.vibration.patterns) // the primary's, not restarted
+        assertTrue(b.sound.starts.isEmpty())
+        assertEquals(1, b.finished)
+    }
+
+    @Test fun vibrateOnlyMemberMergingIntoASoundRingKeepsTheSoundAndAddsItsVibration() = runTest {
+        val h = harness(alarms = listOf(outputs("a", vibrate = false), outputs("b", sound = false, pattern = VibrationPattern.RAPID)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(0, h.vibration.starts)
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(listOf("content://tone/a")), h.sound.starts)
+        assertEquals(0, h.sound.stops)
+        // a's vibration is off, so the first member with vibration on gives the pattern.
+        assertEquals(listOf(VibrationPattern.RAPID), h.vibration.patterns)
+    }
+
+    @Test fun vibratingMemberMergingIntoAVibrationOffRingStartsVibration() = runTest {
+        val h = harness(alarms = listOf(outputs("a", vibrate = false), outputs("b", pattern = VibrationPattern.SLOW_WAVE)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.SLOW_WAVE), h.vibration.patterns)
+        assertEquals(1, h.sound.starts.size) // a's sound, not started again
+    }
+
+    @Test fun memberThatLeavesTheResultAloneChangesNothing() = runTest {
+        val h = harness(alarms = listOf(outputs("a", pattern = VibrationPattern.HEARTBEAT), outputs("b", pattern = VibrationPattern.ESCALATING)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf(VibrationPattern.HEARTBEAT), h.vibration.patterns) // no re-vibrate
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(0, h.vibration.stops)
+    }
+
+    @Test fun unreadableMemberMergingIntoAVibrateOnlyRingStartsSound() = runTest {
+        val h = harness(alarms = listOf(outputs("a", sound = false, pattern = VibrationPattern.RAPID)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(SlotClaim.Merged, h.controller.claimFire(RingState("gone", "ring-B", h.clock, null, bOccurrence)))
+        runCurrent()
+        // Unknown counts as ringing in full (I1): sound, from that member's (default) candidates.
+        assertEquals(1, h.sound.starts.size)
+        assertEquals(listOf(VibrationPattern.RAPID), h.vibration.patterns)
+    }
+
+    @Test fun notifyRingGoingFullAppliesTheMergedOutputs() = runTest {
+        val notify = linkedAs(LinkMode.NOTIFY).copy(soundOn = false, vibration = VibrationPattern.HEARTBEAT)
+        val h = harness(alarms = listOf(notify, outputs("b", sound = false, pattern = VibrationPattern.RAPID)))
+        h.fire(occ = occurrence)
+        runCurrent()
+        assertEquals(0, h.vibration.starts)
+        join(h, "b", bOccurrence)
+        runCurrent()
+        assertEquals(listOf("ring-1"), h.notifier.ringing) // upgraded by the Ring member
+        // Both are vibrate-only: the primary's pattern, and no sound.
+        assertEquals(listOf(VibrationPattern.HEARTBEAT), h.vibration.patterns)
+        assertTrue(h.sound.starts.isEmpty())
     }
 }
