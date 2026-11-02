@@ -136,7 +136,7 @@
     <string name="health_notif_required">Required</string>
     <string name="health_battery_title">Battery optimization</string>
     <string name="health_battery_ok">Not restricted. Sync can run in the background.</string>
-    <string name="health_battery_bad">Android may delay sync and partner commands while the phone is idle.</string>
+    <string name="health_battery_bad">Android may delay sync and partner commands while the phone is idle. In the list that opens, find Tandem Alarm (switch to All apps if needed) and choose Don\'t optimize.</string>
     <string name="health_token_title">Push token</string>
     <string name="health_token_ok">This phone can receive messages from your partner.</string>
     <string name="health_token_bad">No push token yet. Check your connection; it is created when you are online.</string>

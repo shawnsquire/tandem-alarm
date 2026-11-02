@@ -63,7 +63,7 @@ fun HealthRoute(
             when (fix) {
                 HealthFix.EXACT_ALARMS -> startSettingsSafely(context, exactAlarmsIntent(context))
                 HealthFix.FULL_SCREEN_INTENT -> startSettingsSafely(context, fullScreenIntentSettingsIntent(context))
-                HealthFix.BATTERY -> startSettingsSafely(context, batteryIntent(context))
+                HealthFix.BATTERY -> startSettingsSafely(context, batteryIntent())
                 HealthFix.NOTIFICATIONS ->
                     // Permission already held means notifications were switched off in settings; the dialog can't help.
                     if (notificationPermissionGranted(context)) {
