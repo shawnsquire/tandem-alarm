@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -70,6 +71,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -240,13 +242,33 @@ fun AlarmEditScreen(
 
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(stringResource(R.string.edit_repeat), style = MaterialTheme.typography.titleSmall)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                // Equal-weight two-letter chips share one row; at large font scales FlowRow wraps
+                // the overflow instead of clipping. The chip reads as the full day name to TalkBack
+                // (FilterChip still adds the selected state).
+                // https://developer.android.com/develop/ui/compose/accessibility/merging-clearing
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    maxItemsInEachRow = 7,
+                ) {
                     DayOfWeek.entries.forEach { day ->
+                        val fullName = dayName(day)
                         FilterChip(
                             selected = day in state.days,
                             onClick = { onToggleDay(day) },
-                            label = { Text(dayLabel(day), maxLines = 1, softWrap = false) },
-                            modifier = Modifier.weight(1f),
+                            label = {
+                                Text(
+                                    dayLabel(day),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics { contentDescription = fullName },
                         )
                     }
                 }
@@ -415,13 +437,26 @@ private fun InviteSection(state: AlarmEditUiState, locked: Boolean, onInvite: ()
 @Composable
 private fun dayLabel(day: DayOfWeek): String = stringResource(
     when (day) {
-        DayOfWeek.MONDAY -> R.string.edit_day_mon
-        DayOfWeek.TUESDAY -> R.string.edit_day_tue
-        DayOfWeek.WEDNESDAY -> R.string.edit_day_wed
-        DayOfWeek.THURSDAY -> R.string.edit_day_thu
-        DayOfWeek.FRIDAY -> R.string.edit_day_fri
-        DayOfWeek.SATURDAY -> R.string.edit_day_sat
-        DayOfWeek.SUNDAY -> R.string.edit_day_sun
+        DayOfWeek.MONDAY -> R.string.edit_day_mon_short
+        DayOfWeek.TUESDAY -> R.string.edit_day_tue_short
+        DayOfWeek.WEDNESDAY -> R.string.edit_day_wed_short
+        DayOfWeek.THURSDAY -> R.string.edit_day_thu_short
+        DayOfWeek.FRIDAY -> R.string.edit_day_fri_short
+        DayOfWeek.SATURDAY -> R.string.edit_day_sat_short
+        DayOfWeek.SUNDAY -> R.string.edit_day_sun_short
+    },
+)
+
+@Composable
+private fun dayName(day: DayOfWeek): String = stringResource(
+    when (day) {
+        DayOfWeek.MONDAY -> R.string.edit_day_mon_full
+        DayOfWeek.TUESDAY -> R.string.edit_day_tue_full
+        DayOfWeek.WEDNESDAY -> R.string.edit_day_wed_full
+        DayOfWeek.THURSDAY -> R.string.edit_day_thu_full
+        DayOfWeek.FRIDAY -> R.string.edit_day_fri_full
+        DayOfWeek.SATURDAY -> R.string.edit_day_sat_full
+        DayOfWeek.SUNDAY -> R.string.edit_day_sun_full
     },
 )
 
