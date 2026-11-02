@@ -125,4 +125,28 @@ class RingOutputsTest {
     @Test fun noMembersAtAllRingsInFull() {
         assertEquals(MergedOutputs(RingOutputs.UNKNOWN, soundFrom = null), mergedOutputs(emptyList()))
     }
+
+    // ---- ringOutputs: a ring's members' rows ----
+
+    private val notifyLink = own.copy(id = "n", link = link.copy(mode = LinkMode.NOTIFY)) // copied defaults: sound on
+
+    @Test fun notifyLinksDontCountWhenAMemberRings() {
+        val vibrating = own.copy(id = "r", soundOn = false, vibration = VibrationPattern.RAPID)
+        // soundFrom indexes the members as given, not the filtered list.
+        assertEquals(MergedOutputs(RingOutputs(false, true, VibrationPattern.RAPID), soundFrom = null), ringOutputs(listOf(notifyLink, vibrating)))
+        assertEquals(MergedOutputs(RingOutputs(false, true, VibrationPattern.RAPID), soundFrom = null), ringOutputs(listOf(vibrating, notifyLink)))
+        val sounding = own.copy(id = "s")
+        assertEquals(MergedOutputs(RingOutputs(true, true, VibrationPattern.RAPID), soundFrom = 2), ringOutputs(listOf(notifyLink, vibrating, sounding)))
+    }
+
+    @Test fun aRingOfOnlyNotifyLinksRingsInFull() {
+        val quiet = notifyLink.copy(soundOn = false, vibration = VibrationPattern.HEARTBEAT)
+        assertEquals(MergedOutputs(RingOutputs.UNKNOWN, soundFrom = null), ringOutputs(listOf(quiet)))
+        assertEquals(MergedOutputs(RingOutputs.UNKNOWN, soundFrom = null), ringOutputs(listOf(quiet, notifyLink)))
+    }
+
+    @Test fun anUnreadableMemberStillCountsSinceItCouldRing() {
+        assertEquals(MergedOutputs(RingOutputs.UNKNOWN, soundFrom = 1), ringOutputs(listOf(notifyLink, null)))
+        assertEquals(MergedOutputs(RingOutputs.UNKNOWN, soundFrom = 0), ringOutputs(listOf(null)))
+    }
 }

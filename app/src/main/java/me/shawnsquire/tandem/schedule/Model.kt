@@ -130,6 +130,19 @@ fun mergedOutputs(members: List<RingOutputs?>): MergedOutputs {
 }
 
 /**
+ * A ring's outputs from its members' rows in ring order (null: unreadable, which counts as
+ * [RingOutputs.UNKNOWN] since it could be a Ring alarm). A Notify link only notifies, so its own
+ * settings never drive a full ring and it is left out; a ring of Notify links alone rings as unknown,
+ * sound and Pulse, as it always has when its notification can't alert (I1). [MergedOutputs.soundFrom]
+ * indexes [members] as given.
+ */
+fun ringOutputs(members: List<Alarm?>): MergedOutputs {
+    val counted = members.indices.filter { members[it]?.link?.mode != LinkMode.NOTIFY }
+    val merged = mergedOutputs(counted.map { members[it]?.effectiveOutputs() })
+    return merged.copy(soundFrom = merged.soundFrom?.let { counted[it] })
+}
+
+/**
  * The joiner's override else the row's own (or copied) value, for each of sound, vibration and
  * pattern. An alarm that would be silent and still (bad data, or an override combination) rings
  * with both on, so a ring is never missed.

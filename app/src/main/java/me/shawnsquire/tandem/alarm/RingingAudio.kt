@@ -28,7 +28,7 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
     private var run: Run? = null
 
     @Synchronized
-    override fun start(candidates: List<String>, appendSystemDefaults: Boolean) {
+    override fun start(candidates: List<String>, appendSystemDefaults: Boolean, onExhausted: () -> Unit) {
         run?.stop()
         val bundled = bundledToneUri(context)
         val defaults = if (!appendSystemDefaults) emptyList() else listOf(
@@ -37,7 +37,7 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
             RingtoneManager.TYPE_NOTIFICATION,
         ).mapNotNull { runCatching { RingtoneManager.getDefaultUri(it) }.getOrNull()?.toString() }
         val all = candidates + defaults
-        run = Run(context.applicationContext, SoundSequencer(all, bundled)).also { it.begin() }
+        run = Run(context.applicationContext, SoundSequencer(all, bundled), onExhausted).also { it.begin() }
     }
 
     @Synchronized
@@ -47,7 +47,11 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
     }
 
     /** Wires a [SoundSequencer] to MediaPlayer and a Handler. Sequencer and player live on the audio thread. */
-    private class Run(private val context: Context, private val sequencer: SoundSequencer) {
+    private class Run(
+        private val context: Context,
+        private val sequencer: SoundSequencer,
+        private val onExhausted: () -> Unit,
+    ) {
         private val thread = HandlerThread("alarm-audio").also { it.start() }
         private val handler = Handler(thread.looper)
         private var player: MediaPlayer? = null
@@ -83,6 +87,7 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
                 SoundDecision.Exhausted -> {
                     releasePlayer()
                     Log.e(TAG, "no ringtone could be played")
+                    runCatching { onExhausted() }.onFailure { Log.e(TAG, "exhaustion callback failed", it) }
                 }
                 SoundDecision.Prepare, SoundDecision.Ignore -> Unit
             }
