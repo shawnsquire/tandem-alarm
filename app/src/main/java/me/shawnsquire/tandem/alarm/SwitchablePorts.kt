@@ -273,6 +273,8 @@ class SwitchableSettings(
 
     override suspend fun setDefaultWallpaperFrame(f: WallpaperFrame?) = attached().setDefaultWallpaperFrame(f)
 
+    override suspend fun setDefaultWallpaper(path: String?, frame: WallpaperFrame?) = attached().setDefaultWallpaper(path, frame)
+
     override suspend fun setDefaultRingtoneUri(u: String?) {
         attached().setDefaultRingtoneUri(u)
         onChanged()

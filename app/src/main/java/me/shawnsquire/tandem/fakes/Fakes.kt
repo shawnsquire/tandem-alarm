@@ -171,6 +171,10 @@ class FakeSettingsRepository : SettingsRepository {
     override suspend fun setDefaultWallpaperPath(p: String?) { wallpaper.value = p }
     override suspend fun setDefaultRingtoneUri(u: String?) { ringtone.value = u }
     override suspend fun setDefaultWallpaperFrame(f: WallpaperFrame?) { frame.value = f?.sanitized() }
+    override suspend fun setDefaultWallpaper(path: String?, frame: WallpaperFrame?) {
+        wallpaper.value = path
+        this.frame.value = frame?.sanitized()
+    }
 }
 
 class FakeAlarmScheduler : AlarmScheduler {

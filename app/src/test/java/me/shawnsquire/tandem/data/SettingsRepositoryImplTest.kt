@@ -109,6 +109,19 @@ class SettingsRepositoryImplTest {
     }
 
     @Test
+    fun wallpaperAndFrameAreWrittenTogether() = runTest {
+        val r = repo()
+        r.setDefaultWallpaper("/a.jpg", WallpaperFrame(2f, 0.25f, 0.75f))
+        assertEquals("/a.jpg", r.defaultWallpaperPath.first())
+        assertEquals(WallpaperFrame(2f, 0.25f, 0.75f), r.defaultWallpaperFrame.first())
+        r.setDefaultWallpaper("/b.jpg", null)
+        assertEquals("/b.jpg", r.defaultWallpaperPath.first())
+        assertNull(r.defaultWallpaperFrame.first())
+        r.setDefaultWallpaper(null, null)
+        assertNull(r.defaultWallpaperPath.first())
+    }
+
+    @Test
     fun wallpaperFrameIsSanitizedOnReadAndNullUnlessAllPartsAreStored() = runTest {
         val ds = PreferenceDataStoreFactory.create(
             scope = backgroundScope,

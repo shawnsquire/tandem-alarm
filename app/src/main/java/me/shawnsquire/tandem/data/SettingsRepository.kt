@@ -14,4 +14,7 @@ interface SettingsRepository {
     suspend fun setDefaultWallpaperPath(p: String?)
     suspend fun setDefaultRingtoneUri(u: String?)
     suspend fun setDefaultWallpaperFrame(f: WallpaperFrame?)
+
+    /** Sets the default wallpaper and its frame in one write, so a failure never pairs one image with another's frame. */
+    suspend fun setDefaultWallpaper(path: String?, frame: WallpaperFrame?)
 }

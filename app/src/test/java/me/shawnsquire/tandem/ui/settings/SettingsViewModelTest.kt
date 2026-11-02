@@ -34,6 +34,9 @@ class SettingsViewModelTest {
         override suspend fun setDefaultWallpaperPath(p: String?) {
             events += "set-wall:$p"; inner.setDefaultWallpaperPath(p)
         }
+        override suspend fun setDefaultWallpaper(path: String?, frame: WallpaperFrame?) {
+            events += "set-wall:$path"; inner.setDefaultWallpaper(path, frame)
+        }
     }
 
     private class ThrowingPairing(private val error: Exception) : PairingRepository by FakePairingRepository() {

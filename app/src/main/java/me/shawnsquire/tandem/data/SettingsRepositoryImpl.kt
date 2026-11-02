@@ -1,6 +1,7 @@
 package me.shawnsquire.tandem.data
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -45,17 +46,26 @@ class SettingsRepositoryImpl(private val dataStore: DataStore<Preferences>) : Se
     }
 
     override suspend fun setDefaultWallpaperFrame(f: WallpaperFrame?) {
+        dataStore.edit { it.putFrame(f) }
+    }
+
+    override suspend fun setDefaultWallpaper(path: String?, frame: WallpaperFrame?) {
         dataStore.edit {
-            if (f == null) {
-                it.remove(FRAME_ZOOM)
-                it.remove(FRAME_FOCUS_X)
-                it.remove(FRAME_FOCUS_Y)
-            } else {
-                val s = f.sanitized()
-                it[FRAME_ZOOM] = s.zoom
-                it[FRAME_FOCUS_X] = s.focusX
-                it[FRAME_FOCUS_Y] = s.focusY
-            }
+            if (path == null) it.remove(WALLPAPER_PATH) else it[WALLPAPER_PATH] = path
+            it.putFrame(frame)
+        }
+    }
+
+    private fun MutablePreferences.putFrame(f: WallpaperFrame?) {
+        if (f == null) {
+            remove(FRAME_ZOOM)
+            remove(FRAME_FOCUS_X)
+            remove(FRAME_FOCUS_Y)
+        } else {
+            val s = f.sanitized()
+            this[FRAME_ZOOM] = s.zoom
+            this[FRAME_FOCUS_X] = s.focusX
+            this[FRAME_FOCUS_Y] = s.focusY
         }
     }
 

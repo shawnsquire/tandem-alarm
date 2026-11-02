@@ -175,7 +175,7 @@ class SettingsViewModel(
                 } catch (_: Exception) {
                     false
                 }
-                replaceWallpaper(path, keepFrame = same)
+                replaceWallpaper(path, if (same) settings.defaultWallpaperFrame.first() else null)
                 local.update { it.copy(previewRequested = true) }
             } catch (e: CancellationException) {
                 throw e
@@ -189,7 +189,7 @@ class SettingsViewModel(
     }
 
     fun removeWallpaper() {
-        viewModelScope.launch { guarded { replaceWallpaper(null, keepFrame = false) } }
+        viewModelScope.launch { guarded { replaceWallpaper(null, null) } }
     }
 
     /** The preview's Save; the frame belongs to the default image, so without one there is nothing to frame. */
@@ -227,10 +227,9 @@ class SettingsViewModel(
         if (old != null && old != new) deleteRingtoneFile(old)
     }
 
-    private suspend fun replaceWallpaper(new: String?, keepFrame: Boolean) {
+    private suspend fun replaceWallpaper(new: String?, frame: WallpaperFrame?) {
         val old = settings.defaultWallpaperPath.first()
-        settings.setDefaultWallpaperPath(new)
-        if (!keepFrame) settings.setDefaultWallpaperFrame(null)
+        settings.setDefaultWallpaper(new, frame)
         if (old != null && old != new) deleteWallpaperFile(old)
     }
 
