@@ -7,10 +7,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,7 +34,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -242,36 +247,7 @@ fun AlarmEditScreen(
 
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(stringResource(R.string.edit_repeat), style = MaterialTheme.typography.titleSmall)
-                // Equal-weight two-letter chips share one row; at large font scales FlowRow wraps
-                // the overflow instead of clipping. The chip reads as the full day name to TalkBack
-                // (FilterChip still adds the selected state).
-                // https://developer.android.com/develop/ui/compose/accessibility/merging-clearing
-                FlowRow(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    maxItemsInEachRow = 7,
-                ) {
-                    DayOfWeek.entries.forEach { day ->
-                        val fullName = dayName(day)
-                        FilterChip(
-                            selected = day in state.days,
-                            onClick = { onToggleDay(day) },
-                            label = {
-                                Text(
-                                    dayLabel(day),
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics { contentDescription = fullName },
-                        )
-                    }
-                }
+                DayChips(days = state.days, onToggleDay = onToggleDay)
                 Text(
                     formatDays(state.days),
                     style = MaterialTheme.typography.bodyMedium,
@@ -431,6 +407,69 @@ private fun InviteSection(state: AlarmEditUiState, locked: Boolean, onInvite: ()
             EditInvite.Hidden -> Unit
         }
         CommandStatusLine(state.inviteStatus, state.partnerName, onContainer = false)
+    }
+}
+
+/**
+ * Seven equal-width day toggles in one row. The stock FilterChip pads ~16dp a side, which pushes
+ * the row past a 360dp screen; these use 4dp. Width at 360dp: (360 - 32 gutter - 6 * 4 gap) / 7
+ * = ~43dp per toggle, and a two-letter label at labelLarge is ~23dp (~35dp at 1.5x font scale)
+ * plus 8dp padding, so it fits on one line. Each reads to TalkBack as the full day name and
+ * "checked"/"not checked" via the Checkbox role.
+ * https://developer.android.com/develop/ui/compose/accessibility/api-defaults
+ */
+@Composable
+private fun DayChips(days: Set<DayOfWeek>, onToggleDay: (DayOfWeek) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        DayOfWeek.entries.forEach { day ->
+            val selected = day in days
+            val fullName = dayName(day)
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = fullName }
+                    .toggleable(value = selected, role = Role.Checkbox, onValueChange = { onToggleDay(day) }),
+                shape = RoundedCornerShape(50),
+                color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                contentColor = if (selected) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            ) {
+                Box(Modifier.padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        dayLabel(day),
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        softWrap = false,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360)
+@Composable
+private fun DayChips360Preview() {
+    MaterialTheme {
+        Box(Modifier.padding(horizontal = 16.dp)) {
+            DayChips(days = setOf(DayOfWeek.MONDAY, DayOfWeek.THURSDAY, DayOfWeek.SUNDAY), onToggleDay = {})
+        }
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360, fontScale = 1.5f)
+@Composable
+private fun DayChipsLargeFontPreview() {
+    MaterialTheme {
+        Box(Modifier.padding(horizontal = 16.dp)) {
+            DayChips(days = setOf(DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY), onToggleDay = {})
+        }
     }
 }
 
