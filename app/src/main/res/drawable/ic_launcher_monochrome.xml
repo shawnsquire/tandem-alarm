@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Whole drawing sits at 0.64 so the ringing arcs stay inside the 33 dp safe zone of the 36 dp visible mask. They reach about 29.3 dp from the centre (45.8 units x 0.64). -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.64"
+        android:scaleY="0.64">
+        <group
+            android:pivotX="0"
+            android:pivotY="0"
+            android:rotation="-38"
+            android:translateX="37.5"
+            android:translateY="36.5">
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="M -9.5 3 A 9.5 9.5 0 0 1 9.5 3 Z" />
+            <path
+                android:pathData="M -12.56 -4.25 A 14.5 14.5 0 0 1 12.56 -4.25 M -17.75 -7.25 A 20.5 20.5 0 0 1 17.75 -7.25"
+                android:strokeColor="#FFFFFFFF"
+                android:strokeLineCap="round"
+                android:strokeWidth="3" />
+        </group>
+        <group
+            android:pivotX="0"
+            android:pivotY="0"
+            android:rotation="38"
+            android:translateX="70.5"
+            android:translateY="36.5">
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="M -9.5 3 A 9.5 9.5 0 0 1 9.5 3 Z" />
+            <path
+                android:pathData="M -12.56 -4.25 A 14.5 14.5 0 0 1 12.56 -4.25 M -17.75 -7.25 A 20.5 20.5 0 0 1 17.75 -7.25"
+                android:strokeColor="#FFFFFFFF"
+                android:strokeLineCap="round"
+                android:strokeWidth="3" />
+        </group>
+        <path
+            android:pathData="M 35 57 A 19 19 0 1 1 73 57 A 19 19 0 1 1 35 57 Z"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="5" />
+        <path
+            android:pathData="M41 73 L36.5 79 M67 73 L71.5 79"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="4.4" />
+        <path
+            android:pathData="M54 57 V46.5 M54 57 L61.5 61"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="3.8" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M 51.6 57 A 2.4 2.4 0 1 1 56.4 57 A 2.4 2.4 0 1 1 51.6 57 Z" />
+    </group>
+</vector>

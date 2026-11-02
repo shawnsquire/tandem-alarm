@@ -57,7 +57,7 @@ Debug builds reach the host at `10.0.2.2`, the Android emulator's alias for it. 
 Android 17 (API 37) requires the runtime permission `android.permission.ACCESS_LOCAL_NETWORK` for apps targeting it to reach private addresses such as `10.0.2.2`. Debug builds declare it but do not ask for it, so grant it by hand after installing. See the [Android docs](https://developer.android.com/privacy-and-security/local-network-permission). Release builds talk to public Firebase hosts and do not need it.
 
 ```
-adb shell pm grant me.shawnsquire.tandem android.permission.ACCESS_LOCAL_NETWORK
+adb shell pm grant com.kautiontape.tandem android.permission.ACCESS_LOCAL_NETWORK
 ```
 
 ### Android emulator
@@ -72,11 +72,11 @@ emulator -avd tandem37 -no-window -no-audio -no-snapshot -no-boot-anim -memory 2
 
 ### Two installs on one device
 
-The `partner` build type installs as `me.shawnsquire.tandem.partner`, with the same debug and emulator setup, so one device or emulator can play both people. Both show the launcher label "Tandem Alarm".
+The `partner` build type installs as `com.kautiontape.tandem.partner`, with the same debug and emulator setup, so one device or emulator can play both people. Both show the launcher label "Tandem Alarm".
 
 ```
 ./gradlew installDebug installPartner
-adb shell pm grant me.shawnsquire.tandem.partner android.permission.ACCESS_LOCAL_NETWORK
+adb shell pm grant com.kautiontape.tandem.partner android.permission.ACCESS_LOCAL_NETWORK
 ```
 
 ### Instrumented smoke test
@@ -104,26 +104,42 @@ These are one-time steps. Details for the backend are in [docs/deploy.md](docs/d
 
 1. Create a Firebase project. Enable Anonymous Auth, Firestore and Cloud Messaging.
 2. Switch the project to the Blaze plan. Cloud Functions need it. Usage at this scale stays in the free tier; set a $1 budget alert.
-3. Register the Android app `me.shawnsquire.tandem` and download its `google-services.json`, and store the contents only as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. Do not copy it into `app/`: the tracked `app/google-services.json` is the demo config that debug, partner and the emulators use. The release workflow writes the prod file at build time.
+3. Register the Android app `com.kautiontape.tandem` and download its `google-services.json`, and store the contents only as the `GOOGLE_SERVICES_JSON` GitHub Actions secret. Do not copy it into `app/`: the tracked `app/google-services.json` is the demo config that debug, partner and the emulators use. The release workflow writes the prod file at build time.
 4. Create a release keystore once, keep it and its passwords in a password manager, and add them as GitHub Actions secrets (below). Without a stable key, updates will not install over the previous build.
 5. Deploy the rules and functions: `firebase deploy --project prod --only firestore:rules,functions`, run from `firebase/`. The `prod` alias maps to `tandem-alarm` in `firebase/.firebaserc`.
 6. Create the GitHub repo, `shawnsquire/tandem-alarm`.
+7. For Google Play, follow [docs/play.md](docs/play.md).
 
 ## Releases and installing
 
-Pushing a tag that starts with `v` runs `.github/workflows/release.yml`. It builds a signed, minified release and attaches `tandem-<tag>.apk` to a GitHub Release. The version name is the tag without the `v`. The version code is the workflow run number.
+The app id is `com.kautiontape.tandem`. Builds before v0.5.0 were `me.shawnsquire.tandem`, a different app to Android. The Play setup, the data safety answers and the move to the new app are in [docs/play.md](docs/play.md).
+
+**New app: unpair in the old app and uninstall it first.** If both are installed, both ring. The release build also needs `com.kautiontape.tandem` registered in Firebase and in the `GOOGLE_SERVICES_JSON` secret, or it fails.
+
+Pushing a tag that starts with `v` runs `.github/workflows/release.yml`. It builds a signed, minified release and attaches `tandem-<tag>.apk`, `tandem-<tag>.aab` and `tandem-<tag>-mapping.txt` (the R8 mapping) to a GitHub Release, with the annotated tag's message as the release body. When `PLAY_SERVICE_ACCOUNT_JSON` is set, it then uploads the AAB and the mapping to the Play closed-testing track, with the first 500 characters or fewer of the tag message (cut at a paragraph break) as "What's new", so put the most important paragraph first. The version name is the tag without the `v`. The version code is the workflow run number, so push a new tag rather than re-running a failed release: Play rejects a version code it has seen.
 
 Required repository secrets:
 
-- `TANDEM_KEYSTORE_B64`: the `.jks` file, base64-encoded
+- `TANDEM_KEYSTORE_B64`: the `.jks` file, base64-encoded. The same key is Play's app signing key and upload key.
 - `TANDEM_KEYSTORE_PASSWORD`
 - `TANDEM_KEY_ALIAS`
 - `TANDEM_KEY_PASSWORD`
-- `GOOGLE_SERVICES_JSON`: the production `google-services.json` for `me.shawnsquire.tandem`
+- `GOOGLE_SERVICES_JSON`: the production `google-services.json` for `com.kautiontape.tandem`
+
+Optional:
+
+- Secret `PLAY_SERVICE_ACCOUNT_JSON`: the Play upload service account's JSON key. Unset, the workflow skips Play with a notice. Leave it unset until the first release has been uploaded by hand and reviewed.
+- Variable `PLAY_TRACK`: the Play track to upload to. Defaults to `alpha`, Play's default closed-testing track.
 
 To build a signed APK locally, set `TANDEM_KEYSTORE_PATH`, `TANDEM_KEYSTORE_PASSWORD`, `TANDEM_KEY_ALIAS` and `TANDEM_KEY_PASSWORD`, and optionally `TANDEM_VERSION_NAME` and `TANDEM_VERSION_CODE`, then run `./gradlew assembleRelease`.
 
-To install, download the APK from the [Releases page](https://github.com/shawnsquire/tandem-alarm/releases) and open it on the phone. Or add `https://github.com/shawnsquire/tandem-alarm` to [Obtainium](https://obtainium.imranr.dev/), which tracks GitHub Releases and installs new versions. Updates must be signed with the same key as the installed app, or Android refuses them.
+To install, use one of:
+
+- Google Play, closed testing for now: open the opt-in link (`<Play opt-in link>`), then install from the Play Store.
+- The APK from the [Releases page](https://github.com/shawnsquire/tandem-alarm/releases), opened on the phone.
+- [Obtainium](https://obtainium.imranr.dev/), tracking `https://github.com/shawnsquire/tandem-alarm`. It installs new versions from GitHub Releases and ignores the `.aab` (it takes only `.apk`, `.xapk`, `.apkm` and `.apks` assets, [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/services/apk_filter_service.dart#L10-L15)). An entry made for the old app refuses the new id ("Downloaded package ID does not match existing app ID", [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/assets/translations/en.json#L48)): delete the entry, unpair and uninstall the old app, then add the repo again.
+
+Play and GitHub builds are meant to carry the same certificate and update each other; [docs/play.md](docs/play.md) step 2 sets that up and checks it. Updates must be signed with the same key as the installed app, or Android refuses them.
 
 After installing, open Settings, then Health check, and fix anything that is not green (exact alarms, full-screen notifications, notification permission, battery optimization).
 
@@ -138,7 +154,7 @@ Run on both phones. The linked-alarm items need two phones paired with each othe
 - [ ] An alarm rings through Do Not Disturb.
 - [ ] An alarm rings after a reboot without unlocking the phone.
 - [ ] After that reboot and the first unlock, `adb logcat` or the app shows startup completed (USER_UNLOCKED fired after the locked boot) and the periodic sync is scheduled (WorkManager).
-- [ ] After installing an update over the old build, the alarms are still armed (MY_PACKAGE_REPLACED). Check with `adb shell dumpsys alarm | grep me.shawnsquire.tandem`.
+- [ ] After installing an update over the old build, the alarms are still armed (MY_PACKAGE_REPLACED). Check with `adb shell dumpsys alarm | grep com.kautiontape.tandem`.
 - [ ] Skip from the partner while the target phone is dozing: the alarm does not ring.
 - [ ] Stop from the partner while the target phone rings: it goes quiet.
 - [ ] Snooze an alarm, then stop it from the partner: the pending snooze is cancelled.

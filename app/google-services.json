@@ -8,7 +8,7 @@
     {
       "client_info": {
         "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
-        "android_client_info": { "package_name": "me.shawnsquire.tandem" }
+        "android_client_info": { "package_name": "com.kautiontape.tandem" }
       },
       "oauth_client": [],
       "api_key": [ { "current_key": "AIzaSyDemoKeyForEmulatorOnly00000000000" } ],
@@ -17,7 +17,7 @@
     {
       "client_info": {
         "mobilesdk_app_id": "1:000000000000:android:0000000000000001",
-        "android_client_info": { "package_name": "me.shawnsquire.tandem.partner" }
+        "android_client_info": { "package_name": "com.kautiontape.tandem.partner" }
       },
       "oauth_client": [],
       "api_key": [ { "current_key": "AIzaSyDemoKeyForEmulatorOnly00000000000" } ],

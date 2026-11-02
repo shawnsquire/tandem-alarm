@@ -12,16 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "21"
 
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-provider: basic
 
@@ -53,7 +53,8 @@ jobs:
           fi
           echo "TANDEM_KEYSTORE_PATH=$RUNNER_TEMP/tandem.jks" >> "$GITHUB_ENV"
 
-      - name: Build signed release APK
+      # One Gradle run builds both, so one R8 pass gives a mapping.txt that matches the APK and the AAB.
+      - name: Build signed release APK and AAB
         env:
           TANDEM_KEYSTORE_PASSWORD: ${{ secrets.TANDEM_KEYSTORE_PASSWORD }}
           TANDEM_KEY_ALIAS: ${{ secrets.TANDEM_KEY_ALIAS }}
@@ -62,21 +63,107 @@ jobs:
         run: |
           export TANDEM_VERSION_NAME="${GITHUB_REF_NAME#v}"
           export TANDEM_VERSION_CODE="$RUN_NUMBER"
-          ./gradlew --no-daemon assembleRelease
+          ./gradlew --no-daemon assembleRelease bundleRelease
 
-      - name: Verify signature and name the APK
+      # The release key is also Play's app signing key and the upload key, so the AAB must carry the APK's certificate.
+      # jarsigner -verify exits 0 on an unsigned jar, so compare the certificate fingerprints instead.
+      - name: Verify signatures and name the artifacts
         run: |
-          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
-          cp app/build/outputs/apk/release/app-release.apk "tandem-${GITHUB_REF_NAME}.apk"
+          apk=app/build/outputs/apk/release/app-release.apk
+          aab=app/build/outputs/bundle/release/app-release.aab
+          apksigner="$ANDROID_HOME/build-tools/37.0.0/apksigner"
+          "$apksigner" verify "$apk"
+          apk_certs=$("$apksigner" verify --print-certs "$apk")
+          aab_certs=$(keytool -printcert -jarfile "$aab" || true)
+          apk_sha=$(printf '%s\n' "$apk_certs" | sed -n '/certificate SHA-256 digest: /{s/.*digest: //p;q}' | tr -d ': ' | tr 'A-F' 'a-f')
+          aab_sha=$(printf '%s\n' "$aab_certs" | sed -n '/^[[:space:]]*SHA256: /{s/.*SHA256: //p;q}' | tr -d ': ' | tr 'A-F' 'a-f')
+          if [ -z "$apk_sha" ] || [ -z "$aab_sha" ] || [ "$apk_sha" != "$aab_sha" ]; then
+            echo "::error::AAB is not signed with the APK certificate (apk=${apk_sha:-none} aab=${aab_sha:-none})."
+            exit 1
+          fi
+          cp "$apk" "tandem-${GITHUB_REF_NAME}.apk"
+          cp "$aab" "tandem-${GITHUB_REF_NAME}.aab"
+          cp app/build/outputs/mapping/release/mapping.txt "tandem-${GITHUB_REF_NAME}-mapping.txt"
 
-      # Drop the key and Firebase config before any third-party action runs.
+      # Drop the key and Firebase config before any later third-party action runs.
+      # setup-gradle runs inside the build that holds the key, so it is pinned by SHA.
       - name: Remove signing key
         run: rm -f "$RUNNER_TEMP/tandem.jks" app/google-services.json
 
+      # actions/checkout drops the tag annotation, so fetch it (anonymous fetch: the repo is public).
+      # The annotated tag message is the full release body. A lightweight tag falls back to a one-line note.
+      # Play's "What's new" takes at most 500 characters, so cut it at the last paragraph (else line) break within the limit.
+      # This runs no third-party code, so it is fine after the signing key is removed.
+      - name: Write release notes
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          mkdir -p "$RUNNER_TEMP/whatsnew"
+          if [ "$(git for-each-ref --format='%(objecttype)' "refs/tags/$GITHUB_REF_NAME")" = tag ]; then
+            git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" > "$RUNNER_TEMP/tag-message.txt"
+          else
+            : > "$RUNNER_TEMP/tag-message.txt"
+          fi
+          python3 -I -c '
+          import re, sys
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          text = re.split(r"^-----BEGIN (?:PGP|SSH) SIGNATURE-----", text, maxsplit=1, flags=re.M)[0].strip()
+          text = text or "Tandem Alarm " + sys.argv[2]
+          open(sys.argv[3], "w", encoding="utf-8").write(text + "\n")
+          short = text
+          if len(short) > 500:
+              head = short[:501]
+              cut = head.rfind("\n\n")
+              if cut <= 0:
+                  cut = head.rfind("\n")
+              short = head[:cut] if cut > 0 else short[:500]
+          open(sys.argv[4], "w", encoding="utf-8").write(short.rstrip())
+          ' "$RUNNER_TEMP/tag-message.txt" "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/whatsnew/whatsnew-en-US"
+
+      # The GitHub Release publishes first, so it ships even if the Play upload fails.
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: tandem-${{ github.ref_name }}.apk
+          files: |
+            tandem-${{ github.ref_name }}.apk
+            tandem-${{ github.ref_name }}.aab
+            tandem-${{ github.ref_name }}-mapping.txt
+          body_path: ${{ runner.temp }}/release-notes.md
+
+      # Secrets can't be read in `if:`, so gate the Play steps on an output.
+      - name: Check for the Play service account
+        id: play
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PLAY_SERVICE_ACCOUNT_JSON is not set; skipping the Play upload."
+          fi
+
+      - name: Write Play service account
+        if: steps.play.outputs.enabled == 'true'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: printf '%s' "$PLAY_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/play-service-account.json"
+
+      # Track "alpha" is the usual id of Play's default closed-testing track; confirm it and set the PLAY_TRACK variable if it differs.
+      - uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        if: steps.play.outputs.enabled == 'true'
+        with:
+          serviceAccountJson: ${{ runner.temp }}/play-service-account.json
+          packageName: com.kautiontape.tandem
+          releaseFiles: tandem-${{ github.ref_name }}.aab
+          tracks: ${{ vars.PLAY_TRACK || 'alpha' }}
+          status: completed
+          mappingFile: tandem-${{ github.ref_name }}-mapping.txt
+          whatsNewDirectory: ${{ runner.temp }}/whatsnew
+          releaseName: ${{ github.ref_name }}
+
+      - name: Remove Play service account
+        if: always()
+        run: rm -f "$RUNNER_TEMP/play-service-account.json"
 
       - name: Remove signing key (backstop)
         if: always()
-        run: rm -f "$RUNNER_TEMP/tandem.jks" app/google-services.json
+        run: rm -f "$RUNNER_TEMP/tandem.jks" "$RUNNER_TEMP/play-service-account.json" app/google-services.json

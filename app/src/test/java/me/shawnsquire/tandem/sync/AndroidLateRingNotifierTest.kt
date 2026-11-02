@@ -54,6 +54,12 @@ class AndroidLateRingNotifierTest {
         assertTrue(n.contentIntent != null)
     }
 
+    @Test fun `uses the app notification icon`() {
+        grant()
+        notifier.post(prompt)
+        assertEquals(me.shawnsquire.tandem.R.drawable.ic_notification, single().smallIcon.resId)
+    }
+
     @Test fun `same day shows plain times with no day name`() {
         grant()
         notifier.post(prompt)

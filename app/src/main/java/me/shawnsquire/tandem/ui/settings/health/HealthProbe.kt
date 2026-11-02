@@ -49,8 +49,9 @@ fun exactAlarmsIntent(context: Context): Intent =
 fun fullScreenIntentSettingsIntent(context: Context): Intent =
     Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, packageUri(context))
 
-fun batteryIntent(context: Context): Intent =
-    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri(context))
+// Play restricts REQUEST_IGNORE_BATTERY_OPTIMIZATIONS; this list screen needs no permission.
+// https://developer.android.com/training/monitoring-device-state/doze-standby#exemption-cases
+fun batteryIntent(): Intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
 
 fun notificationSettingsIntent(context: Context): Intent =
     Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)

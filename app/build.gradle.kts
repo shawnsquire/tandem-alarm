@@ -14,7 +14,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "me.shawnsquire.tandem"
+        applicationId = "com.kautiontape.tandem"
         minSdk = 33
         targetSdk = 37
         // The release workflow sets these from the tag and run number; local builds use the defaults.

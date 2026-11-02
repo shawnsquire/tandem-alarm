@@ -60,7 +60,7 @@ class AndroidCommandNotifier(private val context: Context) : CommandNotifier {
             PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentText(text)
             .setContentIntent(tap)
             .setAutoCancel(true)
@@ -132,7 +132,7 @@ class AndroidCommandNotifier(private val context: Context) : CommandNotifier {
             PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentText(text)
             .setContentIntent(tap)
             .setAutoCancel(true)
