@@ -17,10 +17,12 @@ class VibrationArbiterTest {
     private var cancels = 0
     private var hasVibrator = true
     private var failNext = false
+    /** Patterns whose waveform the device rejects, every time. */
+    private var failing = emptySet<VibrationPattern>()
     private val arbiter = VibrationArbiter(
         hasVibrator = { hasVibrator },
         vibrate = { p, repeating ->
-            if (failNext) { failNext = false; throw IllegalArgumentException("waveform") }
+            if (failNext || p in failing) { failNext = false; throw IllegalArgumentException("waveform") }
             vibrated += p to repeating
         },
         cancelVibration = { cancels++ },
@@ -169,5 +171,53 @@ class VibrationArbiterTest {
         assertThrows(IllegalArgumentException::class.java) { arbiter.stop(stale) }
         assertEquals(listOf(PULSE to true, PULSE to true), vibrated)
         assertEquals(0, cancels)
+    }
+
+    @Test fun theStopPathsPulseFallbackIsRecordedSoTheFailingPatternIsNotRetried() {
+        val stale = Any()
+        val current = Any()
+        arbiter.start(stale, PULSE)
+        arbiter.start(current, ESCALATING)
+        failing = setOf(ESCALATING)
+        assertThrows(IllegalArgumentException::class.java) { arbiter.stop(stale) }
+        assertEquals(listOf(PULSE to true, PULSE to true), vibrated)
+        // A later owner's start finds Pulse playing for the head: nothing retried, nothing thrown.
+        assertTrue(arbiter.start(Any(), RAPID))
+        assertEquals(listOf(PULSE to true, PULSE to true), vibrated)
+    }
+
+    @Test fun theHeadsPatternFailingInsideAnotherOwnersStartFallsBackToPulseForTheHead() {
+        val head = Any()
+        val other = Any()
+        failing = setOf(ESCALATING)
+        // The head's own start fails: its own session hears it and rings with sound.
+        assertThrows(IllegalArgumentException::class.java) { arbiter.start(head, ESCALATING) }
+        // Replaying the head's pattern in another owner's start fails again: that throw isn't the
+        // caller's. The head's session believes it vibrates, so Pulse plays for it, and the caller vibrates.
+        assertTrue(arbiter.start(other, RAPID))
+        assertEquals(listOf(PULSE to true), vibrated)
+        assertTrue(arbiter.start(other, RAPID)) // recorded: the failing pattern isn't retried
+        assertEquals(listOf(PULSE to true), vibrated)
+        arbiter.stop(head)
+        assertEquals(listOf(PULSE to true, RAPID to true), vibrated)
+        assertEquals(0, cancels)
+    }
+
+    @Test fun anotherOwnersStartStillThrowsWhenEvenPulseFails() {
+        val head = Any()
+        failing = setOf(ESCALATING, PULSE)
+        assertThrows(IllegalArgumentException::class.java) { arbiter.start(head, ESCALATING) }
+        // Nothing vibrates at all, so the caller must hear it and ring with sound (I1).
+        assertThrows(IllegalArgumentException::class.java) { arbiter.start(Any(), RAPID) }
+        assertTrue(vibrated.isEmpty())
+    }
+
+    @Test fun aPreviewThatThrowsReturnsFalseAndLeavesNoPreviewBehind() {
+        failNext = true
+        assertFalse(arbiter.preview(RAPID))
+        arbiter.stopPreview() // nothing to stop
+        assertEquals(0, cancels)
+        assertTrue(arbiter.preview(RAPID))
+        assertEquals(listOf(RAPID to false), vibrated)
     }
 }

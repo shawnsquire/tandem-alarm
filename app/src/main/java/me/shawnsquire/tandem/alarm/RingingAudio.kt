@@ -216,8 +216,9 @@ class MediaPlayerAlarmSound(private val context: Context) : AlarmSound {
  * [`Vibrator.hasVibrator()`](https://developer.android.com/reference/android/os/Vibrator#hasVibrator())
  * says there is no vibrator, and rethrows a vibrate that throws (the owner is recorded first, so its
  * stop still undoes it). Either way the session rings with sound (I1). A failed vibrate is never
- * taken as playing: the next start or stop tries again. When the earliest owner stops and the next
- * one's pattern throws, Pulse plays instead: that owner's session was told it vibrates.
+ * taken as playing: the next start or stop tries again. When an earliest owner's pattern throws on
+ * another caller's behalf (the owner before it stopped, or a later owner started), Pulse plays and
+ * stays that owner's: its session was told it vibrates.
  *
  * [preview] is the editor's: one non-repeating pass, only while no ring owns the vibrator, and a
  * ring's start replaces it. [stopPreview] cancels only a preview, never a ring.
@@ -239,7 +240,8 @@ class VibrationArbiter(
         // Before vibrating: a start that throws is still undone by the owner's stop.
         val i = owners.indexOfFirst { it.first === owner }
         if (i >= 0) owners[i] = owner to pattern else owners += owner to pattern
-        play(owners.first().second)
+        // The caller's own pattern throws to it; replaying an earlier owner's is that owner's failure.
+        if (owners.first().first === owner) play(pattern) else playForHead()
         return true
     }
 
@@ -249,28 +251,28 @@ class VibrationArbiter(
         if (i < 0) return
         owners.removeAt(i)
         if (owners.isNotEmpty()) {
-            val next = owners.first().second
-            try {
-                play(next)
-            } catch (e: Throwable) {
-                // The next owner's session believes it vibrates (its start found another pattern
-                // playing), so it won't ring with sound instead: keep the phone vibrating (I1).
-                if (next != VibrationPattern.PULSE) runCatching { play(VibrationPattern.PULSE) }
-                throw e
-            }
+            playForHead()?.let { throw it } // reported to the stopping session, which only logs it
             return
         }
         playing = null
         cancelVibration()
     }
 
-    /** One pass of [pattern] for the editor. False, playing nothing, while a ring vibrates or with no vibrator. */
+    /**
+     * One pass of [pattern] for the editor. False, playing nothing, while a ring vibrates, with no
+     * vibrator, or when the vibrate throws.
+     */
     @Synchronized
     fun preview(pattern: VibrationPattern): Boolean {
         if (owners.isNotEmpty() || !hasVibrator()) return false
         previewing = true
-        vibrate(pattern, false)
-        return true
+        return try {
+            vibrate(pattern, false)
+            true
+        } catch (e: Throwable) {
+            previewing = false
+            false
+        }
     }
 
     /** Ends a preview early; a no-op once a ring owns the vibrator. */
@@ -279,6 +281,26 @@ class VibrationArbiter(
         if (!previewing || owners.isNotEmpty()) return
         previewing = false
         cancelVibration()
+    }
+
+    /**
+     * Plays the earliest owner's pattern on another caller's behalf (a later owner's start, or an
+     * earlier owner's stop). That owner's session was told it vibrates and won't ring with sound
+     * instead, so a pattern that throws falls back to Pulse, recorded as the owner's so later calls
+     * don't retry it (I1). Returns the failure Pulse covered for; throws only when Pulse fails too,
+     * so the caller learns nothing vibrates.
+     */
+    private fun playForHead(): Throwable? {
+        val (head, pattern) = owners.first()
+        try {
+            play(pattern)
+            return null
+        } catch (e: Throwable) {
+            if (pattern == VibrationPattern.PULSE) throw e
+            play(VibrationPattern.PULSE)
+            owners[0] = head to VibrationPattern.PULSE
+            return e
+        }
     }
 
     private fun play(pattern: VibrationPattern) {
