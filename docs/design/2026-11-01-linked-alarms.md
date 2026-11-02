@@ -218,6 +218,7 @@ These were settled while the units were built and integrated. Where one differs 
   - Sound plays when any member has it on, from the first member in ring order with sound. No member with sound means no sound.
   - Vibration uses the primary's pattern when the primary's vibration is on, else the first member's whose vibration is on. It is off only when every member's is off.
   - A member that can't be read counts as sound plus Pulse (I1).
+  - Notify-link members don't count while any member rings in Ring mode (`ringOutputs`), since a Notify link only notifies and its copied sound would otherwise loop a ringtone. A Notify ring that goes full rings with the Ring members' outputs. A ring of only Notify links that can't alert rings with sound plus Pulse, as before.
   - The outputs change only when this result changes. A merge that leaves it the same restarts nothing, so there is no re-vibrate and no second sound. A merge that changes it starts the missing output, so a sound member joining a vibrate-only ring starts the sound, and a vibration member joining a sound-only ring starts the vibration. A change that turns an output off stops it.
   - The Notify surface and a silenced ring don't apply the result until the ring is on the full surface.
   - Known limitation: when a member with vibration on merges into a ring whose members all have vibration off, there can be a short gap with no vibration. The merging alarm's own early vibration ends before the primary takes the pattern over. Sound plays throughout.
