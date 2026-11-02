@@ -2910,7 +2910,7 @@ class RingingSessionTest {
             { "ring-1" }, onFinished = {},
         ).start("a", occurrence, false, null)
         runCurrent()
-        // Early, then again in ring(): each failed start falls back to Pulse (a no-op on the arbiter the second time).
+        // Early, then again in ring(): each start of the failing pattern is followed by a Pulse start.
         assertEquals(listOf(VibrationPattern.ESCALATING, VibrationPattern.PULSE, VibrationPattern.ESCALATING, VibrationPattern.PULSE), failing.patterns)
         assertEquals(1, h.sound.starts.size)
     }
@@ -2964,5 +2964,106 @@ class RingingSessionTest {
         assertEquals(listOf(VibrationPattern.PULSE, VibrationPattern.ESCALATING), h.vibration.patterns)
         assertEquals(1, h.sound.starts.size) // b has sound too: a's tone plays on
         assertEquals(0, h.sound.stops)
+    }
+
+    // ---- sessions sharing the real VibrationArbiter: what the vibrator itself sees ----
+
+    /** The phone's one vibrator: every vibrate ("vibrate:PATTERN") and cancel, in order. */
+    private class Device {
+        val log = mutableListOf<String>()
+        val arbiter = VibrationArbiter(
+            hasVibrator = { true },
+            vibrate = { p, repeating -> log += "vibrate:$p" + if (repeating) "" else " once" },
+            cancelVibration = { log += "cancel" },
+        )
+    }
+
+    /** A session on [h]'s stores whose vibration goes through [device]'s arbiter, as the service wires it. */
+    private fun TestScope.deviceSession(
+        h: Harness,
+        device: Device,
+        ringId: String,
+        slot: RingSlot = h.controller,
+        sound: RecordingSound = RecordingSound { currentTime },
+        onFinished: () -> Unit = {},
+    ) = RingingSession(
+        h.repo, h.store, FakeSettingsRepository(), LambdaPreFire { true }, h.scheduler, slot,
+        sound, SystemAlarmVibration(device.arbiter), h.notifier, backgroundScope,
+        StandardTestDispatcher(testScheduler), { h.clock }, { ringId },
+        firedLedger = h.fired, liveRings = h.live, onFinished = onFinished,
+    )
+
+    @Test fun device_aMergingFiresEarlyVibrationAndFinishLeaveThePrimarysPattern() = runTest {
+        val h = harness(alarms = listOf(outputs("a", pattern = VibrationPattern.HEARTBEAT), outputs("b", pattern = VibrationPattern.RAPID)))
+        val device = Device()
+        var aFinished = 0
+        deviceSession(h, device, "ring-1", onFinished = { aFinished++ }).start("a", occurrence, false, null, TEST_ZONE)
+        runCurrent()
+        var bFinished = 0
+        deviceSession(h, device, "ring-2", onFinished = { bFinished++ }).start("b", bOccurrence, false, null, TEST_ZONE)
+        runCurrent()
+        assertEquals(listOf(RingMember("b", bOccurrence)), h.rawStore.state.first()!!.merged)
+        assertEquals(1, bFinished) // merged, played nothing, and its share of the vibration ended
+        // No switch to b's pattern and no cancel: the primary's keeps playing.
+        assertEquals(listOf("vibrate:HEARTBEAT"), device.log)
+
+        h.controller.dismiss("ring-1")
+        runCurrent()
+        assertEquals(1, aFinished)
+        assertEquals(listOf("vibrate:HEARTBEAT", "cancel"), device.log)
+    }
+
+    @Test fun device_aVibrationOffPrimaryAdoptsTheMergingFiresPattern() = runTest {
+        val h = harness(alarms = listOf(outputs("a", vibrate = false), outputs("b", sound = false, pattern = VibrationPattern.RAPID)))
+        val device = Device()
+        val aSound = RecordingSound { currentTime }
+        deviceSession(h, device, "ring-1", sound = aSound).start("a", occurrence, false, null, TEST_ZONE)
+        runCurrent()
+        assertTrue(device.log.isEmpty())
+        deviceSession(h, device, "ring-2").start("b", bOccurrence, false, null, TEST_ZONE)
+        runCurrent()
+        // b's early vibration ends with b before a's session has read b, so the vibrator pauses for
+        // that read before a's session starts b's pattern. Never a silent ring: a's sound plays throughout.
+        assertEquals(listOf("vibrate:RAPID", "cancel", "vibrate:RAPID"), device.log)
+        assertEquals(1, aSound.starts.size)
+        assertEquals(0, aSound.stops)
+    }
+
+    /**
+     * [first] rings normally; [second] fires while a stuck lock holds its claim, so it vibrates early
+     * and waits. Then [first]'s ring is replaced in the slot (as a supersede writes it) and its session
+     * stops late. Returns [second]'s sound.
+     */
+    private suspend fun TestScope.supersededWhileAnotherVibrates(h: Harness, device: Device, first: String, second: String): RecordingSound {
+        var firstFinished = 0
+        deviceSession(h, device, "ring-1", onFinished = { firstFinished++ }).start(first, occurrence, false, null, TEST_ZONE)
+        runCurrent()
+        val secondSound = RecordingSound { currentTime }
+        deviceSession(h, device, "ring-2", slot = GatedSlot(h.controller), sound = secondSound).start(second, bOccurrence, false, null, TEST_ZONE)
+        runCurrent()
+        h.rawStore.set(RingState("x", "ring-X", h.clock, null, occurrence))
+        runCurrent()
+        assertEquals(1, firstFinished)
+        return secondSound
+    }
+
+    @Test fun device_aSupersededSessionsLateStopDoesNotCancelTheLiveRing() = runTest {
+        val h = harness(alarms = listOf(outputs("a"), outputs("b")))
+        val device = Device()
+        supersededWhileAnotherVibrates(h, device, "a", "b")
+        assertEquals(listOf("vibrate:PULSE"), device.log) // the same pattern: never cancelled or restarted
+        advanceTimeBy(2_001); runCurrent() // b's claim times out; it rings in full
+        assertEquals(listOf("vibrate:PULSE"), device.log)
+    }
+
+    @Test fun device_theNextOwnersPatternTakesOverWithoutTheVibratorGoingIdle() = runTest {
+        val h = harness(alarms = listOf(outputs("a", pattern = VibrationPattern.HEARTBEAT), outputs("b", sound = false, pattern = VibrationPattern.RAPID)))
+        val device = Device()
+        val bSound = supersededWhileAnotherVibrates(h, device, "a", "b")
+        // Straight from a's pattern to b's: no cancel in between, so the vibrate-only b is never still.
+        assertEquals(listOf("vibrate:HEARTBEAT", "vibrate:RAPID"), device.log)
+        advanceTimeBy(2_001); runCurrent()
+        assertEquals(listOf("vibrate:HEARTBEAT", "vibrate:RAPID"), device.log)
+        assertTrue(bSound.starts.isEmpty()) // vibrating, so it plays no sound
     }
 }
