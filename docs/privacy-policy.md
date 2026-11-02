@@ -9,8 +9,8 @@ and skip, turn off or stop them. This policy describes the data the app handles.
 ## What stays on your phone
 
 Your alarms, settings and sounds live on your phone. If you never pair, nothing about
-them is sent anywhere. The three exceptions in the next section happen on every start,
-paired or not.
+them is sent anywhere. Nothing else is sent until you show a pairing code or enter one.
+The three items under "On every start" in the next section are sent regardless.
 
 ## What leaves your phone, and why
 
@@ -24,11 +24,12 @@ paired or not.
 - **Firebase installation ID.** Firebase Cloud Messaging uses Firebase Installations,
   which creates a random ID for this install.
 
-**Only while paired** (pairing is optional):
+**Only once you show a pairing code or pair** (pairing is optional):
 
-- **Pairing records.** Your anonymous ID, the ID of the household you share with the
-  other phone, and the two members' IDs. A pairing code lasts 10 minutes and holds the
-  household ID, your ID and its expiry time.
+- **Pairing records.** Showing a pairing code creates a household record (the member IDs
+  and a creation time), a user record that holds the household ID, and the code itself,
+  which lasts 10 minutes and holds the household ID, your ID and its expiry time. Joining
+  the other person's code adds you to their household.
 - **Display name.** The name set in Settings. If none is set, it is the phone's model
   name. The paired phone shows it.
 - **Alarms.** For each of your alarms: label, time, days, on or off, next ring time,
@@ -54,7 +55,7 @@ deleted until you unpair.
 
 ## Who can see it
 
-- **The paired phone.** Everything in the "only while paired" list above. Nobody else
+- **The paired phone.** Everything in the list above that starts at pairing. Nobody else
   using the app can see it.
 - **Google Firebase.** The app stores and delivers this data with Firebase (Cloud
   Firestore, Cloud Storage, Cloud Functions, Cloud Messaging, Authentication), as a
@@ -103,7 +104,8 @@ some of it can stay behind. Email me (below) and I will delete it.
   delete them.
 - Server logs, for up to 30 days.
 - Records from a pairing code that was shown but never used. Showing a code creates a
-  one-member household and a user record (member ID and creation time only). Until two
+  one-member household record (your member ID and a creation time) and a user record
+  (the household ID only). Until two
   phones are paired the app offers no Unpair, so these stay. If you later join the other
   person's code, they are deleted.
 
