@@ -256,7 +256,7 @@ class BackupImporterTest {
         val repo = FakeAlarmRepository(emptyList())
         val bytes = backup(listOf(alarmJson(ringtone = file(rPath))), media = arrayOf(rPath to ByteArray(2000)))
         val r = applyTo(importer(maxMedia = 1000), bytes, repo)
-        assertEquals(ImportResult(1, 1), r)
+        assertEquals(ImportResult(1, 1, listOf(LostSound("A", 7, 5))), r)
         assertNull(repo.alarms.first().single().ringtoneUri)
         assertTrue(ringtones.listFiles().orEmpty().isEmpty())
         stagingEmpty()
@@ -319,7 +319,7 @@ class BackupImporterTest {
             alarmJson("bad", ringtone = JSONObject().put("uri", bad)),
         ))
         val r = applyTo(importer(canOpen = { it == ok }), bytes, repo)
-        assertEquals(ImportResult(2, 1), r)
+        assertEquals(ImportResult(2, 1, listOf(LostSound("bad", 7, 5))), r)
         val (a, b) = repo.alarms.first()
         assertEquals(ok, a.ringtoneUri)
         assertNull(b.ringtoneUri)
@@ -488,6 +488,28 @@ class BackupImporterTest {
         val r = applyTo(importer(), backup(listOf(alarmJson())), repo)
         assertNull(repo.alarms.first().single().ringtoneUri)
         assertEquals(0, r.missingMedia)
+        assertTrue(r.soundsLost.isEmpty())
+        assertFalse(r.defaultSoundLost)
+    }
+
+    @Test fun lostWallpaperIsMissingMediaButNotALostSound() = runTest {
+        val bytes = backup(listOf(alarmJson(wallpaper = wall(wPath))), media = arrayOf(wPath to ByteArray(2000)))
+        val r = applyTo(importer(maxMedia = 1000), bytes)
+        assertEquals(ImportResult(1, 1), r)
+    }
+
+    @Test fun lostDefaultSoundIsReported() = runTest {
+        val uri = { s: String -> JSONObject().put("snoozeMinutes", 12).put("ringtone", JSONObject().put("uri", s)) }
+        val bad = applyTo(importer(canOpen = { false }), backup(emptyList(), uri("content://media/9")))
+        assertEquals(ImportResult(0, 1, emptyList(), true), bad)
+        val ok = applyTo(importer(canOpen = { true }), backup(emptyList(), uri("content://media/9")))
+        assertEquals(ImportResult(0, 0), ok)
+        val dropped = applyTo(
+            importer(maxMedia = 1000),
+            backup(emptyList(), JSONObject().put("snoozeMinutes", 12).put("ringtone", file(rPath2)), rPath2 to ByteArray(2000)),
+        )
+        assertEquals(ImportResult(0, 1, emptyList(), true), dropped)
+        assertEquals(ImportResult(0, 0), applyTo(importer(), backup(emptyList())))
     }
 
     @Test fun importedAlarmIsArmedInAlarmManager() = runTest {

@@ -39,7 +39,19 @@ class StagedBackup internal constructor(
     }
 }
 
-data class ImportResult(val alarms: Int, val missingMedia: Int)
+/** An imported alarm whose backup named a sound that didn't come over, so it now uses the default sound. */
+data class LostSound(val label: String, val hour: Int, val minute: Int)
+
+/**
+ * [missingMedia] counts sounds and pictures that didn't come over. [soundsLost] names the alarms whose sound
+ * didn't, and [defaultSoundLost] says the same of the settings' default sound.
+ */
+data class ImportResult(
+    val alarms: Int,
+    val missingMedia: Int,
+    val soundsLost: List<LostSound> = emptyList(),
+    val defaultSoundLost: Boolean = false,
+)
 
 /**
  * Reads a backup zip and applies it. Nothing here depends on `ui/`: the caller passes alarm writes in.
@@ -175,11 +187,15 @@ class BackupImporter(
         val newDefaults = mutableListOf<File>()
         try {
             var missing = 0
+            val soundsLost = mutableListOf<LostSound>()
             for (b in staged.manifest.alarms) {
                 val copies = mutableListOf<File>()
                 try {
                     val ring = resolveSound(staged, b.ringtone, copies)
-                    if (b.ringtone != null && ring == null) missing++
+                    if (b.ringtone != null && ring == null) {
+                        missing++
+                        soundsLost += LostSound(b.label, b.hour, b.minute)
+                    }
                     val wall = resolveWallpaper(staged, b.wallpaper, copies)
                     if (b.wallpaper != null && wall == null) missing++
                     val alarm = Alarm(
@@ -211,7 +227,8 @@ class BackupImporter(
             val oldName = displayName()
             val defaults = newDefaults
             val ring = resolveSound(staged, s.ringtone, defaults)
-            if (s.ringtone != null && ring == null) missing++
+            val defaultSoundLost = s.ringtone != null && ring == null
+            if (defaultSoundLost) missing++
             val wall = resolveWallpaper(staged, s.wallpaper, defaults)
             if (s.wallpaper != null && wall == null) missing++
             try {
@@ -232,7 +249,7 @@ class BackupImporter(
 
             if (oldRingtone != null && oldRingtone != ring) deleteIn(ringtonesDir, oldRingtone)
             if (oldWallpaper != null && oldWallpaper != wall) deleteIn(wallpapersDir, oldWallpaper)
-            return ImportResult(added.size, missing)
+            return ImportResult(added.size, missing, soundsLost, defaultSoundLost)
         } catch (t: Throwable) {
             withContext(NonCancellable) {
                 for ((alarm, files) in added.asReversed()) {

@@ -12,6 +12,7 @@ import androidx.lifecycle.ViewModelStore
 import me.shawnsquire.tandem.backup.BackupRejected
 import me.shawnsquire.tandem.backup.ExportResult
 import me.shawnsquire.tandem.backup.ImportResult
+import me.shawnsquire.tandem.backup.LostSound
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
@@ -393,6 +394,34 @@ class SettingsViewModelTest {
         assertEquals(SettingsNotice.Imported(2, 1), env.vm.state.value.notice)
         assertNull(env.vm.state.value.importConfirm)
         assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun lostSoundsOpenTheRepickDialogAndRepickShownClearsIt() = runTest {
+        val env = Env(); collect(env)
+        val lost = listOf(LostSound("Work", 6, 30), LostSound("", 8, 15))
+        env.applyBackup = { ImportResult(3, 2, lost, defaultSoundLost = true) }
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        env.vm.confirmImport()
+        assertEquals(SoundsToRepick(lost, true), env.vm.state.value.soundsToRepick)
+        assertEquals(SettingsNotice.Imported(3, 2, lost, true), env.vm.state.value.notice)
+        env.vm.repickShown()
+        assertNull(env.vm.state.value.soundsToRepick)
+    }
+
+    @Test fun onlyALostDefaultSoundAlsoOpensTheDialog() = runTest {
+        val env = Env(); collect(env)
+        env.applyBackup = { ImportResult(0, 1, emptyList(), defaultSoundLost = true) }
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        env.vm.confirmImport()
+        assertEquals(SoundsToRepick(emptyList(), true), env.vm.state.value.soundsToRepick)
+    }
+
+    @Test fun anImportWithNoLostSoundsDoesNotOpenTheDialog() = runTest {
+        val env = Env(); collect(env)
+        env.applyBackup = { ImportResult(2, 1) }
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        env.vm.confirmImport()
+        assertNull(env.vm.state.value.soundsToRepick)
     }
 
     @Test fun anApplyFailureShowsTheApplyError() = runTest {

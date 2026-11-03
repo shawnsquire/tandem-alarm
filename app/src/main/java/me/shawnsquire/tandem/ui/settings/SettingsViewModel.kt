@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import me.shawnsquire.tandem.backup.BackupRejected
 import me.shawnsquire.tandem.backup.ExportResult
 import me.shawnsquire.tandem.backup.ImportResult
+import me.shawnsquire.tandem.backup.LostSound
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.PairingException
@@ -43,8 +44,16 @@ sealed interface SettingsError {
 /** A success the screen reports once, then clears with [SettingsViewModel.noticeShown]. */
 sealed interface SettingsNotice {
     data class Exported(val alarms: Int, val missingMedia: Int) : SettingsNotice
-    data class Imported(val alarms: Int, val missingMedia: Int) : SettingsNotice
+    data class Imported(
+        val alarms: Int,
+        val missingMedia: Int,
+        val soundsLost: List<LostSound> = emptyList(),
+        val defaultSoundLost: Boolean = false,
+    ) : SettingsNotice
 }
+
+/** Sounds the user must pick again after an import; the screen clears it with [SettingsViewModel.repickShown]. */
+data class SoundsToRepick(val alarms: List<LostSound>, val defaultLost: Boolean)
 
 data class SettingsUiState(
     val snoozeMinutes: Int = 10,
@@ -65,6 +74,7 @@ data class SettingsUiState(
     val importConfirm: Int? = null,
     val error: SettingsError? = null,
     val notice: SettingsNotice? = null,
+    val soundsToRepick: SoundsToRepick? = null,
 )
 
 /** A read, validated backup waiting for the user's OK. */
@@ -97,6 +107,7 @@ class SettingsViewModel(
         val importConfirm: Int? = null,
         val error: SettingsError? = null,
         val notice: SettingsNotice? = null,
+        val soundsToRepick: SoundsToRepick? = null,
     )
 
     private var pendingImport: PendingImport? = null
@@ -135,6 +146,7 @@ class SettingsViewModel(
             importConfirm = loc.importConfirm,
             error = loc.error,
             notice = loc.notice,
+            soundsToRepick = loc.soundsToRepick,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
@@ -229,7 +241,18 @@ class SettingsViewModel(
             local.update { it.copy(importConfirm = null, busy = true) }
             try {
                 val result = pending.apply()
-                local.update { it.copy(notice = SettingsNotice.Imported(result.alarms, result.missingMedia)) }
+                local.update {
+                    it.copy(
+                        notice = SettingsNotice.Imported(
+                            result.alarms, result.missingMedia, result.soundsLost, result.defaultSoundLost,
+                        ),
+                        soundsToRepick = if (result.soundsLost.isNotEmpty() || result.defaultSoundLost) {
+                            SoundsToRepick(result.soundsLost, result.defaultSoundLost)
+                        } else {
+                            null
+                        },
+                    )
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -258,6 +281,8 @@ class SettingsViewModel(
     }
 
     fun noticeShown() = local.update { it.copy(notice = null) }
+
+    fun repickShown() = local.update { it.copy(soundsToRepick = null) }
 
     fun resetRingtone() {
         viewModelScope.launch { guarded { replaceRingtone(null) } }

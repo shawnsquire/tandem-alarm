@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.ui.settings
 
+import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,6 +59,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.backup.BackupRejected
+import me.shawnsquire.tandem.ui.amPm
+import me.shawnsquire.tandem.ui.formatClock
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
 import me.shawnsquire.tandem.schedule.TextPosition
@@ -111,6 +114,7 @@ fun SettingsRoute(
         onErrorShown = viewModel::dismissError,
         onExport = { exportLauncher.launch("tandem-backup-${LocalDate.now()}.zip") },
         onNoticeShown = viewModel::noticeShown,
+        onRepickShown = viewModel::repickShown,
         // Some providers report a zip as octet-stream.
         onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
         onConfirmImport = viewModel::confirmImport,
@@ -138,6 +142,7 @@ fun SettingsScreen(
     onPreviewRequestHandled: () -> Unit = {},
     onExport: () -> Unit = {},
     onNoticeShown: () -> Unit = {},
+    onRepickShown: () -> Unit = {},
     onImport: () -> Unit = {},
     onConfirmImport: () -> Unit = {},
     onCancelImport: () -> Unit = {},
@@ -365,6 +370,33 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = onCancelImport) { Text(stringResource(R.string.settings_cancel)) }
+            },
+        )
+    }
+
+    state.soundsToRepick?.let { repick ->
+        val is24Hour = DateFormat.is24HourFormat(LocalContext.current)
+        val lines = repick.alarms.map { a ->
+            a.label.ifBlank {
+                val time = formatClock(a.hour, a.minute, is24Hour) + (amPm(a.hour, is24Hour)?.let { " $it" } ?: "")
+                stringResource(R.string.settings_repick_time_alarm, time)
+            }
+        }
+        AlertDialog(
+            onDismissRequest = onRepickShown,
+            title = { Text(stringResource(R.string.settings_repick_title)) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (lines.isNotEmpty()) {
+                        Text(stringResource(R.string.settings_repick_intro))
+                        lines.forEach { Text(it) }
+                    }
+                    if (repick.defaultLost) Text(stringResource(R.string.settings_repick_default))
+                    Text(stringResource(R.string.settings_repick_outro))
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onRepickShown) { Text(stringResource(R.string.settings_repick_ok)) }
             },
         )
     }

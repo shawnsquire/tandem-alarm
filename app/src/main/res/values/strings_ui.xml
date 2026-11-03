@@ -155,6 +155,12 @@
         <item quantity="one">%d sound or picture couldn\'t be restored, so the default is used.</item>
         <item quantity="other">%d sounds or pictures couldn\'t be restored, so the defaults are used.</item>
     </plurals>
+    <string name="settings_repick_title">Pick these sounds again</string>
+    <string name="settings_repick_intro">These alarms now use the default sound, because their sound didn\'t come over:</string>
+    <string name="settings_repick_time_alarm">%1$s alarm</string>
+    <string name="settings_repick_default">Your default sound in Settings didn\'t come over either.</string>
+    <string name="settings_repick_outro">Open each alarm and pick its sound again.</string>
+    <string name="settings_repick_ok">OK</string>
 
     <string name="health_fix">Fix</string>
     <string name="health_status_ok">OK</string>
