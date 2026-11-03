@@ -160,13 +160,15 @@ class BackupImporter(
 
     /**
      * Adds the alarms with fresh ids and replaces the settings. Always discards [staged].
-     * If anything fails, the alarms added so far and every copied file are removed before rethrowing.
+     * If anything fails, the settings are put back and the alarms added so far are removed with their files
+     * before rethrowing. [displayName] reads the stored name so it can be restored.
      */
     suspend fun apply(
         staged: StagedBackup,
         addAlarm: suspend (Alarm) -> Unit,
         deleteAlarm: suspend (String) -> Unit,
         settings: SettingsRepository,
+        displayName: suspend () -> String?,
         setDisplayName: suspend (String?) -> Unit,
     ): ImportResult {
         val added = mutableListOf<Pair<Alarm, List<File>>>()
@@ -195,23 +197,38 @@ class BackupImporter(
                     added += alarm to copies
                     addAlarm(alarm)
                 } catch (t: Throwable) {
-                    copies.forEach { it.delete() }
+                    // Once recorded in `added`, the rollback decides, because the alarm may be stored.
+                    if (added.none { it.second === copies }) copies.forEach { it.delete() }
                     throw t
                 }
             }
 
             val s = staged.manifest.settings
+            val oldSnooze = settings.snoozeMinutes.first()
             val oldRingtone = settings.defaultRingtoneUri.first()
             val oldWallpaper = settings.defaultWallpaperPath.first()
+            val oldFrame = settings.defaultWallpaperFrame.first()
+            val oldName = displayName()
             val defaults = newDefaults
             val ring = resolveSound(staged, s.ringtone, defaults)
             if (s.ringtone != null && ring == null) missing++
             val wall = resolveWallpaper(staged, s.wallpaper, defaults)
             if (s.wallpaper != null && wall == null) missing++
-            settings.setSnoozeMinutes(s.snoozeMinutes)
-            settings.setDefaultRingtoneUri(ring)
-            settings.setDefaultWallpaper(wall, if (wall != null) s.wallpaper?.frame else null)
-            setDisplayName(s.displayName)
+            try {
+                settings.setSnoozeMinutes(s.snoozeMinutes)
+                settings.setDefaultRingtoneUri(ring)
+                settings.setDefaultWallpaper(wall, if (wall != null) s.wallpaper?.frame else null)
+                setDisplayName(s.displayName)
+            } catch (t: Throwable) {
+                // The old default files are still on disk, so the restored values point at real files.
+                withContext(NonCancellable) {
+                    try { settings.setSnoozeMinutes(oldSnooze) } catch (_: Throwable) { /* best effort */ }
+                    try { settings.setDefaultRingtoneUri(oldRingtone) } catch (_: Throwable) { /* best effort */ }
+                    try { settings.setDefaultWallpaper(oldWallpaper, oldFrame) } catch (_: Throwable) { /* best effort */ }
+                    try { setDisplayName(oldName) } catch (_: Throwable) { /* best effort */ }
+                }
+                throw t
+            }
 
             if (oldRingtone != null && oldRingtone != ring) deleteIn(ringtonesDir, oldRingtone)
             if (oldWallpaper != null && oldWallpaper != wall) deleteIn(wallpapersDir, oldWallpaper)
@@ -219,8 +236,11 @@ class BackupImporter(
         } catch (t: Throwable) {
             withContext(NonCancellable) {
                 for ((alarm, files) in added.asReversed()) {
-                    try { deleteAlarm(alarm.id) } catch (_: Throwable) { /* best effort */ }
-                    files.forEach { it.delete() }
+                    // A still-stored alarm keeps its files.
+                    try {
+                        deleteAlarm(alarm.id)
+                        files.forEach { it.delete() }
+                    } catch (_: Throwable) { /* best effort */ }
                 }
                 newDefaults.forEach { it.delete() }
             }

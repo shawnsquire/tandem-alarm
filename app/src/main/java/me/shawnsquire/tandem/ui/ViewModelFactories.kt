@@ -201,9 +201,11 @@ val settingsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
                         apply = {
                             withContext(Dispatchers.IO + NonCancellable) {
                                 val edits = AlarmEdits(container.alarmRepository, container.alarmScheduler)
-                                importer.apply(staged, edits::upsert, edits::delete, container.settingsRepository) {
-                                    container.authManager.setDisplayName(it)
-                                }
+                                importer.apply(
+                                    staged, edits::upsert, edits::delete, container.settingsRepository,
+                                    displayName = { container.authManager.storedDisplayName.first() },
+                                    setDisplayName = { container.authManager.setDisplayName(it) },
+                                )
                             }
                         },
                         discard = staged::discard,

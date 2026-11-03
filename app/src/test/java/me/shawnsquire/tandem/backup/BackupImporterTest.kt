@@ -139,9 +139,10 @@ class BackupImporterTest {
         settings: FakeSettingsRepository = FakeSettingsRepository(),
         name: MutableList<String?> = mutableListOf(),
         add: suspend (Alarm) -> Unit = { repo.upsert(it) },
+        storedName: String? = null,
     ): ImportResult {
         val staged = imp.read(ByteArrayInputStream(bytes))
-        return imp.apply(staged, add, { repo.delete(it) }, settings, { name += it })
+        return imp.apply(staged, add, { repo.delete(it) }, settings, { storedName }, { name += it })
     }
 
     // --- Rejections ---
@@ -382,17 +383,88 @@ class BackupImporterTest {
         stagingEmpty()
     }
 
-    @Test fun rollbackWhenSettingsFail() = runTest {
+    @Test fun rollbackKeepsFilesOfAnAlarmThatCouldNotBeDeleted() = runTest {
         val repo = FakeAlarmRepository(emptyList())
-        val s = JSONObject().put("ringtone", file(rPath2))
-        val staged = importer().read(ByteArrayInputStream(backup(listOf(alarmJson()), s, rPath2 to rBytes)))
+        val bytes = backup(
+            listOf(
+                alarmJson("A", ringtone = file(rPath), wallpaper = wall(wPath)),
+                alarmJson("B", ringtone = file(rPath), wallpaper = wall(wPath)),
+            ),
+            media = arrayOf(rPath to rBytes, wPath to wBytes),
+        )
+        val imp = importer()
+        val staged = imp.read(ByteArrayInputStream(bytes))
+        var n = 0
         try {
-            importer().apply(staged, { repo.upsert(it) }, { repo.delete(it) }, FakeSettingsRepository(), { throw IllegalStateException("x") })
+            imp.apply(
+                staged,
+                { if (++n == 2) throw IllegalStateException("boom"); repo.upsert(it) },
+                { if (it == "new-1") throw IllegalStateException("cannot delete") else repo.delete(it) },
+                FakeSettingsRepository(), { null }, {},
+            )
+            fail("expected throw")
+        } catch (e: IllegalStateException) {
+            assertEquals("boom", e.message)
+        }
+        // A is still stored, so its two files stay; B's were removed.
+        assertEquals(listOf("new-1"), repo.alarms.first().map { it.id })
+        val kept = repo.alarms.first().single()
+        assertEquals(listOf(File(Uri.parse(kept.ringtoneUri).path!!).canonicalFile), ringtones.listFiles().orEmpty().map { it.canonicalFile })
+        assertEquals(listOf(File(kept.wallpaperPath!!).canonicalFile), wallpapers.listFiles().orEmpty().map { it.canonicalFile })
+        stagingEmpty()
+    }
+
+    @Test fun rollbackWhenSettingsFail() = runTest {
+        ringtones.mkdirs(); wallpapers.mkdirs()
+        val oldR = File(ringtones, "0b7c1a52-4f1e-4c55-9d1e-2a6b3c4d5eff-old.wav").also { it.writeText("o") }
+        val oldW = File(wallpapers, "old.jpg").also { it.writeText("o") }
+        val oldRUri = Uri.fromFile(oldR).toString()
+        val oldFrame = WallpaperFrame(2f, 0.5f, 0.5f)
+        val settings = FakeSettingsRepository()
+        settings.setSnoozeMinutes(7)
+        settings.setDefaultRingtoneUri(oldRUri)
+        settings.setDefaultWallpaper(oldW.absolutePath, oldFrame)
+        val names = mutableListOf<String?>()
+
+        val repo = FakeAlarmRepository(emptyList())
+        val s = JSONObject().put("snoozeMinutes", 15).put("displayName", "Shawn")
+            .put("ringtone", file(rPath2)).put("wallpaper", wall(wPath2))
+        val imp = importer()
+        val staged = imp.read(ByteArrayInputStream(backup(listOf(alarmJson()), s, rPath2 to rBytes, wPath2 to wBytes)))
+        try {
+            imp.apply(staged, { repo.upsert(it) }, { repo.delete(it) }, settings, { "Old" }) {
+                names += it
+                if (it == "Shawn") throw IllegalStateException("x")
+            }
             fail("expected throw")
         } catch (_: IllegalStateException) {
         }
+        assertEquals(7, settings.snoozeMinutes.first())
+        assertEquals(oldRUri, settings.defaultRingtoneUri.first())
+        assertEquals(oldW.absolutePath, settings.defaultWallpaperPath.first())
+        assertEquals(oldFrame, settings.defaultWallpaperFrame.first())
+        assertEquals(listOf<String?>("Shawn", "Old"), names)
         assertTrue(repo.alarms.first().isEmpty())
-        assertTrue(ringtones.listFiles().orEmpty().isEmpty())
+        // Only the old defaults remain; the new copies are gone.
+        assertEquals(listOf(oldR.canonicalFile), ringtones.listFiles().orEmpty().map { it.canonicalFile })
+        assertEquals(listOf(oldW.canonicalFile), wallpapers.listFiles().orEmpty().map { it.canonicalFile })
+        stagingEmpty()
+    }
+
+    @Test fun settingsRollbackRestoresWhatItCanWhenOneRestoreFails() = runTest {
+        val settings = FakeSettingsRepository()
+        settings.setSnoozeMinutes(7)
+        settings.setDefaultRingtoneUri("content://x/1")
+        val imp = importer()
+        val staged = imp.read(ByteArrayInputStream(backup(emptyList(), JSONObject().put("snoozeMinutes", 15).put("displayName", "Shawn"))))
+        try {
+            // Fails on the write and on the restore alike.
+            imp.apply(staged, {}, {}, settings, { "Old" }) { throw IllegalStateException("x") }
+            fail("expected throw")
+        } catch (_: IllegalStateException) {
+        }
+        assertEquals(7, settings.snoozeMinutes.first())
+        assertEquals("content://x/1", settings.defaultRingtoneUri.first())
     }
 
     @Test fun bothSwitchesOffTurnBothOn() = runTest {
