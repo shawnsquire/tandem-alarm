@@ -69,7 +69,13 @@ class BackupImporterTest {
         maxMedia: Long = MAX_MEDIA_BYTES_PER_FILE,
         maxEntries: Int = MAX_ENTRIES,
         ids: Iterator<String> = generateSequence(1) { it + 1 }.map { "new-$it" }.iterator(),
-    ) = BackupImporter(filesDir, stagingRoot, canOpen, { ids.next() }, maxMedia, maxEntries)
+        maxStaged: Long = MAX_STAGED_BYTES,
+        maxImport: Long = MAX_IMPORT_BYTES,
+        usableSpace: () -> Long = { Long.MAX_VALUE },
+    ) = BackupImporter(
+        filesDir, stagingRoot, canOpen, { ids.next() }, maxMedia, maxEntries,
+        maxStagedBytes = maxStaged, maxImportBytes = maxImport, usableSpace = usableSpace,
+    )
 
     private fun zip(vararg entries: Pair<String, ByteArray>): ByteArray {
         val bos = ByteArrayOutputStream()
@@ -111,6 +117,7 @@ class BackupImporterTest {
     private fun stagingEmpty() {
         val left = stagingRoot.walkTopDown().filter { it.isFile }.toList()
         assertTrue("staging left $left", left.isEmpty())
+        assertTrue("staging left directories", stagingRoot.listFiles().orEmpty().isEmpty())
     }
 
     private fun rejects(reason: Reason, bytes: ByteArray, imp: BackupImporter = importer()) {
@@ -184,8 +191,53 @@ class BackupImporterTest {
         assertFalse(File(stagingRoot, "old").exists())
     }
 
+    @Test fun stagedBytesOverBudgetAreRejected() = rejects(
+        Reason.TOO_LARGE,
+        backup(
+            listOf(alarmJson("A", ringtone = file(rPath), wallpaper = wall(wPath))),
+            media = arrayOf(rPath to ByteArray(600), wPath to ByteArray(600)),
+        ),
+        importer(maxStaged = 1000),
+    )
+
+    @Test fun stagedBytesAtBudgetAreAccepted() {
+        val bytes = backup(
+            listOf(alarmJson("A", ringtone = file(rPath), wallpaper = wall(wPath))),
+            media = arrayOf(rPath to ByteArray(600), wPath to ByteArray(400)),
+        )
+        importer(maxStaged = 1000).read(ByteArrayInputStream(bytes)).discard()
+    }
+
+    @Test fun copiesOverImportBudgetAreRejectedBeforeApply() = rejects(
+        Reason.TOO_LARGE,
+        // One 600-byte file, referenced twice: apply would write 1200.
+        backup(
+            listOf(alarmJson("A", ringtone = file(rPath)), alarmJson("B", ringtone = file(rPath))),
+            media = arrayOf(rPath to ByteArray(600)),
+        ),
+        importer(maxImport = 1000),
+    )
+
+    @Test fun droppedFilesCountZeroTowardImportBudget() {
+        val bytes = backup(
+            listOf(alarmJson("A", ringtone = file(rPath)), alarmJson("B", ringtone = file(rPath))),
+            media = arrayOf(rPath to ByteArray(2000)),
+        )
+        importer(maxMedia = 1000, maxImport = 10).read(ByteArrayInputStream(bytes)).discard()
+    }
+
+    @Test fun copiesOverFreeSpaceAreRejected() {
+        val bytes = backup(listOf(alarmJson(ringtone = file(rPath))), media = arrayOf(rPath to ByteArray(600)))
+        val margin = 100L * 1024 * 1024
+        rejects(Reason.TOO_LARGE, bytes, importer(usableSpace = { margin + 599 }))
+        importer(usableSpace = { margin + 600 }).read(ByteArrayInputStream(bytes)).discard()
+    }
+
     // --- Safety ---
 
+    // On API 34+ the platform's ZipPathValidator makes getNextEntry() throw ZipException for names with ".."
+    // segments or a leading "/", and read() maps that to INCOMPLETE. Robolectric uses the JVM zip code, so
+    // here the entries are skipped instead. Either outcome is safe: entry names are never used as paths.
     @Test fun traversalEntriesAreIgnored() = runTest {
         val bytes = backup(
             listOf(alarmJson(ringtone = file(rPath))),

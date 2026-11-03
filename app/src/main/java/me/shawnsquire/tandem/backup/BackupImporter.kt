@@ -21,6 +21,9 @@ import java.util.zip.ZipInputStream
 
 private const val UUID_LENGTH = 36
 
+/** Disk an import leaves free on top of what it copies. */
+private const val FREE_SPACE_MARGIN = 100L * 1024 * 1024
+
 /** A validated backup whose media is staged on disk; [discard] it if it isn't applied. */
 class StagedBackup internal constructor(
     val manifest: BackupManifest,
@@ -49,6 +52,9 @@ class BackupImporter(
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val maxMediaBytes: Long = MAX_MEDIA_BYTES_PER_FILE,
     private val maxEntries: Int = MAX_ENTRIES,
+    private val maxStagedBytes: Long = MAX_STAGED_BYTES,
+    private val maxImportBytes: Long = MAX_IMPORT_BYTES,
+    private val usableSpace: () -> Long = { filesDir.usableSpace },
 ) {
     private val ringtonesDir get() = File(filesDir, RingtoneImporter.RINGTONES_DIR)
     private val wallpapersDir get() = File(filesDir, WallpaperImporter.WALLPAPERS_DIR)
@@ -99,6 +105,7 @@ class BackupImporter(
         val dropped = HashSet<String>()
         val seen = HashSet<String>()
         var count = 0
+        var stagedBytes = 0L
         while (true) {
             val entry = zip.nextEntry ?: break
             if (++count > maxEntries) throw BackupRejected(Reason.TOO_LARGE)
@@ -107,9 +114,18 @@ class BackupImporter(
             if (!seen.add(name)) throw BackupRejected(Reason.DAMAGED)
             // The entry name is only a lookup key; the file name is ours.
             val out = File(dir, seen.size.toString())
-            if (copyBounded(zip, out)) staged[name] = out else dropped += name
+            if (copyBounded(zip, out)) {
+                staged[name] = out
+                stagedBytes += out.length()
+                if (stagedBytes > maxStagedBytes) throw BackupRejected(Reason.TOO_LARGE)
+            } else {
+                dropped += name
+            }
         }
         if (wanted.any { it !in staged && it !in dropped }) throw BackupRejected(Reason.INCOMPLETE)
+        // apply copies once per reference, so a file shared by many alarms is written many times.
+        val toCopy = manifest.mediaReferences().sumOf { staged[it]?.length() ?: 0L }
+        if (toCopy > maxImportBytes || toCopy > usableSpace() - FREE_SPACE_MARGIN) throw BackupRejected(Reason.TOO_LARGE)
         return StagedBackup(manifest, dir, staged, dropped)
     }
 
@@ -267,8 +283,11 @@ class BackupImporter(
     }
 }
 
-private fun BackupManifest.mediaPaths(): Set<String> {
-    val out = HashSet<String>()
+private fun BackupManifest.mediaPaths(): Set<String> = mediaReferences().toSet()
+
+/** Every zip path the manifest uses, once per use. */
+private fun BackupManifest.mediaReferences(): List<String> {
+    val out = ArrayList<String>()
     fun add(s: BackupSound?) { if (s is BackupSound.File) out += s.path }
     fun add(w: BackupWallpaper?) { if (w != null) out += w.path }
     add(settings.ringtone); add(settings.wallpaper)

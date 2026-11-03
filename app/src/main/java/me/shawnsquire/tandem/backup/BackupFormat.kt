@@ -22,6 +22,12 @@ const val MAX_MANIFEST_BYTES = 1_048_576
 const val MAX_MEDIA_BYTES_PER_FILE = 100L * 1024 * 1024
 const val MAX_ENTRIES = 1000
 
+/** Total bytes an import may stage on disk, across all media files. */
+const val MAX_STAGED_BYTES = 1L shl 30
+
+/** Total bytes `apply` may copy: copies are made per reference, so a shared file counts once per use. */
+const val MAX_IMPORT_BYTES = 2L shl 30
+
 /** A ringtone: a copied file in the zip ([File], [path] is the zip entry) or a URI kept verbatim ([Uri]). */
 sealed interface BackupSound {
     data class File(val path: String, val title: String?) : BackupSound
