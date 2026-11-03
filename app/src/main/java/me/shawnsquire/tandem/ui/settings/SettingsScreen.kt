@@ -203,7 +203,9 @@ fun SettingsScreen(
         }
         null -> null
     }
-    LaunchedEffect(state.notice) {
+    // Hold the notice while the modal repick dialog is up, or it times out unseen behind it.
+    LaunchedEffect(state.notice, state.soundsToRepick) {
+        if (state.soundsToRepick != null) return@LaunchedEffect
         if (noticeText != null) {
             snackbarHostState.showSnackbar(noticeText)
             onNoticeShown()
