@@ -127,6 +127,18 @@ To install, download the APK from the [Releases page](https://github.com/shawnsq
 
 After installing, open Settings, then Health check, and fix anything that is not green (exact alarms, full-screen notifications, notification permission, battery optimization).
 
+## Moving to the Play app
+
+From v0.5.0 the app is `com.kautiontape.tandem`, which Android treats as a different app. It can't read this app's alarms or settings, so carry them over in a file:
+
+1. Update this app to 0.4.1 or later.
+2. In Settings, under Backup, tap Export alarms and settings and save the file somewhere you can find it, such as Downloads. It holds your own alarms (not ones joined from your partner), their sounds and wallpapers, the snooze length, the default sound and wallpaper, and your name.
+3. Unpair in Settings. Joined alarms go with the pairing, so the other phone has to join them again.
+4. Uninstall this app. If both are installed, both ring.
+5. Install the new app.
+6. In the new app's Settings, import the file. Import is available from 0.5.1.
+7. Pair again from the Partner tab, and join each other's alarms again if you used linked alarms.
+
 ## On-device checklist
 
 Run on both phones. The linked-alarm items need two phones paired with each other, with phone A's alarm joined from phone B. Alarms are the point of the app, so do not skip the reboot and Doze items.
