@@ -61,6 +61,9 @@ class AuthManager(
 
     val displayName: Flow<String> get() = names.displayName
 
+    /** The name the user set, or null while the default is used. */
+    val storedDisplayName: Flow<String?> get() = names.storedName
+
     /** Null or blank clears the override so the default is used again. */
     suspend fun setDisplayName(name: String?) = names.set(name)
 
@@ -77,6 +80,9 @@ internal class DisplayNameStore(
     val displayName: Flow<String> = store.data.map { p ->
         p[KEY]?.takeIf { it.isNotBlank() } ?: defaultName
     }
+
+    /** The stored override only; null when absent or blank, never the default. */
+    val storedName: Flow<String?> = store.data.map { p -> p[KEY]?.takeIf { it.isNotBlank() } }
 
     suspend fun set(name: String?) {
         store.edit { p ->
