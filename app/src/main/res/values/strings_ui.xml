@@ -125,6 +125,7 @@
     <string name="settings_error_import_damaged">This backup file is damaged.</string>
     <string name="settings_error_import_incomplete">This backup file is incomplete. Export it again.</string>
     <string name="settings_error_import_too_large">This backup file is too large.</string>
+    <string name="settings_error_import_no_space">Not enough free space on this phone. Free some up, then try again.</string>
     <string name="settings_error_import_read">Couldn\'t read the file. Try again.</string>
     <string name="settings_error_import_apply">Couldn\'t import. Try again.</string>
     <string name="settings_export">Export alarms and settings</string>

@@ -230,7 +230,7 @@ class BackupImporterTest {
     @Test fun copiesOverFreeSpaceAreRejected() {
         val bytes = backup(listOf(alarmJson(ringtone = file(rPath))), media = arrayOf(rPath to ByteArray(600)))
         val margin = 100L * 1024 * 1024
-        rejects(Reason.TOO_LARGE, bytes, importer(usableSpace = { margin + 599 }))
+        rejects(Reason.NO_SPACE, bytes, importer(usableSpace = { margin + 599 }))
         importer(usableSpace = { margin + 600 }).read(ByteArrayInputStream(bytes)).discard()
     }
 

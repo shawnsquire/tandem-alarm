@@ -137,7 +137,8 @@ class BackupImporter(
         if (wanted.any { it !in staged && it !in dropped }) throw BackupRejected(Reason.INCOMPLETE)
         // apply copies once per reference, so a file shared by many alarms is written many times.
         val toCopy = manifest.mediaReferences().sumOf { staged[it]?.length() ?: 0L }
-        if (toCopy > maxImportBytes || toCopy > usableSpace() - FREE_SPACE_MARGIN) throw BackupRejected(Reason.TOO_LARGE)
+        if (toCopy > maxImportBytes) throw BackupRejected(Reason.TOO_LARGE)
+        if (toCopy > usableSpace() - FREE_SPACE_MARGIN) throw BackupRejected(Reason.NO_SPACE)
         return StagedBackup(manifest, dir, staged, dropped)
     }
 

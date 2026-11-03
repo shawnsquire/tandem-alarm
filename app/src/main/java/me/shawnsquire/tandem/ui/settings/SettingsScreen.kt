@@ -168,6 +168,7 @@ fun SettingsScreen(
                 BackupRejected.Reason.DAMAGED -> R.string.settings_error_import_damaged
                 BackupRejected.Reason.INCOMPLETE -> R.string.settings_error_import_incomplete
                 BackupRejected.Reason.TOO_LARGE -> R.string.settings_error_import_too_large
+                BackupRejected.Reason.NO_SPACE -> R.string.settings_error_import_no_space
                 null -> R.string.settings_error_import_read
             },
         )

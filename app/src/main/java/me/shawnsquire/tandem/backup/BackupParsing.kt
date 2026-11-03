@@ -17,7 +17,7 @@ import java.time.format.DateTimeParseException
 
 /** Why a backup file was refused. The UI maps each [reason] to a message. */
 class BackupRejected(val reason: Reason) : Exception(reason.name) {
-    enum class Reason { NOT_A_BACKUP, NEWER_VERSION, DAMAGED, INCOMPLETE, TOO_LARGE }
+    enum class Reason { NOT_A_BACKUP, NEWER_VERSION, DAMAGED, INCOMPLETE, TOO_LARGE, NO_SPACE }
 }
 
 private const val MAX_LABEL = 200
