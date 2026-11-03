@@ -26,9 +26,15 @@ sealed interface SettingsError {
     data object RingtoneImport : SettingsError
     data object WallpaperImport : SettingsError
     data object Save : SettingsError
+    data object Export : SettingsError
 
     /** [message] is already user-safe. */
     data class Unpair(val message: String) : SettingsError
+}
+
+/** A success the screen reports once, then clears with [SettingsViewModel.noticeShown]. */
+sealed interface SettingsNotice {
+    data class Exported(val alarms: Int) : SettingsNotice
 }
 
 data class SettingsUiState(
@@ -47,6 +53,7 @@ data class SettingsUiState(
     /** True while a file import is running. */
     val busy: Boolean = false,
     val error: SettingsError? = null,
+    val notice: SettingsNotice? = null,
 )
 
 private const val GENERIC_UNPAIR_ERROR = "Something went wrong. Try again."
@@ -63,6 +70,8 @@ class SettingsViewModel(
     private val deleteWallpaperFile: (String) -> Unit,
     /** Whether two wallpaper files hold the same bytes; a throw counts as different. Runs off the main thread. */
     private val sameWallpaperContent: suspend (String, String) -> Boolean,
+    /** Writes the backup to the document URI and returns the number of alarms exported; throws on failure. Runs off the main thread. */
+    private val exportBackup: suspend (String) -> Int,
 ) : ViewModel() {
 
     private data class Local(
@@ -70,6 +79,7 @@ class SettingsViewModel(
         val busy: Boolean = false,
         val previewRequested: Boolean = false,
         val error: SettingsError? = null,
+        val notice: SettingsNotice? = null,
     )
 
     private val local = MutableStateFlow(Local())
@@ -104,6 +114,7 @@ class SettingsViewModel(
             unpairing = loc.unpairing,
             busy = loc.busy,
             error = loc.error,
+            notice = loc.notice,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
@@ -148,6 +159,26 @@ class SettingsViewModel(
             }
         }
     }
+
+    /** A document URI from the create-document picker; the backup is written there. */
+    fun onExportDocumentCreated(documentUri: String) {
+        if (local.value.busy) return
+        viewModelScope.launch {
+            local.update { it.copy(busy = true, error = null, notice = null) }
+            try {
+                val count = exportBackup(documentUri)
+                local.update { it.copy(notice = SettingsNotice.Exported(count)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                local.update { it.copy(error = SettingsError.Export) }
+            } finally {
+                local.update { it.copy(busy = false) }
+            }
+        }
+    }
+
+    fun noticeShown() = local.update { it.copy(notice = null) }
 
     fun resetRingtone() {
         viewModelScope.launch { guarded { replaceRingtone(null) } }

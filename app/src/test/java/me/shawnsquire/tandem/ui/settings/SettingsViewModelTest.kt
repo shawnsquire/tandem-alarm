@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.ui.settings
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -54,6 +55,10 @@ class SettingsViewModelTest {
         var failImport = false
         /** What the content comparison says; a throw counts as different. */
         var sameContent: () -> Boolean = { false }
+        /** The document URIs the export was asked to write, in order. */
+        val exportedTo = mutableListOf<String>()
+        /** What an export does once called; the default exports three alarms. */
+        var exportBackup: suspend (String) -> Int = { 3 }
         val vm = SettingsViewModel(
             settings = settings,
             pairing = pairing,
@@ -73,6 +78,7 @@ class SettingsViewModelTest {
             },
             deleteWallpaperFile = { events += "del-wall:$it" },
             sameWallpaperContent = { _, _ -> sameContent() },
+            exportBackup = { exportedTo += it; exportBackup(it) },
         )
     }
 
@@ -257,5 +263,45 @@ class SettingsViewModelTest {
         env.vm.removeWallpaper()
         assertNull(env.settings.defaultWallpaperPath.first())
         assertNull(env.settings.defaultWallpaperFrame.first())
+    }
+
+    @Test fun exportPassesUriThroughAndReportsCount() = runTest {
+        val env = Env(); collect(env)
+        env.exportBackup = { 2 }
+        env.vm.onExportDocumentCreated("content://doc/backup")
+        assertEquals(listOf("content://doc/backup"), env.exportedTo)
+        assertEquals(SettingsNotice.Exported(2), env.vm.state.value.notice)
+        assertNull(env.vm.state.value.error)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun exportFailureShowsErrorAndNoNotice() = runTest {
+        val env = Env(); collect(env)
+        env.exportBackup = { error("disk full") }
+        env.vm.onExportDocumentCreated("content://doc/backup")
+        assertEquals(SettingsError.Export, env.vm.state.value.error)
+        assertNull(env.vm.state.value.notice)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun exportWhileOneIsRunningIsIgnored() = runTest {
+        val env = Env(); collect(env)
+        val gate = CompletableDeferred<Int>()
+        env.exportBackup = { gate.await() }
+        env.vm.onExportDocumentCreated("content://doc/1")
+        assertTrue(env.vm.state.value.busy)
+        env.vm.onExportDocumentCreated("content://doc/2")
+        assertEquals(listOf("content://doc/1"), env.exportedTo)
+        gate.complete(1)
+        assertEquals(SettingsNotice.Exported(1), env.vm.state.value.notice)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun noticeShownClearsTheNotice() = runTest {
+        val env = Env(); collect(env)
+        env.vm.onExportDocumentCreated("content://doc/1")
+        assertEquals(SettingsNotice.Exported(3), env.vm.state.value.notice)
+        env.vm.noticeShown()
+        assertNull(env.vm.state.value.notice)
     }
 }
