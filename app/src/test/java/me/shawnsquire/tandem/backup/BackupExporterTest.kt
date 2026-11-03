@@ -8,6 +8,7 @@ import me.shawnsquire.tandem.schedule.LinkMode
 import me.shawnsquire.tandem.schedule.TextPosition
 import me.shawnsquire.tandem.schedule.VibrationPattern
 import me.shawnsquire.tandem.schedule.WallpaperFrame
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +21,7 @@ import org.robolectric.RobolectricTestRunner
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.OutputStream
 import java.time.DayOfWeek
 import java.time.Instant
 import java.util.zip.ZipInputStream
@@ -73,6 +75,24 @@ class BackupExporterTest {
         return Zip(names, files, result)
     }
 
+    /** Every `file` value in [node], at any depth. */
+    private fun fileRefs(node: Any?): List<String> = when (node) {
+        is JSONObject -> node.keys().asSequence().flatMap { k ->
+            if (k == "file") listOf(node.getString(k)) else fileRefs(node.get(k))
+        }.toList()
+        is JSONArray -> (0 until node.length()).flatMap { fileRefs(node.get(it)) }
+        else -> emptyList()
+    }
+
+    /** The manifest names exactly the media entries the zip holds, and each is named once in the zip. */
+    private fun assertManifestMatchesEntries(z: Zip) {
+        val named = fileRefs(z.manifest).toSet()
+        val media = z.entries.filter { it.startsWith("media/") }
+        assertEquals(media.size, media.toSet().size)
+        assertTrue("named but absent: ${named - media.toSet()}", media.containsAll(named))
+        assertTrue("present but unnamed: ${media.toSet() - named}", named.containsAll(media))
+    }
+
     private fun keys(o: JSONObject) = o.keys().asSequence().toSet()
 
     private fun ringtoneFile(name: String) = File(ringtones, name).also { it.writeBytes(bytes) }
@@ -119,12 +139,14 @@ class BackupExporterTest {
         assertFalse(a.getBoolean("vibrationOn"))
         assertTrue(a.getBoolean("soundOn"))
         assertEquals("BOTTOM", a.getString("textPosition"))
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun manifestIsFirstEntry() {
         val w = wallpaperFile("$uuid.jpg")
         val z = export(snapshot(listOf(alarm(wallpaper = w.path))))
         assertEquals(listOf("manifest.json", "media/wallpapers/$uuid.jpg"), z.entries)
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun linkedRowsAreLeftOut() {
@@ -152,6 +174,7 @@ class BackupExporterTest {
         assertEquals("media/ringtones/$uuid-Morning birds.wav", rt.getString("file"))
         assertEquals("Morning birds.wav", rt.getString("title"))
         assertTrue(bytes.contentEquals(z.files.getValue("media/ringtones/$uuid-Morning birds.wav")))
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun contentRingtoneStaysAUri() {
@@ -162,6 +185,7 @@ class BackupExporterTest {
         assertEquals(uri, rt.getString("uri"))
         assertEquals(0, z.result.missingMedia)
         assertEquals(listOf("manifest.json"), z.entries)
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun wallpaperIsCopiedWithFrame() {
@@ -171,12 +195,14 @@ class BackupExporterTest {
         assertEquals(setOf("file", "frame"), keys(wp))
         assertEquals(2.0, wp.getJSONObject("frame").getDouble("zoom"), 0.0)
         assertTrue(bytes.contentEquals(z.files.getValue("media/wallpapers/$uuid.jpg")))
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun wallpaperWithoutFrameHasNoFrameKey() {
         val w = wallpaperFile("$uuid.jpg")
         val z = export(snapshot(listOf(alarm(wallpaper = w.path))))
         assertEquals(setOf("file"), keys(z.manifest.getJSONArray("alarms").getJSONObject(0).getJSONObject("wallpaper")))
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun missingFilesAreOmittedAndCounted() {
@@ -189,6 +215,7 @@ class BackupExporterTest {
         assertEquals(2, z.result.missingMedia)
         assertEquals(1, z.result.alarms)
         assertEquals(listOf("manifest.json"), z.entries)
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun ringtoneOutsideTheRingtonesDirIsMissing() {
@@ -197,6 +224,7 @@ class BackupExporterTest {
         assertFalse(z.manifest.getJSONArray("alarms").getJSONObject(0).has("ringtone"))
         assertEquals(1, z.result.missingMedia)
         assertEquals(listOf("manifest.json"), z.entries)
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun sharedFileIsStoredOnce() {
@@ -206,6 +234,7 @@ class BackupExporterTest {
         val z = export(snapshot(listOf(alarm("a", uri, w.path), alarm("b", uri, w.path)), ringtone = uri, wallpaper = w.path))
         assertEquals(3, z.entries.size)
         assertEquals(0, z.result.missingMedia)
+        assertManifestMatchesEntries(z)
     }
 
     @Test fun blankOrNullDisplayNameIsAbsent() {
@@ -217,5 +246,48 @@ class BackupExporterTest {
     @Test fun absentSettingsMediaKeysAreOmitted() {
         val s = export(snapshot()).manifest.getJSONObject("settings")
         assertEquals(setOf("snoozeMinutes"), keys(s))
+    }
+
+    @Test fun wallpaperOutsideTheWallpapersDirIsMissing() {
+        val inRingtones = ringtoneFile("$uuid.jpg")
+        val traversal = File(File(tmp.root, "wallpapers").also { it.mkdirs() }, "../ringtones/x.jpg")
+        ringtoneFile("x.jpg")
+        for (path in listOf(inRingtones.path, traversal.path)) {
+            val z = export(snapshot(listOf(alarm(wallpaper = path))))
+            assertFalse(z.manifest.getJSONArray("alarms").getJSONObject(0).has("wallpaper"))
+            assertEquals(1, z.result.missingMedia)
+            assertEquals(listOf("manifest.json"), z.entries)
+            assertManifestMatchesEntries(z)
+        }
+    }
+
+    @Test fun fileDeletedAfterItWasChosenIsStillWritten() {
+        val r = ringtoneFile("$uuid-Morning birds.wav")
+        val w = wallpaperFile("$uuid.jpg")
+        // The first byte written is the manifest, so the files are chosen by then.
+        val out = object : ByteArrayOutputStream() {
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                r.delete(); w.delete()
+                super.write(b, off, len)
+            }
+        }
+        val result = BackupExporter(tmp.root, "0.4.1") { at }
+            .export(snapshot(listOf(alarm(ringtone = Uri.fromFile(r).toString(), wallpaper = w.path))), out)
+        assertEquals(0, result.missingMedia)
+        val names = mutableListOf<String>()
+        ZipInputStream(ByteArrayInputStream(out.toByteArray())).use { z ->
+            while (true) names += (z.nextEntry ?: break).name
+        }
+        assertEquals(listOf("manifest.json", "media/ringtones/$uuid-Morning birds.wav", "media/wallpapers/$uuid.jpg"), names)
+    }
+
+    @Test fun callersStreamIsLeftOpen() {
+        var closed = false
+        val out = object : OutputStream() {
+            override fun write(b: Int) {}
+            override fun close() { closed = true }
+        }
+        BackupExporter(tmp.root, "0.4.1") { at }.export(snapshot(), out)
+        assertFalse(closed)
     }
 }
