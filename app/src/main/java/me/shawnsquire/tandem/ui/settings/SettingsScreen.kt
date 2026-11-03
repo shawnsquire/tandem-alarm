@@ -157,7 +157,8 @@ fun SettingsScreen(
         is SettingsNotice.Exported -> {
             val done = pluralStringResource(R.plurals.settings_export_done, n.alarms, n.alarms)
             if (n.missingMedia > 0) {
-                "$done " + pluralStringResource(R.plurals.settings_export_missing, n.missingMedia, n.missingMedia)
+                val missing = pluralStringResource(R.plurals.settings_export_missing, n.missingMedia, n.missingMedia)
+                stringResource(R.string.settings_export_done_missing, done, missing)
             } else {
                 done
             }
