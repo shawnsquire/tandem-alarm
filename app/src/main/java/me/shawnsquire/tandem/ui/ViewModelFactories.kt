@@ -173,7 +173,7 @@ val settingsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
                     )
                     // "wt": plain "w" need not truncate, and leftover bytes from an overwritten file would corrupt the zip.
                     val out = app.contentResolver.openOutputStream(Uri.parse(uri), "wt") ?: throw IOException("Cannot open $uri")
-                    out.use { BackupExporter(app.filesDir, BuildConfig.VERSION_NAME).export(snapshot, it) }.alarms
+                    out.buffered().use { BackupExporter(app.filesDir, BuildConfig.VERSION_NAME).export(snapshot, it) }
                 }
             },
         )
