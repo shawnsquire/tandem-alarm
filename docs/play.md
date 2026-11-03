@@ -236,7 +236,7 @@ On each phone:
 7. Only now uninstall the old app. Old Tandem Alarm builds are `me.shawnsquire.tandem`. If it came from Obtainium, delete its entry there too.
 8. Pair again: Partner tab, Show pairing code on one phone, Enter code on the other. Then join the other phone's alarms again.
 
-If the import fails or an alarm looks wrong, the old app still has everything until step 7. Export again and retry.
+If the import fails, it adds nothing, so try again, exporting again first if the message asks for it. If it worked but an alarm looks wrong, fix or delete that alarm in the new app instead: importing again adds every alarm a second time. Either way, the old app still has everything until step 7.
 
 ## Every release
 
