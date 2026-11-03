@@ -153,6 +153,10 @@ class BackupExporter(
     private class FlushOnClose(out: OutputStream) : FilterOutputStream(out) {
         var discard = false
 
+        override fun write(b: Int) {
+            if (!discard) out.write(b)
+        }
+
         override fun write(b: ByteArray, off: Int, len: Int) {
             if (!discard) out.write(b, off, len)
         }
