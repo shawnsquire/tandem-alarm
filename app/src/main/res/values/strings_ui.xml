@@ -158,7 +158,8 @@
     <string name="settings_repick_title">Pick these sounds again</string>
     <string name="settings_repick_intro">These alarms now use the default sound, because their sound didn\'t come over:</string>
     <string name="settings_repick_time_alarm">%1$s alarm</string>
-    <string name="settings_repick_default">Your default sound in Settings didn\'t come over either.</string>
+    <string name="settings_repick_default">Your default sound didn\'t come over either. Pick it again under Default sound in Settings.</string>
+    <string name="settings_repick_default_only">Your default sound didn\'t come over. Pick it again under Default sound in Settings.</string>
     <string name="settings_repick_outro">Open each alarm and pick its sound again.</string>
     <string name="settings_repick_ok">OK</string>
 

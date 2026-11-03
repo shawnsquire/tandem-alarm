@@ -390,9 +390,11 @@ fun SettingsScreen(
                     if (lines.isNotEmpty()) {
                         Text(stringResource(R.string.settings_repick_intro))
                         lines.forEach { Text(it) }
+                        Text(stringResource(R.string.settings_repick_outro))
                     }
-                    if (repick.defaultLost) Text(stringResource(R.string.settings_repick_default))
-                    Text(stringResource(R.string.settings_repick_outro))
+                    if (repick.defaultLost) {
+                        Text(stringResource(if (lines.isEmpty()) R.string.settings_repick_default_only else R.string.settings_repick_default))
+                    }
                 }
             },
             confirmButton = {
