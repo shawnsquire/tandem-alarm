@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import me.shawnsquire.tandem.backup.ExportResult
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.PairingException
@@ -34,7 +35,7 @@ sealed interface SettingsError {
 
 /** A success the screen reports once, then clears with [SettingsViewModel.noticeShown]. */
 sealed interface SettingsNotice {
-    data class Exported(val alarms: Int) : SettingsNotice
+    data class Exported(val alarms: Int, val missingMedia: Int) : SettingsNotice
 }
 
 data class SettingsUiState(
@@ -70,8 +71,8 @@ class SettingsViewModel(
     private val deleteWallpaperFile: (String) -> Unit,
     /** Whether two wallpaper files hold the same bytes; a throw counts as different. Runs off the main thread. */
     private val sameWallpaperContent: suspend (String, String) -> Boolean,
-    /** Writes the backup to the document URI and returns the number of alarms exported; throws on failure. Runs off the main thread. */
-    private val exportBackup: suspend (String) -> Int,
+    /** Writes the backup to the document URI and returns how many alarms were written and how many sounds or pictures were left out; throws on failure. Runs off the main thread. */
+    private val exportBackup: suspend (String) -> ExportResult,
 ) : ViewModel() {
 
     private data class Local(
@@ -166,8 +167,8 @@ class SettingsViewModel(
         viewModelScope.launch {
             local.update { it.copy(busy = true, error = null, notice = null) }
             try {
-                val count = exportBackup(documentUri)
-                local.update { it.copy(notice = SettingsNotice.Exported(count)) }
+                val result = exportBackup(documentUri)
+                local.update { it.copy(notice = SettingsNotice.Exported(result.alarms, result.missingMedia)) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

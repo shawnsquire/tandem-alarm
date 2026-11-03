@@ -154,7 +154,14 @@ fun SettingsScreen(
         }
     }
     val noticeText = when (val n = state.notice) {
-        is SettingsNotice.Exported -> pluralStringResource(R.plurals.settings_export_done, n.alarms, n.alarms)
+        is SettingsNotice.Exported -> {
+            val done = pluralStringResource(R.plurals.settings_export_done, n.alarms, n.alarms)
+            if (n.missingMedia > 0) {
+                "$done " + pluralStringResource(R.plurals.settings_export_missing, n.missingMedia, n.missingMedia)
+            } else {
+                done
+            }
+        }
         null -> null
     }
     LaunchedEffect(state.notice) {
