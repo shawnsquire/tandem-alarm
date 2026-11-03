@@ -53,6 +53,8 @@ class BackupParsingTest {
 
     @Test fun nonObjectIsNotABackup() = rejects(Reason.NOT_A_BACKUP, "[1,2]")
 
+    @Test fun deeplyNestedInputIsDamagedNotAnError() = rejects(Reason.DAMAGED, "[".repeat(100_000))
+
     @Test fun emptyInputIsNotABackup() = rejects(Reason.NOT_A_BACKUP, "")
 
     @Test fun wrongFormatIsNotABackup() = rejects(Reason.NOT_A_BACKUP, manifestJson().put("format", "other"))
@@ -275,8 +277,7 @@ class BackupParsingTest {
     @Test fun goldenFixtureV1Parses() {
         val stream = javaClass.classLoader!!.getResourceAsStream("backup/fixture-v1.zip")!!
         val json = ZipInputStream(stream).use { zip ->
-            val entry = generateSequence { zip.nextEntry }.first { it.name == MANIFEST_ENTRY }
-            assertEquals(MANIFEST_ENTRY, entry.name)
+            assertEquals(MANIFEST_ENTRY, zip.nextEntry!!.name)
             zip.readBytes().toString(Charsets.UTF_8)
         }
         val m = parseManifest(json)

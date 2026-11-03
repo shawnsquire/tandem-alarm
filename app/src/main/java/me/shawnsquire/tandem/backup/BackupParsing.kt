@@ -40,6 +40,9 @@ fun parseManifest(json: String): BackupManifest {
         JSONObject(json)
     } catch (_: JSONException) {
         reject(Reason.NOT_A_BACKUP)
+    } catch (_: StackOverflowError) {
+        // About 1 MiB of `[` recurses org.json past the stack; an Error would escape BackupRejected.
+        reject(Reason.DAMAGED)
     }
     if (root.opt("format") != BACKUP_FORMAT) reject(Reason.NOT_A_BACKUP)
 
