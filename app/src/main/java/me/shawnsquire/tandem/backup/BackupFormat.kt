@@ -8,6 +8,11 @@ import org.json.JSONObject
 import java.time.DayOfWeek
 import java.time.Instant
 
+// `manifest.json` is the first entry, so a reader checks `format` and `version` before it reads media.
+// An export that fails halfway can leave a file cut off after the manifest, so an importer must reject
+// the whole file when the manifest names an entry the zip lacks.
+// org.json writes whole floats as integers (a zoom of 2.0 becomes `2`): read numbers with
+// `getDouble`/`optDouble`, never `getString` or a type check.
 const val BACKUP_FORMAT = "tandem-backup"
 const val BACKUP_VERSION = 1
 const val MANIFEST_ENTRY = "manifest.json"

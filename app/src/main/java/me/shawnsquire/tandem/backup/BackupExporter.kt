@@ -5,8 +5,12 @@ import me.shawnsquire.tandem.media.RingtoneImporter
 import me.shawnsquire.tandem.media.WallpaperImporter
 import me.shawnsquire.tandem.schedule.Alarm
 import me.shawnsquire.tandem.schedule.WallpaperFrame
+import java.io.Closeable
 import java.io.File
+import java.io.FileInputStream
+import java.io.FilterOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.time.Instant
 import java.util.zip.ZipEntry
@@ -34,52 +38,56 @@ class BackupExporter(
     /** Blocking; call off the main thread. Doesn't close [out]. */
     fun export(snapshot: BackupSnapshot, out: OutputStream): ExportResult {
         val media = Media()
-        val own = snapshot.alarms.filter { it.link == null }
-        val manifest = BackupManifest(
-            exportedAt = now(),
-            appVersion = appVersion,
-            settings = BackupSettings(
-                snoozeMinutes = snapshot.snoozeMinutes,
-                ringtone = media.sound(snapshot.defaultRingtoneUri),
-                wallpaper = media.wallpaper(snapshot.defaultWallpaperPath, snapshot.defaultWallpaperFrame),
-                displayName = snapshot.displayName?.takeIf { it.isNotBlank() },
-            ),
-            alarms = own.map {
-                BackupAlarm(
-                    label = it.label,
-                    hour = it.hour,
-                    minute = it.minute,
-                    days = it.days.sorted(),
-                    enabled = it.enabled,
-                    ringtone = media.sound(it.ringtoneUri),
-                    wallpaper = media.wallpaper(it.wallpaperPath, it.wallpaperFrame),
-                    vibration = it.vibration,
-                    vibrationOn = it.vibrationOn,
-                    soundOn = it.soundOn,
-                    textPosition = it.textPosition,
-                )
-            },
-        )
-        ZipOutputStream(out).apply {
-            putNextEntry(ZipEntry(MANIFEST_ENTRY))
-            write(manifest.toJson().toString().toByteArray(Charsets.UTF_8))
-            closeEntry()
-            for ((path, bytes) in media.entries) {
-                putNextEntry(ZipEntry(path))
-                write(bytes)
-                closeEntry()
+        try {
+            val own = snapshot.alarms.filter { it.link == null }
+            val manifest = BackupManifest(
+                exportedAt = now(),
+                appVersion = appVersion,
+                settings = BackupSettings(
+                    snoozeMinutes = snapshot.snoozeMinutes,
+                    ringtone = media.sound(snapshot.defaultRingtoneUri),
+                    wallpaper = media.wallpaper(snapshot.defaultWallpaperPath, snapshot.defaultWallpaperFrame),
+                    displayName = snapshot.displayName?.takeIf { it.isNotBlank() },
+                ),
+                alarms = own.map {
+                    BackupAlarm(
+                        label = it.label,
+                        hour = it.hour,
+                        minute = it.minute,
+                        days = it.days.sorted(),
+                        enabled = it.enabled,
+                        ringtone = media.sound(it.ringtoneUri),
+                        wallpaper = media.wallpaper(it.wallpaperPath, it.wallpaperFrame),
+                        vibration = it.vibration,
+                        vibrationOn = it.vibrationOn,
+                        soundOn = it.soundOn,
+                        textPosition = it.textPosition,
+                    )
+                },
+            )
+            ZipOutputStream(FlushOnClose(out)).use { zip ->
+                zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
+                zip.write(manifest.toJson().toString().toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+                for ((path, input) in media.entries) {
+                    zip.putNextEntry(ZipEntry(path))
+                    input.copyTo(zip)
+                    zip.closeEntry()
+                }
             }
-            finish()
+            return ExportResult(own.size, media.missing)
+        } finally {
+            media.close()
         }
-        return ExportResult(own.size, media.missing)
     }
 
     /**
-     * Decides the media set before the manifest is written: a file is read here, so the manifest
-     * never names an entry that the zip lacks.
+     * Decides the media set before the manifest is written: a file is opened here, so the manifest
+     * never names an entry that the zip lacks (an open handle outlives a delete). Streams stay open
+     * until [close], and are copied into the zip one at a time.
      */
-    private inner class Media {
-        val entries = LinkedHashMap<String, ByteArray>()
+    private inner class Media : Closeable {
+        val entries = LinkedHashMap<String, InputStream>()
         var missing = 0
             private set
 
@@ -112,11 +120,27 @@ class BackupExporter(
             return try {
                 val canonical = file.canonicalFile
                 if (canonical.parentFile != File(filesDir, dir).canonicalFile || !canonical.isFile) return null
-                if (entry !in entries) entries[entry] = canonical.readBytes()
+                if (entry !in entries) entries[entry] = FileInputStream(canonical)
                 entry
             } catch (_: IOException) {
                 null
             }
         }
+
+        override fun close() {
+            for (input in entries.values) {
+                try {
+                    input.close()
+                } catch (_: IOException) {
+                }
+            }
+        }
+    }
+
+    /** Lets [ZipOutputStream.close] release its deflater without closing the caller's stream. */
+    private class FlushOnClose(out: OutputStream) : FilterOutputStream(out) {
+        override fun write(b: ByteArray, off: Int, len: Int) = out.write(b, off, len)
+
+        override fun close() = flush()
     }
 }
