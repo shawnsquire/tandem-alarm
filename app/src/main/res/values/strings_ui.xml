@@ -96,6 +96,7 @@
     <string name="settings_section_alarms">Alarms</string>
     <string name="settings_section_you">You</string>
     <string name="settings_section_partner">Partner</string>
+    <string name="settings_section_backup">Backup</string>
     <string name="settings_section_diagnostics">Diagnostics</string>
     <string name="settings_snooze">Snooze length</string>
     <string name="settings_snooze_minutes">%1$d min</string>
@@ -118,6 +119,50 @@
     <string name="settings_error_ringtone">Couldn\'t use that sound file.</string>
     <string name="settings_error_wallpaper">Couldn\'t use that image.</string>
     <string name="settings_error_save">Couldn\'t save that change. Try again.</string>
+    <string name="settings_error_export">Couldn\'t export. Try again.</string>
+    <string name="settings_error_import_not_a_backup">This isn\'t a Tandem Alarm backup file.</string>
+    <string name="settings_error_import_newer_version">This backup is from a newer version of Tandem Alarm. Update the app, then try again.</string>
+    <string name="settings_error_import_damaged">This backup file is damaged.</string>
+    <string name="settings_error_import_incomplete">This backup file is incomplete. Export it again.</string>
+    <string name="settings_error_import_too_large">This backup file is too large.</string>
+    <string name="settings_error_import_no_space">Not enough free space on this phone. Free some up, then try again.</string>
+    <string name="settings_error_import_read">Couldn\'t read the file. Try again.</string>
+    <string name="settings_error_import_apply">Couldn\'t import. Try again.</string>
+    <string name="settings_export">Export alarms and settings</string>
+    <string name="settings_export_summary">Save your alarms and settings to a file, to move them to a new install.</string>
+    <plurals name="settings_export_done">
+        <item quantity="one">Exported %d alarm</item>
+        <item quantity="other">Exported %d alarms</item>
+    </plurals>
+    <string name="settings_export_done_missing">%1$s. %2$s</string>
+    <plurals name="settings_export_missing">
+        <item quantity="one">%d sound or picture was missing and was left out.</item>
+        <item quantity="other">%d sounds or pictures were missing and were left out.</item>
+    </plurals>
+    <string name="settings_import">Import alarms and settings</string>
+    <string name="settings_import_summary">Add the alarms from a backup file and replace your settings.</string>
+    <string name="settings_import_title">Import backup?</string>
+    <string name="settings_import_action">Import</string>
+    <plurals name="settings_import_confirm">
+        <item quantity="one">Add %d alarm and replace your settings?</item>
+        <item quantity="other">Add %d alarms and replace your settings?</item>
+    </plurals>
+    <string name="settings_import_confirm_settings_only">Replace your settings? This file has no alarms.</string>
+    <plurals name="settings_import_done">
+        <item quantity="one">Imported %d alarm</item>
+        <item quantity="other">Imported %d alarms</item>
+    </plurals>
+    <plurals name="settings_import_missing">
+        <item quantity="one">%d sound or picture couldn\'t be restored, so the default is used.</item>
+        <item quantity="other">%d sounds or pictures couldn\'t be restored, so the defaults are used.</item>
+    </plurals>
+    <string name="settings_repick_title">Pick these sounds again</string>
+    <string name="settings_repick_intro">These alarms now use the default sound, because their sound didn\'t come over:</string>
+    <string name="settings_repick_time_alarm">%1$s alarm</string>
+    <string name="settings_repick_default">Your default sound didn\'t come over either. Pick it again under Default sound in Settings.</string>
+    <string name="settings_repick_default_only">Your default sound didn\'t come over. Pick it again under Default sound in Settings.</string>
+    <string name="settings_repick_outro">Open each alarm and pick its sound again.</string>
+    <string name="settings_repick_ok">OK</string>
 
     <string name="health_fix">Fix</string>
     <string name="health_status_ok">OK</string>

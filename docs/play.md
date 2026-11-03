@@ -7,8 +7,8 @@ Tandem Alarm moves to Play as a new app, `com.kautiontape.tandem`. The old sidel
 From v0.5.0 on, a tag builds `com.kautiontape.tandem`, not the old app.
 
 - **Register the new id in Firebase first (step 1).** Until `GOOGLE_SERVICES_JSON` holds a client for `com.kautiontape.tandem`, the release build fails: the google-services plugin finds no client for the package.
-- **New app: unpair in the old app and uninstall it first.** If both are installed, both ring.
-- **Obtainium:** an Obtainium entry for this repo is tied to the old id. Obtainium refuses the new APK ("Downloaded package ID does not match existing app ID", [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/assets/translations/en.json#L48)), so it never installs the two side by side. Delete the entry in Obtainium, unpair and uninstall the old app, then add `https://github.com/shawnsquire/tandem-alarm` again, or install from Play instead. Obtainium only looks at `.apk`, `.xapk`, `.apkm` and `.apks` assets ([Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/services/apk_filter_service.dart#L10-L15)), so the `.aab` on each release doesn't confuse it.
+- **New app: import first, uninstall the old app last.** Export in the old app (0.4.1 or later), install the new one, import, check the alarms, then uninstall the old app (step 8). While both are installed, both ring, so keep that window short. Never uninstall before the import has worked.
+- **Obtainium:** an Obtainium entry for this repo is tied to the old id. Obtainium refuses the new APK ("Downloaded package ID does not match existing app ID", [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/assets/translations/en.json#L48)), so it never installs the two side by side. Delete the entry in Obtainium and add `https://github.com/shawnsquire/tandem-alarm` again, or install from Play instead. Keep the old app installed until the import in step 8 has worked. Obtainium only looks at `.apk`, `.xapk`, `.apkm` and `.apks` assets ([Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/services/apk_filter_service.dart#L10-L15)), so the `.aab` on each release doesn't confuse it.
 
 ## One-time setup
 
@@ -183,7 +183,7 @@ Closed testing has no tester minimum. The 12-testers-for-14-days rule only gates
 Play's API can't make the first release of a new app ("you will have to upload at least one APK through the Play Console before you can use this API", [Play Developer API](https://developers.google.com/android-publisher/edits)). Until the app has a reviewed release, it also refuses anything but drafts ("Only releases with status draft may be created on draft app"). So the first release goes in by hand, with the Play secret unset.
 
 1. Make sure `PLAY_SERVICE_ACCOUNT_JSON` is **not** set. The workflow then skips Play with a notice.
-2. Write the release notes in a file and tag v0.5.0 with an annotated tag. The tag message becomes the GitHub Release body in full, so APK and Obtainium users see it. The first 500 characters or fewer, cut at a paragraph break, become Play's "What's new" (Play caps notes at "500 Unicode characters per language", [Play help](https://support.google.com/googleplay/android-developer/answer/9859348)). Put the "new app: unpair and uninstall the old one first" warning first, and check that the first paragraphs fit in 500 characters with `wc -m`, not `wc -c`.
+2. Write the release notes in a file and tag v0.5.0 with an annotated tag. The tag message becomes the GitHub Release body in full, so APK and Obtainium users see it. The first 500 characters or fewer, cut at a paragraph break, become Play's "What's new" (Play caps notes at "500 Unicode characters per language", [Play help](https://support.google.com/googleplay/android-developer/answer/9859348)). Put the "new app: import first, uninstall the old app last" warning and the move steps first, and check that the first paragraphs fit in 500 characters with `wc -m`, not `wc -c`.
    ```
    git tag -a v0.5.0 -F release-notes-v0.5.0.txt && git push origin v0.5.0
    ```
@@ -223,15 +223,20 @@ Do this after the first release has passed review. From the next tag on, the wor
 
 ### 8. Moving the two phones over
 
-Do this once, after the first Play release is live. Both apps installed at once would both ring.
+Do this once, after the first Play release is live. The new app reads a backup file exported from the old one; it can't read the old app's data directly (`allowBackup="false"`).
 
-1. In the old app, on either phone, Partner tab, **Unpair**. That deletes both phones' shared data on the server: the household, both device docs (names, alarm lists, ring state), every command, and every shared photo and sound (see [What unpair deletes](#data-safety)). It doesn't touch the alarms on either phone. Uninstalling without unpairing leaves all of that on the server.
-2. On each phone, note your alarms: times, days, labels, sounds and wallpapers. A screenshot of the list is enough. Nothing carries over.
-3. Uninstall the old app. Old Tandem Alarm builds are `me.shawnsquire.tandem`. If it came from Obtainium, delete its entry there too.
-4. Install from Play (the opt-in link in step 5), or the APK from the GitHub Release.
-5. Open Settings, Health check, and fix anything that isn't green.
-6. Pair again: Partner tab, Show pairing code on one phone, Enter code on the other.
-7. Rebuild your alarms, then join the other phone's alarms again.
+On each phone:
+
+1. Update the old app to 0.4.1 or later.
+2. In the old app, Settings, Backup, **Export alarms and settings**. Save the file somewhere you can find it, such as Downloads. It holds the phone's own alarms (label, time, days, on/off, sound, wallpaper and frame, vibration, the sound and vibration switches, text position), with the sound and picture files, plus the snooze length, the default sound and wallpaper, and the name if you set one. Alarms joined from the partner, skips and the pairing aren't in it.
+3. In the old app, Partner tab, **Unpair** (once, on either phone). That deletes both phones' shared data on the server: the household, both device docs (names, alarm lists, ring state), every command, and every shared photo and sound (see [What unpair deletes](#data-safety)). It doesn't touch the alarms on either phone. Uninstalling without unpairing leaves all of that on the server.
+4. Install from Play (the opt-in link in step 5), or the APK from the GitHub Release. From here until step 7 both apps are installed, and both ring.
+5. In the new app, Settings, Backup, **Import alarms and settings** (0.5.1 or later), and pick the file. It asks "Add N alarms and replace your settings?". The alarms are added with new ids next to any already there, and are scheduled at once; the settings are replaced. A sound the new app can't open falls back to the default, and a "Pick these sounds again" list names those alarms. In testing (API 37 emulator), a sound added through the system sound picker's Add sound button came over; another app's audio file that isn't an alarm sound couldn't be read, since the new app holds no media permission. Any sound the new app can't open goes on the list. A picture that can't be restored is counted in the message after the import.
+6. Check the alarm list against the old app. Open Settings, Health check, and fix anything that isn't green.
+7. Only now uninstall the old app. Old Tandem Alarm builds are `me.shawnsquire.tandem`. If it came from Obtainium, delete its entry there too.
+8. Pair again: Partner tab, Show pairing code on one phone, Enter code on the other. Then join the other phone's alarms again.
+
+If the import fails, it adds nothing, so try again, exporting again first if the message asks for it. If it worked but an alarm looks wrong, fix or delete that alarm in the new app instead: importing again adds every alarm a second time. Either way, the old app still has everything until step 7.
 
 ## Every release
 

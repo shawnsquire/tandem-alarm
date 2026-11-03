@@ -114,7 +114,7 @@ These are one-time steps. Details for the backend are in [docs/deploy.md](docs/d
 
 The app id is `com.kautiontape.tandem`. Builds before v0.5.0 were `me.shawnsquire.tandem`, a different app to Android. The Play setup, the data safety answers and the move to the new app are in [docs/play.md](docs/play.md).
 
-**New app: unpair in the old app and uninstall it first.** If both are installed, both ring. The release build also needs `com.kautiontape.tandem` registered in Firebase and in the `GOOGLE_SERVICES_JSON` secret, or it fails.
+**New app: import first, uninstall the old app last.** See [Moving to the Play app](#moving-to-the-play-app). While both are installed, both ring. The release build also needs `com.kautiontape.tandem` registered in Firebase and in the `GOOGLE_SERVICES_JSON` secret, or it fails.
 
 Pushing a tag that starts with `v` runs `.github/workflows/release.yml`. It builds a signed, minified release and attaches `tandem-<tag>.apk`, `tandem-<tag>.aab` and `tandem-<tag>-mapping.txt` (the R8 mapping) to a GitHub Release, with the annotated tag's message as the release body. When `PLAY_SERVICE_ACCOUNT_JSON` is set, it then uploads the AAB and the mapping to the Play closed-testing track, with the first 500 characters or fewer of the tag message (cut at a paragraph break) as "What's new", so put the most important paragraph first. The version name is the tag without the `v`. The version code is the workflow run number, so push a new tag rather than re-running a failed release: Play rejects a version code it has seen.
 
@@ -137,11 +137,25 @@ To install, use one of:
 
 - Google Play, closed testing for now: open the opt-in link (`<Play opt-in link>`), then install from the Play Store.
 - The APK from the [Releases page](https://github.com/shawnsquire/tandem-alarm/releases), opened on the phone.
-- [Obtainium](https://obtainium.imranr.dev/), tracking `https://github.com/shawnsquire/tandem-alarm`. It installs new versions from GitHub Releases and ignores the `.aab` (it takes only `.apk`, `.xapk`, `.apkm` and `.apks` assets, [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/services/apk_filter_service.dart#L10-L15)). An entry made for the old app refuses the new id ("Downloaded package ID does not match existing app ID", [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/assets/translations/en.json#L48)): delete the entry, unpair and uninstall the old app, then add the repo again.
+- [Obtainium](https://obtainium.imranr.dev/), tracking `https://github.com/shawnsquire/tandem-alarm`. It installs new versions from GitHub Releases and ignores the `.aab` (it takes only `.apk`, `.xapk`, `.apkm` and `.apks` assets, [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/services/apk_filter_service.dart#L10-L15)). An entry made for the old app refuses the new id ("Downloaded package ID does not match existing app ID", [Obtainium](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/assets/translations/en.json#L48)): delete the entry and add the repo again, and keep the old app installed until the import has worked.
 
 Play and GitHub builds are meant to carry the same certificate and update each other; [docs/play.md](docs/play.md) step 2 sets that up and checks it. Updates must be signed with the same key as the installed app, or Android refuses them.
 
 After installing, open Settings, then Health check, and fix anything that is not green (exact alarms, full-screen notifications, notification permission, battery optimization).
+
+## Moving to the Play app
+
+From v0.5.0 the app is `com.kautiontape.tandem`, which Android treats as a different app from the old `me.shawnsquire.tandem`. It can't read the old app's alarms or settings, so they move in a file. On each phone:
+
+1. Update the old app to 0.4.1 or later.
+2. In the old app, Settings, Backup, Export alarms and settings, and save the file somewhere you can find it, such as Downloads. It holds your own alarms (not ones joined from your partner) with their sounds and wallpapers, the snooze length, the default sound and wallpaper, and your name.
+3. In the old app, unpair (Partner tab).
+4. Install the new app.
+5. In the new app, Settings, Backup, Import alarms and settings (0.5.1 or later), and pick the file. The alarms are added and scheduled, and the settings are replaced.
+6. Check your alarms, then uninstall the old app. While both are installed, both ring, but never uninstall before the import has worked.
+7. Pair again from the Partner tab, and join each other's alarms again.
+
+The full steps, with what unpair deletes, are in [docs/play.md](docs/play.md) step 8.
 
 ## On-device checklist
 

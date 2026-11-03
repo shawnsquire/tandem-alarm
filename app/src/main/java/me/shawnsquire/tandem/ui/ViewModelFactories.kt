@@ -8,12 +8,17 @@ import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.AppContainer
+import me.shawnsquire.tandem.BuildConfig
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.TandemApp
 import me.shawnsquire.tandem.alarm.resolveRingMedia
+import me.shawnsquire.tandem.backup.BackupExporter
+import me.shawnsquire.tandem.backup.BackupImporter
+import me.shawnsquire.tandem.backup.BackupSnapshot
 import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.media.RingtoneImporter
 import me.shawnsquire.tandem.media.WallpaperImporter
@@ -28,10 +33,12 @@ import me.shawnsquire.tandem.ui.alarms.edit.AlarmEditViewModel
 import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmActions
 import me.shawnsquire.tandem.ui.alarms.linked.LinkedAlarmViewModel
 import me.shawnsquire.tandem.ui.partner.PartnerViewModel
+import me.shawnsquire.tandem.ui.settings.PendingImport
 import me.shawnsquire.tandem.ui.settings.SettingsViewModel
 import me.shawnsquire.tandem.ui.settings.health.AndroidHealthProbe
 import me.shawnsquire.tandem.ui.settings.health.HealthViewModel
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 
 /** The only place ui touches [AppContainer]. */
@@ -145,6 +152,18 @@ val settingsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
         val container = container()
         val ringtones = RingtoneImporter(app)
         val wallpapers = WallpaperImporter(app)
+        val importer = BackupImporter(
+            filesDir = app.filesDir,
+            stagingRoot = File(app.cacheDir, "backup-import"),
+            // A system sound this phone can't open falls back to the default sound, like a missing one.
+            canOpenUri = { uri ->
+                try {
+                    app.contentResolver.openAssetFileDescriptor(Uri.parse(uri), "r")?.use { true } ?: false
+                } catch (_: Exception) {
+                    false
+                }
+            },
+        )
         SettingsViewModel(
             settings = container.settingsRepository,
             pairing = container.pairingRepository,
@@ -156,6 +175,43 @@ val settingsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
             sameWallpaperContent = { a, b -> withContext(Dispatchers.IO) { sha256Hex(File(a)) == sha256Hex(File(b)) } },
+            exportBackup = { uri ->
+                withContext(Dispatchers.IO) {
+                    val settings = container.settingsRepository
+                    val snapshot = BackupSnapshot(
+                        alarms = container.alarmRepository.alarms.first(),
+                        snoozeMinutes = settings.snoozeMinutes.first(),
+                        defaultRingtoneUri = settings.defaultRingtoneUri.first(),
+                        defaultWallpaperPath = settings.defaultWallpaperPath.first(),
+                        defaultWallpaperFrame = settings.defaultWallpaperFrame.first(),
+                        displayName = container.authManager.storedDisplayName.first(),
+                    )
+                    // "wt": plain "w" need not truncate, and leftover bytes from an overwritten file would corrupt the zip.
+                    val out = app.contentResolver.openOutputStream(Uri.parse(uri), "wt") ?: throw IOException("Cannot open $uri")
+                    out.buffered().use { BackupExporter(app.filesDir, BuildConfig.VERSION_NAME).export(snapshot, it) }
+                }
+            },
+            readBackup = { uri ->
+                withContext(Dispatchers.IO) {
+                    val staged = app.contentResolver.openInputStream(Uri.parse(uri))?.use { importer.read(it) }
+                        ?: throw IOException("Cannot open $uri")
+                    PendingImport(
+                        alarms = staged.manifest.alarms.size,
+                        // Runs to the end even if Settings is left: a cancelled import would roll back what it added.
+                        apply = {
+                            withContext(Dispatchers.IO + NonCancellable) {
+                                val edits = AlarmEdits(container.alarmRepository, container.alarmScheduler)
+                                importer.apply(
+                                    staged, edits::upsert, edits::delete, container.settingsRepository,
+                                    displayName = { container.authManager.storedDisplayName.first() },
+                                    setDisplayName = { container.authManager.setDisplayName(it) },
+                                )
+                            }
+                        },
+                        discard = staged::discard,
+                    )
+                }
+            },
         )
     }
 }

@@ -1,5 +1,6 @@
 package me.shawnsquire.tandem.ui.settings
 
+import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -49,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.tooling.preview.Preview
@@ -56,6 +58,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
+import me.shawnsquire.tandem.backup.BackupRejected
+import me.shawnsquire.tandem.ui.amPm
+import me.shawnsquire.tandem.ui.formatClock
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
 import me.shawnsquire.tandem.schedule.TextPosition
@@ -64,6 +69,7 @@ import me.shawnsquire.tandem.ui.RingPreview
 import me.shawnsquire.tandem.ui.alarms.edit.WallpaperThumbnail
 import me.shawnsquire.tandem.ui.settingsViewModelFactory
 import me.shawnsquire.tandem.ui.theme.TandemTheme
+import java.time.LocalDate
 
 @Composable
 fun SettingsRoute(
@@ -84,6 +90,14 @@ fun SettingsRoute(
         if (uri != null) viewModel.onWallpaperPicked(uri.toString())
     }
 
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) viewModel.onExportDocumentCreated(uri.toString())
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.onImportDocumentPicked(uri.toString())
+    }
+
     SettingsScreen(
         state = state,
         onSnoozeSelected = viewModel::setSnooze,
@@ -98,6 +112,13 @@ fun SettingsRoute(
         onUnpair = viewModel::unpair,
         onOpenHealth = onOpenHealth,
         onErrorShown = viewModel::dismissError,
+        onExport = { exportLauncher.launch("tandem-backup-${LocalDate.now()}.zip") },
+        onNoticeShown = viewModel::noticeShown,
+        onRepickShown = viewModel::repickShown,
+        // Some providers report a zip as octet-stream.
+        onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
+        onConfirmImport = viewModel::confirmImport,
+        onCancelImport = viewModel::cancelImport,
         modifier = modifier,
     )
 }
@@ -119,6 +140,12 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onFramingChanged: (WallpaperFrame?) -> Unit = {},
     onPreviewRequestHandled: () -> Unit = {},
+    onExport: () -> Unit = {},
+    onNoticeShown: () -> Unit = {},
+    onRepickShown: () -> Unit = {},
+    onImport: () -> Unit = {},
+    onConfirmImport: () -> Unit = {},
+    onCancelImport: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     var showRingPreview by rememberSaveable { mutableStateOf(false) }
@@ -133,6 +160,19 @@ fun SettingsScreen(
         SettingsError.RingtoneImport -> stringResource(R.string.settings_error_ringtone)
         SettingsError.WallpaperImport -> stringResource(R.string.settings_error_wallpaper)
         SettingsError.Save -> stringResource(R.string.settings_error_save)
+        SettingsError.Export -> stringResource(R.string.settings_error_export)
+        is SettingsError.Import -> stringResource(
+            when (e.reason) {
+                BackupRejected.Reason.NOT_A_BACKUP -> R.string.settings_error_import_not_a_backup
+                BackupRejected.Reason.NEWER_VERSION -> R.string.settings_error_import_newer_version
+                BackupRejected.Reason.DAMAGED -> R.string.settings_error_import_damaged
+                BackupRejected.Reason.INCOMPLETE -> R.string.settings_error_import_incomplete
+                BackupRejected.Reason.TOO_LARGE -> R.string.settings_error_import_too_large
+                BackupRejected.Reason.NO_SPACE -> R.string.settings_error_import_no_space
+                null -> R.string.settings_error_import_read
+            },
+        )
+        SettingsError.ImportApply -> stringResource(R.string.settings_error_import_apply)
         is SettingsError.Unpair -> e.message
         null -> null
     }
@@ -140,6 +180,35 @@ fun SettingsScreen(
         if (errorText != null) {
             snackbarHostState.showSnackbar(errorText)
             onErrorShown()
+        }
+    }
+    val noticeText = when (val n = state.notice) {
+        is SettingsNotice.Exported -> {
+            val done = pluralStringResource(R.plurals.settings_export_done, n.alarms, n.alarms)
+            if (n.missingMedia > 0) {
+                val missing = pluralStringResource(R.plurals.settings_export_missing, n.missingMedia, n.missingMedia)
+                stringResource(R.string.settings_export_done_missing, done, missing)
+            } else {
+                done
+            }
+        }
+        is SettingsNotice.Imported -> {
+            val done = pluralStringResource(R.plurals.settings_import_done, n.alarms, n.alarms)
+            if (n.missingMedia > 0) {
+                val missing = pluralStringResource(R.plurals.settings_import_missing, n.missingMedia, n.missingMedia)
+                stringResource(R.string.settings_export_done_missing, done, missing)
+            } else {
+                done
+            }
+        }
+        null -> null
+    }
+    // Hold the notice while the modal repick dialog is up, or it times out unseen behind it.
+    LaunchedEffect(state.notice, state.soundsToRepick) {
+        if (state.soundsToRepick != null) return@LaunchedEffect
+        if (noticeText != null) {
+            snackbarHostState.showSnackbar(noticeText)
+            onNoticeShown()
         }
     }
 
@@ -263,6 +332,19 @@ fun SettingsScreen(
             }
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            SectionHeader(R.string.settings_section_backup)
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_export)) },
+                supportingContent = { Text(stringResource(R.string.settings_export_summary)) },
+                modifier = Modifier.clickable(enabled = !state.busy, onClick = onExport),
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_import)) },
+                supportingContent = { Text(stringResource(R.string.settings_import_summary)) },
+                modifier = Modifier.clickable(enabled = !state.busy, onClick = onImport),
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionHeader(R.string.settings_section_diagnostics)
             ListItem(
                 headlineContent = { Text(stringResource(R.string.settings_health)) },
@@ -271,6 +353,57 @@ fun SettingsScreen(
                 modifier = Modifier.clickable(onClick = onOpenHealth),
             )
         }
+    }
+
+    state.importConfirm?.let { alarms ->
+        AlertDialog(
+            onDismissRequest = onCancelImport,
+            title = { Text(stringResource(R.string.settings_import_title)) },
+            text = {
+                Text(
+                    if (alarms == 0) {
+                        stringResource(R.string.settings_import_confirm_settings_only)
+                    } else {
+                        pluralStringResource(R.plurals.settings_import_confirm, alarms, alarms)
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = onConfirmImport) { Text(stringResource(R.string.settings_import_action)) }
+            },
+            dismissButton = {
+                TextButton(onClick = onCancelImport) { Text(stringResource(R.string.settings_cancel)) }
+            },
+        )
+    }
+
+    state.soundsToRepick?.let { repick ->
+        val is24Hour = DateFormat.is24HourFormat(LocalContext.current)
+        val lines = repick.alarms.map { a ->
+            a.label.ifBlank {
+                val time = formatClock(a.hour, a.minute, is24Hour) + (amPm(a.hour, is24Hour)?.let { " $it" } ?: "")
+                stringResource(R.string.settings_repick_time_alarm, time)
+            }
+        }
+        AlertDialog(
+            onDismissRequest = onRepickShown,
+            title = { Text(stringResource(R.string.settings_repick_title)) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (lines.isNotEmpty()) {
+                        Text(stringResource(R.string.settings_repick_intro))
+                        lines.forEach { Text(it) }
+                        Text(stringResource(R.string.settings_repick_outro))
+                    }
+                    if (repick.defaultLost) {
+                        Text(stringResource(if (lines.isEmpty()) R.string.settings_repick_default_only else R.string.settings_repick_default))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onRepickShown) { Text(stringResource(R.string.settings_repick_ok)) }
+            },
+        )
     }
 
     if (confirmUnpair) {
