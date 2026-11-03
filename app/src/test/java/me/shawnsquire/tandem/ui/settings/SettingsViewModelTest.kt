@@ -6,7 +6,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import me.shawnsquire.tandem.backup.BackupRejected
 import me.shawnsquire.tandem.backup.ExportResult
+import me.shawnsquire.tandem.backup.ImportResult
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
@@ -62,6 +67,16 @@ class SettingsViewModelTest {
         val exportedTo = mutableListOf<String>()
         /** What an export does once called; the default exports three alarms. */
         var exportBackup: suspend (String) -> ExportResult = { ExportResult(3, 0) }
+        /** The document URIs the import was asked to read, in order. */
+        val readFrom = mutableListOf<String>()
+        var applied = 0
+        var discarded = 0
+        /** What an apply does once called. */
+        var applyBackup: suspend () -> ImportResult = { ImportResult(2, 0) }
+        /** What a read does once called; the default finds two alarms. */
+        var readBackup: suspend (String) -> PendingImport = {
+            PendingImport(2, { applied++; applyBackup() }, { discarded++ })
+        }
         val vm = SettingsViewModel(
             settings = settings,
             pairing = pairing,
@@ -82,6 +97,7 @@ class SettingsViewModelTest {
             deleteWallpaperFile = { events += "del-wall:$it" },
             sameWallpaperContent = { _, _ -> sameContent() },
             exportBackup = { exportedTo += it; exportBackup(it) },
+            readBackup = { readFrom += it; readBackup(it) },
         )
     }
 
@@ -335,5 +351,102 @@ class SettingsViewModelTest {
         assertEquals(SettingsNotice.Exported(3, 0), env.vm.state.value.notice)
         env.vm.noticeShown()
         assertNull(env.vm.state.value.notice)
+    }
+
+    @Test fun aReadableBackupOpensTheConfirmWithItsAlarmCount() = runTest {
+        val env = Env(); collect(env)
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        assertEquals(listOf("content://doc/backup"), env.readFrom)
+        assertEquals(2, env.vm.state.value.importConfirm)
+        assertEquals(false, env.vm.state.value.busy)
+        assertNull(env.vm.state.value.error)
+        assertEquals(0, env.applied)
+    }
+
+    @Test fun eachRejectionReasonShowsItsError() = runTest {
+        for (reason in BackupRejected.Reason.values()) {
+            val env = Env(); collect(env)
+            env.readBackup = { throw BackupRejected(reason) }
+            env.vm.onImportDocumentPicked("content://doc/backup")
+            assertEquals(SettingsError.Import(reason), env.vm.state.value.error)
+            assertNull(env.vm.state.value.importConfirm)
+            assertEquals(false, env.vm.state.value.busy)
+        }
+    }
+
+    @Test fun anyOtherReadFailureIsGeneric() = runTest {
+        val env = Env(); collect(env)
+        env.readBackup = { error("cannot open") }
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        assertEquals(SettingsError.Import(null), env.vm.state.value.error)
+        assertNull(env.vm.state.value.importConfirm)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun confirmingAppliesOnceAndReportsTheResult() = runTest {
+        val env = Env(); collect(env)
+        env.applyBackup = { ImportResult(2, 1) }
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        env.vm.confirmImport()
+        env.vm.confirmImport()
+        assertEquals(1, env.applied)
+        assertEquals(SettingsNotice.Imported(2, 1), env.vm.state.value.notice)
+        assertNull(env.vm.state.value.importConfirm)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun anApplyFailureShowsTheApplyError() = runTest {
+        val env = Env(); collect(env)
+        env.applyBackup = { error("disk full") }
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        env.vm.confirmImport()
+        assertEquals(SettingsError.ImportApply, env.vm.state.value.error)
+        assertNull(env.vm.state.value.notice)
+        assertNull(env.vm.state.value.importConfirm)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun cancellingDiscardsAndALaterConfirmDoesNothing() = runTest {
+        val env = Env(); collect(env)
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        env.vm.cancelImport()
+        assertEquals(1, env.discarded)
+        assertNull(env.vm.state.value.importConfirm)
+        env.vm.confirmImport()
+        assertEquals(0, env.applied)
+        assertNull(env.vm.state.value.notice)
+    }
+
+    @Test fun aPickIsIgnoredWhileAnExportRuns() = runTest {
+        val env = Env(); collect(env)
+        val gate = CompletableDeferred<ExportResult>()
+        env.exportBackup = { gate.await() }
+        env.vm.onExportDocumentCreated("content://doc/out")
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        assertTrue(env.readFrom.isEmpty())
+        gate.complete(ExportResult(1, 0))
+    }
+
+    @Test fun anExportIsIgnoredWhileAReadRuns() = runTest {
+        val env = Env(); collect(env)
+        val gate = CompletableDeferred<PendingImport>()
+        env.readBackup = { gate.await() }
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        assertTrue(env.vm.state.value.busy)
+        env.vm.onExportDocumentCreated("content://doc/out")
+        assertTrue(env.exportedTo.isEmpty())
+        gate.complete(PendingImport(1, { ImportResult(1, 0) }, {}))
+    }
+
+    @Test fun clearingTheViewModelDiscardsAPendingImport() = runTest {
+        val env = Env(); collect(env)
+        env.vm.onImportDocumentPicked("content://doc/backup")
+        val store = ViewModelStore()
+        ViewModelProvider(store, object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = env.vm as T
+        })[SettingsViewModel::class.java]
+        store.clear()
+        assertEquals(1, env.discarded)
     }
 }

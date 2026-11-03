@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.shawnsquire.tandem.R
+import me.shawnsquire.tandem.backup.BackupRejected
 import me.shawnsquire.tandem.media.PickAudioFile
 import me.shawnsquire.tandem.media.PickSystemRingtone
 import me.shawnsquire.tandem.schedule.TextPosition
@@ -90,6 +91,10 @@ fun SettingsRoute(
         if (uri != null) viewModel.onExportDocumentCreated(uri.toString())
     }
 
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.onImportDocumentPicked(uri.toString())
+    }
+
     SettingsScreen(
         state = state,
         onSnoozeSelected = viewModel::setSnooze,
@@ -106,6 +111,10 @@ fun SettingsRoute(
         onErrorShown = viewModel::dismissError,
         onExport = { exportLauncher.launch("tandem-backup-${LocalDate.now()}.zip") },
         onNoticeShown = viewModel::noticeShown,
+        // Some providers report a zip as octet-stream.
+        onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
+        onConfirmImport = viewModel::confirmImport,
+        onCancelImport = viewModel::cancelImport,
         modifier = modifier,
     )
 }
@@ -129,6 +138,9 @@ fun SettingsScreen(
     onPreviewRequestHandled: () -> Unit = {},
     onExport: () -> Unit = {},
     onNoticeShown: () -> Unit = {},
+    onImport: () -> Unit = {},
+    onConfirmImport: () -> Unit = {},
+    onCancelImport: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     var showRingPreview by rememberSaveable { mutableStateOf(false) }
@@ -144,6 +156,17 @@ fun SettingsScreen(
         SettingsError.WallpaperImport -> stringResource(R.string.settings_error_wallpaper)
         SettingsError.Save -> stringResource(R.string.settings_error_save)
         SettingsError.Export -> stringResource(R.string.settings_error_export)
+        is SettingsError.Import -> stringResource(
+            when (e.reason) {
+                BackupRejected.Reason.NOT_A_BACKUP -> R.string.settings_error_import_not_a_backup
+                BackupRejected.Reason.NEWER_VERSION -> R.string.settings_error_import_newer_version
+                BackupRejected.Reason.DAMAGED -> R.string.settings_error_import_damaged
+                BackupRejected.Reason.INCOMPLETE -> R.string.settings_error_import_incomplete
+                BackupRejected.Reason.TOO_LARGE -> R.string.settings_error_import_too_large
+                null -> R.string.settings_error_import_read
+            },
+        )
+        SettingsError.ImportApply -> stringResource(R.string.settings_error_import_apply)
         is SettingsError.Unpair -> e.message
         null -> null
     }
@@ -158,6 +181,15 @@ fun SettingsScreen(
             val done = pluralStringResource(R.plurals.settings_export_done, n.alarms, n.alarms)
             if (n.missingMedia > 0) {
                 val missing = pluralStringResource(R.plurals.settings_export_missing, n.missingMedia, n.missingMedia)
+                stringResource(R.string.settings_export_done_missing, done, missing)
+            } else {
+                done
+            }
+        }
+        is SettingsNotice.Imported -> {
+            val done = pluralStringResource(R.plurals.settings_import_done, n.alarms, n.alarms)
+            if (n.missingMedia > 0) {
+                val missing = pluralStringResource(R.plurals.settings_import_missing, n.missingMedia, n.missingMedia)
                 stringResource(R.string.settings_export_done_missing, done, missing)
             } else {
                 done
@@ -298,6 +330,11 @@ fun SettingsScreen(
                 supportingContent = { Text(stringResource(R.string.settings_export_summary)) },
                 modifier = Modifier.clickable(enabled = !state.busy, onClick = onExport),
             )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_import)) },
+                supportingContent = { Text(stringResource(R.string.settings_import_summary)) },
+                modifier = Modifier.clickable(enabled = !state.busy, onClick = onImport),
+            )
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionHeader(R.string.settings_section_diagnostics)
@@ -308,6 +345,28 @@ fun SettingsScreen(
                 modifier = Modifier.clickable(onClick = onOpenHealth),
             )
         }
+    }
+
+    state.importConfirm?.let { alarms ->
+        AlertDialog(
+            onDismissRequest = onCancelImport,
+            title = { Text(stringResource(R.string.settings_import_title)) },
+            text = {
+                Text(
+                    if (alarms == 0) {
+                        stringResource(R.string.settings_import_confirm_settings_only)
+                    } else {
+                        pluralStringResource(R.plurals.settings_import_confirm, alarms, alarms)
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = onConfirmImport) { Text(stringResource(R.string.settings_import_action)) }
+            },
+            dismissButton = {
+                TextButton(onClick = onCancelImport) { Text(stringResource(R.string.settings_cancel)) }
+            },
+        )
     }
 
     if (confirmUnpair) {

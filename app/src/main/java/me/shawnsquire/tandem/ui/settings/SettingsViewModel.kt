@@ -14,7 +14,9 @@ import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import me.shawnsquire.tandem.backup.BackupRejected
 import me.shawnsquire.tandem.backup.ExportResult
+import me.shawnsquire.tandem.backup.ImportResult
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.schedule.WallpaperFrame
 import me.shawnsquire.tandem.sync.PairingException
@@ -29,6 +31,11 @@ sealed interface SettingsError {
     data object Save : SettingsError
     data object Export : SettingsError
 
+    /** [reason] is why the file was refused; null is a generic read failure. */
+    data class Import(val reason: BackupRejected.Reason?) : SettingsError
+
+    data object ImportApply : SettingsError
+
     /** [message] is already user-safe. */
     data class Unpair(val message: String) : SettingsError
 }
@@ -36,6 +43,7 @@ sealed interface SettingsError {
 /** A success the screen reports once, then clears with [SettingsViewModel.noticeShown]. */
 sealed interface SettingsNotice {
     data class Exported(val alarms: Int, val missingMedia: Int) : SettingsNotice
+    data class Imported(val alarms: Int, val missingMedia: Int) : SettingsNotice
 }
 
 data class SettingsUiState(
@@ -53,9 +61,14 @@ data class SettingsUiState(
     val unpairing: Boolean = false,
     /** True while a file import is running. */
     val busy: Boolean = false,
+    /** The alarm count of a read backup waiting for the user's OK; null when no dialog is open. */
+    val importConfirm: Int? = null,
     val error: SettingsError? = null,
     val notice: SettingsNotice? = null,
 )
+
+/** A read, validated backup waiting for the user's OK. */
+class PendingImport(val alarms: Int, val apply: suspend () -> ImportResult, val discard: () -> Unit)
 
 private const val GENERIC_UNPAIR_ERROR = "Something went wrong. Try again."
 
@@ -73,15 +86,20 @@ class SettingsViewModel(
     private val sameWallpaperContent: suspend (String, String) -> Boolean,
     /** Writes the backup to the document URI and returns how many alarms were written and how many sounds or pictures were left out; throws on failure. Runs off the main thread. */
     private val exportBackup: suspend (String) -> ExportResult,
+    /** Reads and validates the document; throws [BackupRejected] or another exception. Runs off the main thread. */
+    private val readBackup: suspend (String) -> PendingImport,
 ) : ViewModel() {
 
     private data class Local(
         val unpairing: Boolean = false,
         val busy: Boolean = false,
         val previewRequested: Boolean = false,
+        val importConfirm: Int? = null,
         val error: SettingsError? = null,
         val notice: SettingsNotice? = null,
     )
+
+    private var pendingImport: PendingImport? = null
 
     private val local = MutableStateFlow(Local())
 
@@ -114,6 +132,7 @@ class SettingsViewModel(
             partnerName = (status as? PairingStatus.Paired)?.partnerName,
             unpairing = loc.unpairing,
             busy = loc.busy,
+            importConfirm = loc.importConfirm,
             error = loc.error,
             notice = loc.notice,
         )
@@ -176,6 +195,65 @@ class SettingsViewModel(
             } finally {
                 local.update { it.copy(busy = false) }
             }
+        }
+    }
+
+    /** A document URI from the open-document picker; read and checked, then the user is asked to confirm. */
+    fun onImportDocumentPicked(documentUri: String) {
+        if (local.value.busy) return
+        viewModelScope.launch {
+            local.update { it.copy(busy = true, error = null, notice = null) }
+            try {
+                val pending = readBackup(documentUri)
+                discardPending()
+                pendingImport = pending
+                local.update { it.copy(importConfirm = pending.alarms) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: BackupRejected) {
+                local.update { it.copy(error = SettingsError.Import(e.reason)) }
+            } catch (_: Exception) {
+                local.update { it.copy(error = SettingsError.Import(null)) }
+            } finally {
+                local.update { it.copy(busy = false) }
+            }
+        }
+    }
+
+    /** The user's OK on the import dialog. */
+    fun confirmImport() {
+        if (local.value.busy) return
+        val pending = pendingImport ?: return
+        pendingImport = null
+        viewModelScope.launch {
+            local.update { it.copy(importConfirm = null, busy = true) }
+            try {
+                val result = pending.apply()
+                local.update { it.copy(notice = SettingsNotice.Imported(result.alarms, result.missingMedia)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                local.update { it.copy(error = SettingsError.ImportApply) }
+            } finally {
+                local.update { it.copy(busy = false) }
+            }
+        }
+    }
+
+    fun cancelImport() {
+        discardPending()
+        local.update { it.copy(importConfirm = null) }
+    }
+
+    override fun onCleared() = discardPending()
+
+    private fun discardPending() {
+        val pending = pendingImport ?: return
+        pendingImport = null
+        try {
+            pending.discard()
+        } catch (_: Exception) {
+            // Best effort: it only frees cache space.
         }
     }
 
