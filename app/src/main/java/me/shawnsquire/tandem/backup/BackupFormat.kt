@@ -17,6 +17,10 @@ const val BACKUP_FORMAT = "tandem-backup"
 const val BACKUP_VERSION = 1
 const val MANIFEST_ENTRY = "manifest.json"
 const val MEDIA_DIR = "media/"
+const val MAX_ALARMS = 200
+const val MAX_MANIFEST_BYTES = 1_048_576
+const val MAX_MEDIA_BYTES_PER_FILE = 100L * 1024 * 1024
+const val MAX_ENTRIES = 1000
 
 /** A ringtone: a copied file in the zip ([File], [path] is the zip entry) or a URI kept verbatim ([Uri]). */
 sealed interface BackupSound {
