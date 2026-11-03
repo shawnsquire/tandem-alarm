@@ -13,6 +13,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -21,6 +22,8 @@ import org.robolectric.RobolectricTestRunner
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.time.DayOfWeek
 import java.time.Instant
@@ -279,6 +282,38 @@ class BackupExporterTest {
             while (true) names += (z.nextEntry ?: break).name
         }
         assertEquals(listOf("manifest.json", "media/ringtones/$uuid-Morning birds.wav", "media/wallpapers/$uuid.jpg"), names)
+        ZipInputStream(ByteArrayInputStream(out.toByteArray())).use { z ->
+            z.nextEntry
+            while (true) {
+                z.nextEntry ?: break
+                assertTrue(bytes.contentEquals(z.readBytes()))
+            }
+        }
+    }
+
+    @Test fun failedReadLeavesAnUnfinishedZip() {
+        val w = wallpaperFile("$uuid.jpg")
+        val out = ByteArrayOutputStream()
+        val exporter = BackupExporter(tmp.root, "0.4.1", open = {
+            object : InputStream() {
+                var sent = 0
+                override fun read(): Int = error("unused")
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    if (sent > 0) throw IOException("disk gone")
+                    sent = 10
+                    return 10
+                }
+            }
+        }) { at }
+        try {
+            exporter.export(snapshot(listOf(alarm(wallpaper = w.path))), out)
+            fail("export should throw")
+        } catch (_: IOException) {
+        }
+        val data = out.toByteArray()
+        val eocd = byteArrayOf(0x50, 0x4b, 0x05, 0x06)
+        assertTrue(data.size > 4)
+        assertEquals(-1, (0..data.size - 4).firstOrNull { i -> (0..3).all { data[i + it] == eocd[it] } } ?: -1)
     }
 
     @Test fun callersStreamIsLeftOpen() {

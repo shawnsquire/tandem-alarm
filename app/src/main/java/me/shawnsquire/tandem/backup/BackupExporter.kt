@@ -33,6 +33,8 @@ data class ExportResult(val alarms: Int, val missingMedia: Int)
 class BackupExporter(
     private val filesDir: File,
     private val appVersion: String,
+    /** Opens a media file; a seam so tests can make a read fail partway. */
+    private val open: (File) -> InputStream = ::FileInputStream,
     private val now: () -> Instant = Instant::now,
 ) {
     /** Blocking; call off the main thread. Doesn't close [out]. */
@@ -65,14 +67,21 @@ class BackupExporter(
                     )
                 },
             )
-            ZipOutputStream(FlushOnClose(out)).use { zip ->
-                zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
-                zip.write(manifest.toJson().toString().toByteArray(Charsets.UTF_8))
-                zip.closeEntry()
-                for ((path, input) in media.entries) {
-                    zip.putNextEntry(ZipEntry(path))
-                    input.copyTo(zip)
+            val sink = FlushOnClose(out)
+            ZipOutputStream(sink).use { zip ->
+                try {
+                    zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
+                    zip.write(manifest.toJson().toString().toByteArray(Charsets.UTF_8))
                     zip.closeEntry()
+                    for ((path, input) in media.entries) {
+                        zip.putNextEntry(ZipEntry(path))
+                        input.copyTo(zip)
+                        zip.closeEntry()
+                    }
+                } catch (e: Throwable) {
+                    // Closing the zip would finish it with a valid central directory around a truncated file.
+                    sink.discard = true
+                    throw e
                 }
             }
             return ExportResult(own.size, media.missing)
@@ -120,7 +129,7 @@ class BackupExporter(
             return try {
                 val canonical = file.canonicalFile
                 if (canonical.parentFile != File(filesDir, dir).canonicalFile || !canonical.isFile) return null
-                if (entry !in entries) entries[entry] = FileInputStream(canonical)
+                if (entry !in entries) entries[entry] = open(canonical)
                 entry
             } catch (_: IOException) {
                 null
@@ -137,9 +146,20 @@ class BackupExporter(
         }
     }
 
-    /** Lets [ZipOutputStream.close] release its deflater without closing the caller's stream. */
+    /**
+     * Lets [ZipOutputStream.close] release its deflater without closing the caller's stream.
+     * Once [discard] is set, nothing more reaches [out], so a failed export is left unfinished.
+     */
     private class FlushOnClose(out: OutputStream) : FilterOutputStream(out) {
-        override fun write(b: ByteArray, off: Int, len: Int) = out.write(b, off, len)
+        var discard = false
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            if (!discard) out.write(b, off, len)
+        }
+
+        override fun flush() {
+            if (!discard) out.flush()
+        }
 
         override fun close() = flush()
     }
