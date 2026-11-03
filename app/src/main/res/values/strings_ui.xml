@@ -126,6 +126,7 @@
         <item quantity="one">Exported %d alarm</item>
         <item quantity="other">Exported %d alarms</item>
     </plurals>
+    <string name="settings_export_done_missing">%1$s. %2$s</string>
     <plurals name="settings_export_missing">
         <item quantity="one">%d sound or picture was missing and was left out.</item>
         <item quantity="other">%d sounds or pictures were missing and were left out.</item>
