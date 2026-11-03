@@ -96,6 +96,7 @@
     <string name="settings_section_alarms">Alarms</string>
     <string name="settings_section_you">You</string>
     <string name="settings_section_partner">Partner</string>
+    <string name="settings_section_backup">Backup</string>
     <string name="settings_section_diagnostics">Diagnostics</string>
     <string name="settings_snooze">Snooze length</string>
     <string name="settings_snooze_minutes">%1$d min</string>
@@ -118,6 +119,18 @@
     <string name="settings_error_ringtone">Couldn\'t use that sound file.</string>
     <string name="settings_error_wallpaper">Couldn\'t use that image.</string>
     <string name="settings_error_save">Couldn\'t save that change. Try again.</string>
+    <string name="settings_error_export">Couldn\'t export. Try again.</string>
+    <string name="settings_export">Export alarms and settings</string>
+    <string name="settings_export_summary">Save your alarms and settings to a file, to move them to a new install.</string>
+    <plurals name="settings_export_done">
+        <item quantity="one">Exported %d alarm</item>
+        <item quantity="other">Exported %d alarms</item>
+    </plurals>
+    <string name="settings_export_done_missing">%1$s. %2$s</string>
+    <plurals name="settings_export_missing">
+        <item quantity="one">%d sound or picture was missing and was left out.</item>
+        <item quantity="other">%d sounds or pictures were missing and were left out.</item>
+    </plurals>
 
     <string name="health_fix">Fix</string>
     <string name="health_status_ok">OK</string>

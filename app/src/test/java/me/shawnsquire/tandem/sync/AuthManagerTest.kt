@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -32,5 +33,20 @@ class AuthManagerTest {
         n.set("A")
         n.set(null)
         assertEquals("Pixel 9", n.displayName.first())
+    }
+
+    @Test
+    fun storedNameIsNullByDefault() = runTest { assertNull(names().storedName.first()) }
+
+    @Test
+    fun storedNameIsTrimmedValueAndNullAfterClear() = runTest {
+        val n = names()
+        n.set("  Shawn ")
+        assertEquals("Shawn", n.storedName.first())
+        n.set(null)
+        assertNull(n.storedName.first())
+        n.set("A")
+        n.set("  ")
+        assertNull(n.storedName.first())
     }
 }

@@ -1,10 +1,12 @@
 package me.shawnsquire.tandem.ui.settings
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import me.shawnsquire.tandem.backup.ExportResult
 import me.shawnsquire.tandem.data.SettingsRepository
 import me.shawnsquire.tandem.fakes.FakePairingRepository
 import me.shawnsquire.tandem.fakes.FakeSettingsRepository
@@ -52,8 +54,14 @@ class SettingsViewModelTest {
         val importedRingtones = mutableListOf<String>()
         val importedWallpapers = mutableListOf<String>()
         var failImport = false
+        /** What a ringtone import returns once called. */
+        var importRingtone: suspend (String) -> String = { "file:///imported-${importedRingtones.size}" }
         /** What the content comparison says; a throw counts as different. */
         var sameContent: () -> Boolean = { false }
+        /** The document URIs the export was asked to write, in order. */
+        val exportedTo = mutableListOf<String>()
+        /** What an export does once called; the default exports three alarms. */
+        var exportBackup: suspend (String) -> ExportResult = { ExportResult(3, 0) }
         val vm = SettingsViewModel(
             settings = settings,
             pairing = pairing,
@@ -63,7 +71,7 @@ class SettingsViewModelTest {
             importRingtone = {
                 importedRingtones += it
                 if (failImport) error("boom")
-                "file:///imported-${importedRingtones.size}"
+                importRingtone(it)
             },
             deleteRingtoneFile = { events += "del-ring:$it" },
             importWallpaper = {
@@ -73,6 +81,7 @@ class SettingsViewModelTest {
             },
             deleteWallpaperFile = { events += "del-wall:$it" },
             sameWallpaperContent = { _, _ -> sameContent() },
+            exportBackup = { exportedTo += it; exportBackup(it) },
         )
     }
 
@@ -257,5 +266,74 @@ class SettingsViewModelTest {
         env.vm.removeWallpaper()
         assertNull(env.settings.defaultWallpaperPath.first())
         assertNull(env.settings.defaultWallpaperFrame.first())
+    }
+
+    @Test fun exportPassesUriThroughAndReportsCount() = runTest {
+        val env = Env(); collect(env)
+        env.exportBackup = { ExportResult(2, 0) }
+        env.vm.onExportDocumentCreated("content://doc/backup")
+        assertEquals(listOf("content://doc/backup"), env.exportedTo)
+        assertEquals(SettingsNotice.Exported(2, 0), env.vm.state.value.notice)
+        assertNull(env.vm.state.value.error)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun exportFailureShowsErrorAndNoNotice() = runTest {
+        val env = Env(); collect(env)
+        env.exportBackup = { error("disk full") }
+        env.vm.onExportDocumentCreated("content://doc/backup")
+        assertEquals(SettingsError.Export, env.vm.state.value.error)
+        assertNull(env.vm.state.value.notice)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun exportWhileOneIsRunningIsIgnored() = runTest {
+        val env = Env(); collect(env)
+        val gate = CompletableDeferred<ExportResult>()
+        env.exportBackup = { gate.await() }
+        env.vm.onExportDocumentCreated("content://doc/1")
+        assertTrue(env.vm.state.value.busy)
+        env.vm.onExportDocumentCreated("content://doc/2")
+        assertEquals(listOf("content://doc/1"), env.exportedTo)
+        gate.complete(ExportResult(1, 0))
+        assertEquals(SettingsNotice.Exported(1, 0), env.vm.state.value.notice)
+        assertEquals(false, env.vm.state.value.busy)
+    }
+
+    @Test fun exportReportsMissingMedia() = runTest {
+        val env = Env(); collect(env)
+        env.exportBackup = { ExportResult(2, 4) }
+        env.vm.onExportDocumentCreated("content://doc/backup")
+        assertEquals(SettingsNotice.Exported(2, 4), env.vm.state.value.notice)
+    }
+
+    @Test fun exportIsIgnoredWhileARingtoneImportRuns() = runTest {
+        val env = Env(); collect(env)
+        val gate = CompletableDeferred<String>()
+        env.importRingtone = { gate.await() }
+        env.vm.onRingtoneFilePicked("content://doc/1")
+        assertTrue(env.vm.state.value.busy)
+        env.vm.onExportDocumentCreated("content://doc/backup")
+        assertTrue(env.exportedTo.isEmpty())
+        gate.complete("file:///imported")
+    }
+
+    @Test fun ringtoneImportIsIgnoredWhileAnExportRuns() = runTest {
+        val env = Env(); collect(env)
+        val gate = CompletableDeferred<ExportResult>()
+        env.exportBackup = { gate.await() }
+        env.vm.onExportDocumentCreated("content://doc/backup")
+        assertTrue(env.vm.state.value.busy)
+        env.vm.onRingtoneFilePicked("content://doc/1")
+        assertTrue(env.importedRingtones.isEmpty())
+        gate.complete(ExportResult(1, 0))
+    }
+
+    @Test fun noticeShownClearsTheNotice() = runTest {
+        val env = Env(); collect(env)
+        env.vm.onExportDocumentCreated("content://doc/1")
+        assertEquals(SettingsNotice.Exported(3, 0), env.vm.state.value.notice)
+        env.vm.noticeShown()
+        assertNull(env.vm.state.value.notice)
     }
 }

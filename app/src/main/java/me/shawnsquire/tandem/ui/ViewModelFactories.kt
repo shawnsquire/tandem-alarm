@@ -11,9 +11,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import me.shawnsquire.tandem.AppContainer
+import me.shawnsquire.tandem.BuildConfig
 import me.shawnsquire.tandem.R
 import me.shawnsquire.tandem.TandemApp
 import me.shawnsquire.tandem.alarm.resolveRingMedia
+import me.shawnsquire.tandem.backup.BackupExporter
+import me.shawnsquire.tandem.backup.BackupSnapshot
 import me.shawnsquire.tandem.media.RingWallpaper
 import me.shawnsquire.tandem.media.RingtoneImporter
 import me.shawnsquire.tandem.media.WallpaperImporter
@@ -32,6 +35,7 @@ import me.shawnsquire.tandem.ui.settings.SettingsViewModel
 import me.shawnsquire.tandem.ui.settings.health.AndroidHealthProbe
 import me.shawnsquire.tandem.ui.settings.health.HealthViewModel
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 
 /** The only place ui touches [AppContainer]. */
@@ -156,6 +160,22 @@ val settingsViewModelFactory: ViewModelProvider.Factory = viewModelFactory {
             importWallpaper = { wallpapers.import(Uri.parse(it)) },
             deleteWallpaperFile = { wallpapers.delete(it) },
             sameWallpaperContent = { a, b -> withContext(Dispatchers.IO) { sha256Hex(File(a)) == sha256Hex(File(b)) } },
+            exportBackup = { uri ->
+                withContext(Dispatchers.IO) {
+                    val settings = container.settingsRepository
+                    val snapshot = BackupSnapshot(
+                        alarms = container.alarmRepository.alarms.first(),
+                        snoozeMinutes = settings.snoozeMinutes.first(),
+                        defaultRingtoneUri = settings.defaultRingtoneUri.first(),
+                        defaultWallpaperPath = settings.defaultWallpaperPath.first(),
+                        defaultWallpaperFrame = settings.defaultWallpaperFrame.first(),
+                        displayName = container.authManager.storedDisplayName.first(),
+                    )
+                    // "wt": plain "w" need not truncate, and leftover bytes from an overwritten file would corrupt the zip.
+                    val out = app.contentResolver.openOutputStream(Uri.parse(uri), "wt") ?: throw IOException("Cannot open $uri")
+                    out.buffered().use { BackupExporter(app.filesDir, BuildConfig.VERSION_NAME).export(snapshot, it) }
+                }
+            },
         )
     }
 }

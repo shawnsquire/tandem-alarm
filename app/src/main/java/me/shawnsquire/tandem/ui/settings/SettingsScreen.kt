@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.tooling.preview.Preview
@@ -64,6 +65,7 @@ import me.shawnsquire.tandem.ui.RingPreview
 import me.shawnsquire.tandem.ui.alarms.edit.WallpaperThumbnail
 import me.shawnsquire.tandem.ui.settingsViewModelFactory
 import me.shawnsquire.tandem.ui.theme.TandemTheme
+import java.time.LocalDate
 
 @Composable
 fun SettingsRoute(
@@ -84,6 +86,10 @@ fun SettingsRoute(
         if (uri != null) viewModel.onWallpaperPicked(uri.toString())
     }
 
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) viewModel.onExportDocumentCreated(uri.toString())
+    }
+
     SettingsScreen(
         state = state,
         onSnoozeSelected = viewModel::setSnooze,
@@ -98,6 +104,8 @@ fun SettingsRoute(
         onUnpair = viewModel::unpair,
         onOpenHealth = onOpenHealth,
         onErrorShown = viewModel::dismissError,
+        onExport = { exportLauncher.launch("tandem-backup-${LocalDate.now()}.zip") },
+        onNoticeShown = viewModel::noticeShown,
         modifier = modifier,
     )
 }
@@ -119,6 +127,8 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onFramingChanged: (WallpaperFrame?) -> Unit = {},
     onPreviewRequestHandled: () -> Unit = {},
+    onExport: () -> Unit = {},
+    onNoticeShown: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     var showRingPreview by rememberSaveable { mutableStateOf(false) }
@@ -133,6 +143,7 @@ fun SettingsScreen(
         SettingsError.RingtoneImport -> stringResource(R.string.settings_error_ringtone)
         SettingsError.WallpaperImport -> stringResource(R.string.settings_error_wallpaper)
         SettingsError.Save -> stringResource(R.string.settings_error_save)
+        SettingsError.Export -> stringResource(R.string.settings_error_export)
         is SettingsError.Unpair -> e.message
         null -> null
     }
@@ -140,6 +151,24 @@ fun SettingsScreen(
         if (errorText != null) {
             snackbarHostState.showSnackbar(errorText)
             onErrorShown()
+        }
+    }
+    val noticeText = when (val n = state.notice) {
+        is SettingsNotice.Exported -> {
+            val done = pluralStringResource(R.plurals.settings_export_done, n.alarms, n.alarms)
+            if (n.missingMedia > 0) {
+                val missing = pluralStringResource(R.plurals.settings_export_missing, n.missingMedia, n.missingMedia)
+                stringResource(R.string.settings_export_done_missing, done, missing)
+            } else {
+                done
+            }
+        }
+        null -> null
+    }
+    LaunchedEffect(state.notice) {
+        if (noticeText != null) {
+            snackbarHostState.showSnackbar(noticeText)
+            onNoticeShown()
         }
     }
 
@@ -261,6 +290,14 @@ fun SettingsScreen(
                     supportingContent = { Text(stringResource(R.string.settings_not_paired_hint)) },
                 )
             }
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            SectionHeader(R.string.settings_section_backup)
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_export)) },
+                supportingContent = { Text(stringResource(R.string.settings_export_summary)) },
+                modifier = Modifier.clickable(enabled = !state.busy, onClick = onExport),
+            )
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             SectionHeader(R.string.settings_section_diagnostics)
